@@ -1,6 +1,6 @@
 # Production report 8 — Screening strategies
 
-**Program:** `rfd4-cure`, the disease-binder design flow built on RFD4-Proteina.
+**Program:** `Humanitys-Last-Disease`, the disease-binder design flow built on RFD4-Proteina.
 **Scope:** the named sets of axes a design can be judged against, and the repository's own
 declared pass criteria.
 **Status:** implemented and tested. Not medically verified.

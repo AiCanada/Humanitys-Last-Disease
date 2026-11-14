@@ -1,6 +1,6 @@
 # Production report 4 — Screening: protein and peptide binders
 
-**Program:** `rfd4-cure`, the disease-binder design flow built on RFD4-Proteina.
+**Program:** `Humanitys-Last-Disease`, the disease-binder design flow built on RFD4-Proteina.
 **Scope:** every check a finished protein or peptide design is put through after generation.
 **Status:** implemented and tested. Not medically verified. Every number below is a
 computational prediction; none is an experimental result.

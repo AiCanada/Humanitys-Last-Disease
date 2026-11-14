@@ -1,6 +1,6 @@
 # Production report 3 — Computational Backend
 
-**Program:** `rfd4-cure`, the disease-binder design flow built on RFD4-Proteina.
+**Program:** `Humanitys-Last-Disease`, the disease-binder design flow built on RFD4-Proteina.
 **Scope:** what actually computes, where it runs, and what is not present.
 **Status:** implemented. Not medically verified. A clear screen is a computational result;
 it is not experimental validation.
@@ -34,10 +34,8 @@ process. The stages are separable and each one is inspectable before the next:
    `search: null` — see below.
 3. **Build commands.** Generation argv lists are constructed. The module's own comment is
    *"Nothing is executed."*
-4. **Choose the model.** When a modified checkpoint file is named, the overrides select the
-   disease-binder inference experiment and clear the hub checkpoint path; otherwise the
-   original release model is used. The binder kind can be switched per run, which rebuilds a
-   non-persistent buffer and loads no different weights.
+4. **Choose the model.** See *Which weights* below. The binder kind can be switched per
+   run, which rebuilds a non-persistent buffer and loads no different weights.
 5. **Execute.** One function spawns children, local and remote concurrently. Every child is
    registered so it can be terminated, which is what makes the MCP cancellation hook real
    rather than advisory.
@@ -50,6 +48,43 @@ generation program, which the disease flow invokes as a subprocess.
 Candidate hosts are offered only if they already appear in the user's own SSH
 configuration and known-hosts file. **Nothing is probed over the network to discover a
 host.** Transport is ordinary `ssh` and `scp`.
+
+## Which weights
+
+This program ships no weights of its own. It runs one of two checkpoints, chosen by whether
+`--modified-ckpt` points at a file that exists.
+
+**The intended model is a modified disease checkpoint, and it is not yet installed.** It is
+a checkpoint trained with the combination projection — the class conditioning that carries
+the liability axes, at twice the number of axes in the table. When such a file is named, the
+overrides select the disease-binder inference experiment, clear the hub checkpoint path, and
+enable the per-run binder kind. The flag's own help states the position plainly: *"Until that
+file exists, commands use the original release model."*
+
+**The current fallback is the stock upstream release**, and it is what every run to date has
+used:
+
+```
+hf_ckpt_path:     nvidia/RFD4-Proteina
+hf_ckpt_revision: a06e2509c7033b010fc43614e9fd840303588502   (pinned)
+inference_experiment: inference_on_user_inputs
+```
+
+A metrics table from a finished run records it as such: `ckpt_path = nvidia/RFD4-Proteina`,
+`ckpt_name = model.safetensors`. With `hf_ckpt_path` set to null the native pair under
+`$DATA_PATH` is used instead.
+
+### What that means for a reader of these reports
+
+The stock release weights were **not trained with the combination projection**, and the
+function that would apply it returns its input unchanged when no projection module is
+present. So on the weights used so far, the disease conditioning is inert: generation is
+ordinary RFD4-Proteina, and everything disease-specific in this program is in the
+**screening that happens after generation** — reports 4 through 8.
+
+A result produced today is therefore a stock-model design that has been screened, not a
+design produced by a disease-conditioned model. The distinction is recorded per run in the
+job file and the metrics table rather than left to be inferred.
 
 ## Reward-guided search exists, and is off for this flow
 

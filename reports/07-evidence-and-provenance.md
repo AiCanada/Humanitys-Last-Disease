@@ -1,6 +1,6 @@
 # Production report 7 — Evidence and provenance
 
-**Program:** `rfd4-cure`, the disease-binder design flow built on RFD4-Proteina.
+**Program:** `Humanitys-Last-Disease`, the disease-binder design flow built on RFD4-Proteina.
 **Scope:** what a stored verdict records about itself, and why each field is there.
 **Status:** implemented and tested. Not medically verified.
 

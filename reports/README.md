@@ -1,7 +1,7 @@
-# Production reports — `rfd4-cure`
+# Production reports — `Humanitys-Last-Disease`
 
 Reports describing the architecture and the post-generation screening pipeline of
-`rfd4-cure`, the disease-binder design flow built on RFD4-Proteina.
+`Humanitys-Last-Disease`, the disease-binder design flow built on RFD4-Proteina.
 
 **Not medically verified.** Every number these reports describe is a computational
 prediction. A clear screen is a computational result; it is not experimental validation.

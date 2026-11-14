@@ -1,6 +1,6 @@
 # Production report 1 — MCP Integration Layer
 
-**Program:** `rfd4-cure`, the disease-binder design flow built on RFD4-Proteina.
+**Program:** `Humanitys-Last-Disease`, the disease-binder design flow built on RFD4-Proteina.
 **Scope:** the Model Context Protocol server through which an assistant drives the program.
 **Status:** implemented and tested. Not medically verified. Nothing in this report is a
 clinical claim.
@@ -28,7 +28,7 @@ A hand-written JSON-RPC stdio server. It does not use an MCP SDK. It is register
 single server:
 
 ```json
-{"mcpServers": {"rfd4-cure": {"command": "python", "args": ["-u", "scripts/rfd4_cure_mcp.py"]}}}
+{"mcpServers": {"Humanitys-Last-Disease": {"command": "python", "args": ["-u", "scripts/rfd4_cure_mcp.py"]}}}
 ```
 
 Tools are dispatched **in process** by `call_tool()` in `mcp_api.py`. The server does not

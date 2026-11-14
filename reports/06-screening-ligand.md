@@ -1,6 +1,6 @@
 # Production report 6 — Screening: ligand binders
 
-**Program:** `rfd4-cure`, the disease-binder design flow built on RFD4-Proteina.
+**Program:** `Humanitys-Last-Disease`, the disease-binder design flow built on RFD4-Proteina.
 **Scope:** the ten-protein safety panel and the one measurement taken from the structure.
 **Status:** implemented and tested. Not medically verified. The panel reads a table you
 supply; this program runs no toxicology predictor.

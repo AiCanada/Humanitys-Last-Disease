@@ -1,6 +1,6 @@
 # Production report 2 — AI Interface
 
-**Program:** `rfd4-cure`, the disease-binder design flow built on RFD4-Proteina.
+**Program:** `Humanitys-Last-Disease`, the disease-binder design flow built on RFD4-Proteina.
 **Scope:** how the program asks a language model, and how credentials are held.
 **Status:** implemented. Not medically verified. A model reply is not a measurement.
 

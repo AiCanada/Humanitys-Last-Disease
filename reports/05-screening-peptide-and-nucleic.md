@@ -1,6 +1,6 @@
 # Production report 5 — Screening: peptide addition and nucleic binders
 
-**Program:** `rfd4-cure`, the disease-binder design flow built on RFD4-Proteina.
+**Program:** `Humanitys-Last-Disease`, the disease-binder design flow built on RFD4-Proteina.
 **Scope:** the one axis a peptide adds to the protein set, and the three checks a nucleic
 binder gets.
 **Status:** implemented and tested. Not medically verified.
