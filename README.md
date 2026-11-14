@@ -91,7 +91,7 @@ An MCP server (Model Context Protocol server) is a lightweight program that acts
 
 For better results across all frontier models mount Via Terminal: XAI, Claude, or OpenAI to download directory running program for additional support or guidance.
 
-Mirror Access to Program from android phone
+Mirror/Control Access to Program from android or I Phone phone
 
 Program Architecture: 
 A. AI Interface
