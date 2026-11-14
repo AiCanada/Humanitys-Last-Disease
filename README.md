@@ -1,3 +1,118 @@
+DRAFT - No Updated Code Yet 
+Atomic level Structure AI Powered Binding Affinity 
+Generative protein design with rich conditioning.
+Goal: e/acc Simplified... Computation to Wet Lab. Help Guide Norms.
+Looking for Ideas or Feedback.
+Modified RFD4 as base (modified version out by year end)
+Not Medically Verified.
+
+INPUT=Disease
+
+Then Confirm selection of Disease, and select pathway to investigate.
+- Disease.
+- Relevant biological pathway.
+- Potential therapeutic mechanism.
+- Optional target protein or gene.
+The system searches for relevant biological targets and presents them in a ranked selection interface. on the choose structure page 
+
+This is important because a disease can involve multiple pathways, proteins, and mechanisms.
+For example, targeting a protein involved in disease progression is not necessarily equivalent to targeting a protein responsible for initiating the disease.
+
+Total of (selected) diseased structures provided by program searching 8 databases is displayed with rankings of instances found:
+UniProt, 
+NCBI Gene, 
+STRING, 
+IntAct, 
+Human Protein Atlas, 
+PRIDE, 
+PeptideAtlas, 
+Therapeutic Target Database,
+
+Any Additional diseased structures found via LLM search added to list 
+
+Each structure is then ranked by LLM/Bot for Binding 
+
+Screening test after generation (needing more work)
+
+Protein and peptide
+• Immunogenicity, Calis 2013 class I 9-mer
+• Proteome off-target, exact distinct 9-mer
+• MHC class I, from a local predictor table
+• MHC class II, from a local predictor table
+• ADA, Paul et al. 2015 DR-panel breadth
+• Paralog, UniRef50, with a co-evolution note beside it
+• Plasma abundance, Human Protein Atlas
+• Plasma hub, STRING physical score 700
+• Plasma fold, from plasma_fold.tsv plus a named study
+• Sequence developability, GRAVY and instability index
+• Chemical liability: deamidation (NG, NS), isomerization (DG), N-glycosylation (NXS, NXT), methionine, tryptophan, free cysteine, isoelectric point, and net charge at pH 7.4
+• Furin cleavage (RXKR, RXRR)
+• Asp-Pro acid-labile bond
+• N-terminal glutamine
+• Nonstandard residues, by position
+• Longest same-residue run
+• Longest hydrophobic run
+• Aliphatic index
+• Average molecular weight
+
+Peptide, added to the protein list
+• Membrane, when the caller supplies that axis
+
+Nucleic
+• Off-target hybridization, when the caller supplies that axis
+• Innate immune, when the caller supplies that axis
+• GC fraction
+• CpG count
+• Longest G run
+
+Ligand
+• hERG
+• Nav1.5
+• CYP3A4
+• CYP2D6
+• CYP2C9
+• CYP1A2
+• CYP2C19
+• P-gp
+• BCRP
+• BSEP
+• Formula weight, from the cell or from the chemical formula
+
+
+Structure and binder visual presentation after generation
+
+OUTPUT=Target Binder, identifying promising candidates for experimental validation and potentially therapeutic development.
+
+An MCP server (Model Context Protocol server) is a lightweight program that acts as a universal bridge, allowing AI assistants and agents (like Claude, Cursor, or custom LLMs) to securely connect to external tools, data sources, and workflows.
+
+For better results across all frontier models mount Via Terminal: XAI, Claude, or OpenAI to download directory running program for additional support or guidance.
+
+Mirror Access to Program from android phone
+
+Program Architecture: 
+A. AI Interface
+- OpenAI
+- Claude
+- xAI
+- Other compatible models
+B. MCP Integration Layer
+- Database retrieval.
+- Protein structure retrieval.
+- Sequence processing.
+- Generative design execution.
+- Screening pipeline execution.
+- Results retrieval.
+C. Computational Backend
+- Modified RFD4.
+- GPU processing.
+- Structural prediction.
+- Docking.
+- Binding assessment.
+- Candidate ranking.
+
+
+
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/RosettaCommons/RFD4-Proteina/main/docs/_static/wordmark-dark.webp">
