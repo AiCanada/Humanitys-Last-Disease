@@ -3,9 +3,13 @@ DRAFT - No Updated Code Yet
 Atomic level Structure AI Powered Binding Affinity 
 
 Generative protein design with rich conditioning.
+
 Goal: e/acc Simplified... Computation to Wet Lab. Help Guide Norms.
+
 Looking for Ideas or Feedback.
+
 Modified RFD4 as base (modified version out by year end)
+
 Not Medically Verified.
 
 INPUT=Disease
