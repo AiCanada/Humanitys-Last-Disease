@@ -1,0 +1,4 @@
+# Scoped to the reports on purpose. A repo-wide "* text=auto eol=lf" would mark
+# every file of the inherited tree for renormalisation and produce a diff of
+# thousands of line-ending-only changes.
+reports/*.md text eol=lf
