@@ -15,7 +15,7 @@ is published.
 
 | Component | Path |
 |---|---|
-| Server (JSON-RPC over stdio) | `scripts/rfd4_cure_mcp.py` |
+| Server (JSON-RPC over stdio) | `scripts/humanitys_last_disease_mcp.py` |
 | Tool implementations | `src/rfproteina/disease/mcp_api.py` |
 | Three-layer self-description and stored-state readers | `src/rfproteina/disease/mcp_layers.py` |
 | Subprocess execution and cancellation | `src/rfproteina/disease/dispatch.py` |
@@ -28,7 +28,7 @@ A hand-written JSON-RPC stdio server. It does not use an MCP SDK. It is register
 single server:
 
 ```json
-{"mcpServers": {"Humanitys-Last-Disease": {"command": "python", "args": ["-u", "scripts/rfd4_cure_mcp.py"]}}}
+{"mcpServers": {"Humanitys-Last-Disease": {"command": "python", "args": ["-u", "scripts/humanitys_last_disease_mcp.py"]}}}
 ```
 
 Tools are dispatched **in process** by `call_tool()` in `mcp_api.py`. The server does not
@@ -46,7 +46,7 @@ shim.
 
 ## The ten tools
 
-Descriptions are the tools' own, as declared in `scripts/rfd4_cure_mcp.py`.
+Descriptions are the tools' own, as declared in `scripts/humanitys_last_disease_mcp.py`.
 
 | Tool | Declared behaviour |
 |---|---|
