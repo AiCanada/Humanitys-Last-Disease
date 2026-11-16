@@ -1,4 +1,4 @@
-DRAFT - No Updated Code Yet 
+DRAFT 
 
 Atomic level Structure AI Powered Binding Affinity 
 
@@ -94,19 +94,19 @@ For better results across all frontier models mount Via Terminal: XAI, Claude, o
 Mirror/Control Access to Program from android or I Phone phone
 
 Program Architecture: 
-A. AI Interface
+- A. AI Interface
 - OpenAI
 - Claude
 - xAI
 - Other compatible models
-B. MCP Integration Layer
+- B. MCP Integration Layer
 - Database retrieval.
 - Protein structure retrieval.
 - Sequence processing.
 - Generative design execution.
 - Screening pipeline execution.
 - Results retrieval.
-C. Computational Backend
+- C. Computational Backend
 - Modified RFD4.
 - GPU processing.
 - Structural prediction.
@@ -114,7 +114,7 @@ C. Computational Backend
 - Binding assessment.
 - Candidate ranking.
   
-RFD4 as base details below: (modified version out by year end)
+- RFD4 as base details below: (modified version out by year end)
 
 
 
