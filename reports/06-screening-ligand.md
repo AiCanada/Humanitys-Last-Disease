@@ -71,8 +71,10 @@ reader are precisely the ones that move one protein's number onto another protei
 - a concentration attributed to no protein, or to two of them.
 
 Where the table parses but a single cell does not, that axis stays `untested` rather than
-taking a neighbouring value. Where the file itself is unreadable, nothing on the panel is
-judged.
+taking a neighbouring value — unless another cell for that same axis already measured a hit,
+which stands, because an unreadable sibling cell may not delete a liability the table
+measured. The carve-out runs one way only: a `clear` beside a spoiled sibling is withheld.
+Where the file itself is unreadable, nothing on the panel is judged.
 
 ## The bars
 

@@ -63,41 +63,47 @@ Both orientations are searched because an antisense oligo hybridizes where a tra
 carries its reverse complement, while a sense or passenger strand hybridizes as itself. `U`
 is read as `T` throughout, so an RNA design and a DNA reference compare.
 
-**Why 15 and not a seed-region 7.** Fifteen is the width at which a perfect match stops
-being an accident: 4¹⁵ is 1.07 × 10⁹, past the roughly 3 × 10⁸ bases of a human
-transcriptome read on both strands, whereas 4⁷ is 16 384 and every 7-mer occurs in such a
-file thousands of times over. A 7-mer screen would mark every oligo and mean nothing. This
-is the same arithmetic behind the ≥ 15-nt perfect-complementarity rule used for antisense
-off-target triage, and it is why a seed-region match alone is not screened here.
+**Why 15 and not a seed-region 7.** Fifteen is the ≥ 15-nt perfect-complementarity width
+used for antisense off-target triage, adopted as that convention. Fifteen does **not** make
+a perfect match rare: 4¹⁵ is 1.07 × 10⁹ against the roughly 3 × 10⁸ bases of a human
+transcriptome, so any one 15-mer is expected 0.28 times in it and a design presents
+2 × (len − 14) seeds. The seed is not shorter because 4⁷ is 16 384 and every 7-mer occurs in such a
+file thousands of times over — a 7-mer screen would mark every oligo and mean nothing — and
+it is why a seed-region match alone is not screened here.
 
 | Outcome | Condition |
 |---|---|
-| `hit` | one or more seeds occur in the reference |
+| `hit` | one or more seeds occur in the reference — a pointer to read, not an off-target count |
 | `clear` | none do |
 | `untested` | no reference configured, unreadable, empty, too large, or **too small to support a clear** (below one million bases) |
 | `untested` | the design is shorter than one seed |
 
-A clear is a statement about one file, so the file's base count, digest and name are stored
+A hit is a pointer into the reference for someone to read, not a count of off-targets. A
+clear is a statement about one file, so the file's base count, digest and name are stored
 beside it. The scan is blocked with a seed's worth of overlap carried between blocks, so a
 match straddling a block boundary is still found and the whole reference is never held in
 memory.
 
 ## Innate immune
 
-The **TLR9 CpG consensus**: purine–purine–CG–pyrimidine–pyrimidine (Krieg 1995; the optimal
-human hexamer of Hartmann 2000 is one instance of it).
+The **two published TLR9 CpG motifs**, either of which is a hit: the murine consensus
+purine–purine–CG–pyrimidine–pyrimidine, whose optimal hexamer is `GACGTT` (Krieg 1995), and
+the optimal **human** hexamer `GTCGTT` (Hartmann 2000). `GTCGTT` is **not** an instance of
+the murine consensus — its second base is a pyrimidine — and ODN built on the murine formula
+show no or only weak activity in human cells, so neither rule stands for the other and the
+two are never merged.
 
 | Outcome | Condition |
 |---|---|
-| `hit` | the design carries a consensus hexamer; the count and one-based positions are stored |
-| `untested` — `no_pass_cut` | CpG present, never in the consensus; the CpG count is kept |
+| `hit` | the design carries either consensus hexamer; the count, the one-based positions, and the motif that fired at each are stored |
+| `untested` — `cpg_not_consensus` | CpG present, none of it in either consensus hexamer; the CpG count is kept |
 | `untested` — `cpg_free_not_evidence` | **no CpG at all** |
 
-A CpG-free oligo is deliberately **not** a clear. It cannot present the CpG motif — but
+A CpG-free oligo is deliberately **not** a clear. It cannot present either motif — but
 TLR9 is not the only innate sensor an oligo meets; RIG-I, TLR3, TLR7 and TLR8 and the
 backbone chemistry are all outside what a sequence consensus can answer. This is the same
-refusal the paralog axis makes for a singleton cluster, and a clear here is curated by
-someone who can speak for the rest, with a recorded reason.
+refusal the paralog axis makes for a singleton cluster Compara cannot resolve, and a clear
+here is curated by someone who can speak for the rest, with a recorded reason.
 
 ## Nucleic drug-type report
 
@@ -110,8 +116,8 @@ Reported, not judged, and it moves no verdict:
 ## The oligo bar
 
 The nucleic bar is these two axes and nothing else. With a reference supplied, off-target
-hybridization clears from a measurement; innate immune is curated, exactly as paralog is for
-a protein. Without the reference the bar cannot be reached even with the curated clear in
+hybridization clears from a measurement; innate immune is curated, as paralog is for a
+protein wherever Compara cannot resolve a singleton. Without the reference the bar cannot be reached even with the curated clear in
 place — which is the point: it is reachable, not given away.
 
 ## Run-level roll-up

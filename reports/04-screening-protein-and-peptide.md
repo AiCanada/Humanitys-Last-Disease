@@ -107,12 +107,15 @@ missing.
 
 `hit` when another reviewed human protein shares the target's UniRef50 cluster.
 
-**There is no measured clear.** The absence of a cluster-mate is not evidence of absence: a
-UniRef50 cluster is built around a representative and does not gather a protein's
-near-identical relatives, so well-known targets come back as singletons while having exactly
-the families a binder would cross-react with. A singleton is recorded as *not evidence* and
-a clear here must be curated by a person — and a curated clear records the reason and source
-it rests on.
+**UniRef50 membership alone gives no measured clear.** The absence of a cluster-mate is not
+evidence of absence: a UniRef50 cluster is built around a representative and does not gather
+a protein's near-identical relatives, so well-known targets come back as singletons while
+having exactly the families a binder would cross-react with. A singleton is handed to
+Ensembl Compara when `--paralog-identity-max` is named, and a closest-paralog identity below
+that cut is a measured clear, stored with its method and the cut it was taken against. Where
+Compara cannot answer, or where no cut was named, the singleton is recorded as *not
+evidence* and a clear here must be curated by a person — and a curated clear records the
+reason and source it rests on.
 
 Beside the axis sits a **co-evolution note**, read from a supplied table: whether the same
 shape exists in another species, whether co-evolution is high or low, and whether the
@@ -138,11 +141,13 @@ These axes run outside the sequence gate, since they say nothing about the desig
 | Measure | Cut | Basis |
 |---|---|---|
 | GRAVY | ≤ 0.1 | program convention |
-| Instability index | ≤ 40.0 | ExPASy ProtParam, Guruprasad 1990 |
+| Instability index | < 40.0 — strict; exactly 40.0 fails | ExPASy ProtParam, Guruprasad 1990 |
 
-Both are computed from the designed chain. This is **not** the repository's
-`developability` pass criterion, which additionally bounds Rosetta SAP and hydrophobic
-exposed surface area — those are not run here, and the screen says so.
+Both are computed from the designed chain. The instability comparison is strict because the
+published rule is; the GRAVY comparison stays inclusive because 0.1 is a program convention
+with no published equality rule. This is **not** the repository's `developability` pass
+criterion, which additionally bounds Rosetta SAP and hydrophobic exposed surface area —
+those are not run here, and the screen says so.
 
 ## Chemical liability
 

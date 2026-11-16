@@ -37,7 +37,7 @@ the shape does — and it once did not: the record gained roughly fourteen top-l
 while the version stayed at 1, so records of two different shapes both claimed to be shape 1.
 
 Raising it is therefore **no longer left to memory**. The code declares its own key sets
-(19 always present, 12 present only when there is something to say), and a test pins both
+(20 always present, 12 present only when there is something to say), and a test pins both
 sets as literals *beside* the version number. Adding a key fails that test, and the fix puts
 the version in front of whoever is editing it.
 
@@ -82,7 +82,10 @@ are **refusals, not failures to read**:
   having swallowed the rows after it — so a failing design can disappear and leave the
   passes behind it looking like the whole run.
 
-A refused table measures nothing: every flag reads absent and the call stays `untested`.
+A refused table measures nothing: every flag it feeds reads absent, and nothing in it can
+lift an axis to a clear. The call is taken from the axes, not from this table, so a verdict
+can still read `screened_clear` beside a refused table — `metrics_blocker` is what tells a
+reader the per-design flags behind it were never read.
 
 ### `row_blocker` — which row measured this design
 
@@ -160,8 +163,10 @@ prevent.
 ## Naming every silence
 
 Across every axis, a check that could not decide records **why**, from a fixed vocabulary,
-and the closed page prints each one together with what to do about it. The reference
-documents every blocker in a table with its meaning and its remedy.
+and the closed page prints each one, with what to do about it wherever there is something
+the reader can do. The reference collects most of that vocabulary in a table with each
+blocker's meaning and its remedy — 112 of the 127 names; the rest appear only in its prose,
+or not yet at all.
 
 This is the property that makes the rest trustworthy: the screen does not fill a gap with a
 guess, and an absence never reads as a pass.

@@ -36,9 +36,12 @@ process. The stages are separable and each one is inspectable before the next:
    *"Nothing is executed."*
 4. **Choose the model.** See *Which weights* below. The binder kind can be switched per
    run, which rebuilds a non-persistent buffer and loads no different weights.
-5. **Execute.** One function spawns children, local and remote concurrently. Every child is
-   registered so it can be terminated, which is what makes the MCP cancellation hook real
-   rather than advisory.
+5. **Execute.** One function spawns children, local and remote concurrently. Every
+   *generation* child is registered so it can be terminated, which is what makes the MCP
+   cancellation hook act on a live process rather than only on a flag. The module calls this
+   best effort: for a remote host the signal reaches the local `ssh`, not the job on the
+   other machine, and a file copy already in flight is not held at all. The `ssh mkdir` and
+   `scp` children of each remote leg are not registered.
 
 **The disease package itself never touches a GPU.** The accelerator is configured for the
 generation program, which the disease flow invokes as a subprocess.

@@ -74,6 +74,8 @@ environment variable:
 - `master.key` — 32 random bytes, generated on first write.
 
 Both are written mode `0600` into a `0700` directory, by atomic temporary file and rename.
+Those modes are POSIX-only: on Windows `os.chmod` sets just the read-only attribute, and the
+files inherit the parent directory's ACL.
 `refuse_repository_key_store()` runs before **every** write, so the store can never land
 inside a checkout.
 
@@ -97,10 +99,12 @@ On Linux the identifier is present, so the ciphertext is bound to the machine as
 tag resolves to the fixed constant and the derivation reduces to `master.key` alone.** The
 binding is therefore platform-dependent, and this is a Windows-primary project.
 
-This is not a flaw in the file permissions or the atomic writes, and it is the ordinary
-threat model for a local credential store: the protection that matters is the `0600`/`0700`
-directory outside the repository. It is recorded here because "encrypted and machine-bound"
-would be an overstatement on the platform the program mostly runs on.
+This is not a flaw in the atomic writes, and it is the ordinary threat model for a local
+credential store: the protection that matters is the store's location outside the
+repository — enforced under POSIX by the `0600`/`0700` modes, and under Windows by the
+user-profile ACL rather than by those mode bits, since `os.chmod` does not apply them there.
+It is recorded here because "encrypted and machine-bound" would be an overstatement on the
+platform the program mostly runs on, and so would leaning on those mode bits there.
 
 ### Keeping keys out of records
 

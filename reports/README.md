@@ -10,7 +10,7 @@ prediction. A clear screen is a computational result; it is not experimental val
 
 | # | Report | Subject |
 |---|---|---|
-| 1 | [MCP Integration Layer](01-mcp-integration-layer.md) | The ten tools an assistant drives the program through, which of the six declared capabilities are live, and the safety properties of the server |
+| 1 | [MCP Integration Layer](01-mcp-integration-layer.md) | The ten tools an assistant drives the program through, which of the eight declared capabilities are live, and the safety properties of the server |
 | 2 | [AI Interface](02-ai-interface.md) | The five model providers, the desktop-application path, and how credentials are held |
 | 3 | [Computational Backend](03-computational-backend.md) | Generation and evaluation, the plan-then-execute split, and what is not present — including docking and binding affinity |
 
@@ -37,8 +37,10 @@ carries all four so the claim can be checked rather than trusted.
 
 It does not mean a design binds, is safe, or is developable.
 
-Two axes refuse a measured clear by design, because for them an absence of evidence is not
-evidence of absence. Those clear only by a declared, reasoned judgement from a person.
+One axis refuses a measured clear by design — innate immune — because for it an absence of
+evidence is not evidence of absence, and it clears only by a declared, reasoned judgement
+from a person. Paralog's UniRef50 clustering refuses one too, but a singleton goes to
+Ensembl Compara when an identity cut is named, which can clear it from a measurement.
 
 ## A note on paths
 

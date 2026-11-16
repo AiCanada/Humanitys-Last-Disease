@@ -20,8 +20,9 @@ here.
 ## What a bar is
 
 A **bar** is a named set of axes that must *all* be clear. One axis reading `hit` makes the
-call `axis_hit` whatever the bar; every axis in the bar clear makes it `screened_clear`;
-anything else stays `untested`.
+call `axis_hit` whatever the bar; every axis in the bar clear makes it `screened_clear`,
+unless the target is itself on the safety panel, which is recorded as `target_is_panel`
+instead; anything else stays `untested`.
 
 Twelve bars are declared:
 
@@ -34,7 +35,7 @@ Twelve bars are declared:
 
 A bar can be chosen per screen, by name. Until recently it could not: the judge had always
 accepted a bar argument and nothing ever passed one, so only each kind's default was
-reachable and nine of the twelve were declared but unselectable. A bar a kind does not have
+reachable and eight of the twelve were declared but unselectable. A bar a kind does not have
 is refused **by name, with the valid ones listed, before anything is measured** — a
 misspelling should not cost a proteome scan first.
 
@@ -56,9 +57,11 @@ table** without retraining. Every check added to this program since has therefor
 added either as a report block — which records numbers and moves no verdict — or as a
 measurement for an axis that was already declared and previously unimplemented.
 
-All 22 axes now have a measurement path, and all 12 bars are reachable by measurement. Two
-axes refuse a measured clear by design (see reports 4 and 5) and clear only by a curated,
-reasoned declaration.
+All 22 axes now have a measurement path, and all 12 bars are reachable by measurement. One
+axis refuses a measured clear by design — innate immune (report 5) — and clears only by a
+curated, reasoned declaration. Paralog's UniRef50 clustering refuses one too, but when the
+caller names an identity cut the singleton goes to Ensembl Compara, which can clear it from
+a measurement (report 4); without a cut it still clears only by declaration.
 
 ## The repository's declared pass criteria
 
@@ -80,9 +83,9 @@ writes a per-criterion pass column into the per-design metrics table.
 | `disco` | 2 |
 | `developability` | 4 |
 
-**This screen read two of them.** The interface criterion became a recorded flag and a
-pre-oracle flag was read directly; the other nine were evaluated, written into the file this
-screen opens, and discarded.
+**This screen read one of them.** The interface criterion became a recorded flag, and a
+pre-oracle filter flag — not one of the eleven — was read directly; the other ten were
+evaluated, written into the file this screen opens, and discarded.
 
 `developability` is the pointed one: it bounds Rosetta SAP and hydrophobic exposed surface
 area *alongside* the same GRAVY and instability index this screen recomputes from the
@@ -106,9 +109,10 @@ Three properties of that record:
   bar the moment the config changed.
 - One criterion borrows another's bounds by reference in the config; that reference is
   followed once, by name. Any other form of reference is reported as unresolved rather than
-  parsed. A bound this reader does not understand — a reduction over several columns, or two
-  bounds on one column — is recorded as unsupported and claims nothing, because reading a
-  reduction as a plain cut would compare the wrong number.
+  parsed. Two bounds on one column, or a spec with no recognised cut, is recorded as
+  unsupported and claims nothing. A reduction over several columns is read for its single cut
+  against the reduction's label, which is not a metrics column, so it reports no measurement
+  and claims nothing either.
 - The reported value is the **worst** any design in the run reached, so the summary cannot
   read milder than the designs it summarises. A criterion fails if any design failed it: a
   run is not a passer because one of its designs was.
@@ -123,7 +127,7 @@ differently.
 
 The interface flag has always been recorded without changing the verdict, and the other ten
 are recorded on the same terms. They are the **evaluation's** verdict, not this screen's,
-and a screen that silently adopted nine new ways to fail would change the meaning of every
+and a screen that silently adopted ten new ways to fail would change the meaning of every
 stored call that had none of them.
 
 ## Reading a verdict correctly

@@ -65,13 +65,15 @@ Each tool carries MCP annotations. Only `run` and `screen_directory` declare
 `readOnlyHint: false`, `destructiveHint: true`, `openWorldHint: true`. The other eight
 declare `readOnlyHint: true`, `openWorldHint: false`.
 
-## The six declared capabilities, and what each one actually does
+## The eight declared capabilities, and what each one actually does
 
 `describe_architecture()` in `mcp_layers.py` declares the capability-to-tool mapping. The
 third column is the part a reader needs and the tool names do not convey.
 
 | Capability | Tool | What it does |
 |---|---|---|
+| Program options | `list_options` | Lists the option names `run` accepts. Starts nothing. |
+| Verdict retrieval | `read_verdict` | **Reads stored verdicts with their per-axis evidence. Rescreens nothing.** |
 | Database retrieval | `retrieve_databases` | **Reads stored JSON. Contacts no database.** |
 | Protein structure retrieval | `retrieve_structures` | **Reads stored rows. Downloads nothing.** |
 | Sequence processing | `read_sequence_measures` | **Reads stored measurements.** Returns no sequence text. |
@@ -79,7 +81,7 @@ third column is the part a reader needs and the tool names do not convey.
 | Screening pipeline execution | `screen_directory` | Live. Contacts public databases only when `lookup_targets` is true. |
 | Results retrieval | `read_results` | Reads stored records. |
 
-**Four of the six are read-only views of files on disk, not the retrieval their names
+**Six of the eight are read-only views of files on disk, not the retrieval their names
 suggest.** The real database traffic and the real structure downloads happen inside `run`,
 or inside `screen_directory` with `lookup_targets` enabled. This is deliberate and the
 module says so in its own docstring: *"None of these calls starts a model, a GPU job,
@@ -89,7 +91,8 @@ than an empty result, so absence of a record is distinguishable from a record of
 ## Safety properties
 
 **Path confinement.** A requested directory is used as given unless `RFD4_MCP_ROOTS` names
-the directories the server may read, in which case a path outside them is refused.
+directories the server may use, in which case every path must resolve inside this checkout
+**or** one of those directories, and a path outside both is refused.
 
 **No sequence leaves the server.** Designed sequence text is dropped on the way out, by
 key name and by residue-run pattern. `read_sequence_measures` returns the measurements of a
@@ -107,12 +110,19 @@ unexpected failure and the prompt loop would ask again forever. Deriving from
 `BaseException` passes straight through that handler.
 
 **Cancellation.** `stop_work()` is not a tool; it is a hook into `dispatch.stop_running()`,
-which terminates registered child processes. Every subprocess the program starts is
-registered so it can be stopped.
+which terminates registered child processes. Generation children are registered, so it can
+terminate them. It is best effort by the code's own account: a remote job receives the
+signal only at the local `ssh`, a file copy already in flight is not held at all, and the
+program's short-lived helpers (`scp`, `reg.exe`, PowerShell, the browser opener) are not
+registered.
 
-**Rate policy.** Outbound requests to public services are paced per host by
-`limits.py`, and every request carries an identifying user agent. One service is paced to
-its published rate; the rest are given a deliberately conservative concurrency cap.
+**Rate policy.** Outbound requests are paced per host by `limits.py` wherever the caller
+takes a `limits.slot()` — the JSON readers in `sources.py` and `research.py`. One service is
+paced to its published rate; the rest are given a deliberately conservative concurrency cap.
+The structure mmCIF download, the screening-table HEAD and body fetches, and the
+predicted-model fetch take no slot and are unpaced; the structure download also sends only
+an `Accept` header, so it goes out under the bare interpreter user agent rather than this
+program's.
 
 ## What this layer does not do
 
