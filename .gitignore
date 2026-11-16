@@ -263,11 +263,12 @@ tests/data/pdb/*
 **/inference/
 **/inference_samples/
 **/inference_metrics/
-# Finished disease-panel generations stay in the repository.
-!disease_runs/**/inference_samples/
-!disease_runs/**/inference_samples/**
-!disease_runs/**/inference_metrics/
-!disease_runs/**/inference_metrics/**
+# Finished disease-panel generations stay on the machine that made them and
+# out of git entirely. This repository's only remote is the public destination
+# named in AGENTS.md, so a tracked run output is one `git push` away from being
+# published permanently. Ignoring the whole directory makes that impossible
+# rather than merely discouraged; the files themselves are untouched on disk.
+disease_runs/
 **/evaluation_results*/
 **/slurm_run_outputs/
 **/slurm_logs/

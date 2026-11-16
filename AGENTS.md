@@ -29,7 +29,7 @@ personal data or a secret is still in the content that would leave this machine.
 - Remove secrets. That includes API keys, access tokens, passwords, private keys, and
   authorization headers, including values that start with `sk-`, `xai-`, `nvapi-`, `hf_`,
   `ghp_`, `github_pat_`, or `AKIA`, and any `Authorization: Bearer` token.
-- Do not commit or push `api_keys.json`, `master.key`, `Humanitys-Last-Disease.log`,
+- Do not commit or push `api_keys.json`, `master.key`,
   secret `.env` files, or anything under `~/.config/Humanitys-Last-Disease`.
 - Text saved for a later upload goes through `scrub_for_upload`. A path written into a
   tracked file goes through `repository_relative`.
@@ -52,12 +52,14 @@ of a public upstream, so pushed objects stay fetchable from that fork network ev
 the repository is later made private. Treat every push as irreversible publication and
 apply [Before every commit or push](#before-every-commit-or-push) to all of it.
 
-Authorized: the production report documents. Not authorized without asking: the disease
-source, run outputs, checkpoints, credentials, and anything else in this checkout.
+Not authorized without asking: run outputs, checkpoints, credentials, and anything else
+in this checkout that is not already tracked.
 
-This checkout's `origin` is `https://github.com/AiCanada/RFD4-Proteina.git`. Do not use
-that remote for the disease work, and do not add a remote to this checkout. Clone the
-destination into its own directory outside the checkout.
+This checkout's `origin` is that destination, and it is the only checkout: the separate
+publication clone is gone, so what is committed here is what gets published. Run outputs
+are the one thing that must never follow. `disease_runs/` is ignored outright rather than
+merely left uncommitted, because a tracked run output would be one `git push` from being
+public permanently. Keep it that way; do not add a negation rule to re-include part of it.
 
 ## Choose the workflow
 
