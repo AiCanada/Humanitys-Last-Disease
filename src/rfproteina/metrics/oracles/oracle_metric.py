@@ -125,6 +125,42 @@ _CHAIN_PAIR_METRICS: list[tuple[str, str, float]] = [
 ]
 
 
+def chain_order_from_confidences(summary_confidences: dict, full_confidences: dict | None = None) -> list[str]:
+    """The chain order the ``chain_*`` arrays and ``chain_pair_*`` matrices use.
+
+    ``chain_ids`` is the obvious source and is **not always written**. It is a
+    local-only key of AlphaFold 3's summary: the hosted AlphaFold Server's
+    summary has exactly ten keys and that is not one of them, and an older local
+    AlphaFold 3 wrote a nine-key summary without it either.
+
+    Read as an empty list, as it was, the consequences are silent and total.
+    :func:`extract_confidence_metrics` then iterates ``combinations(range(0))``
+    and emits no chain-pair metric at all, and ``chain_of_interest not in []``
+    returns before every per-chain and interface value -- so ``ptm_coi``,
+    ``ipae_coi``, ``min_ipae_coi`` and ``iptm_coi`` all vanish from a refold
+    that computed them. Nothing raises. The design simply reads as refolded
+    with no interface numbers, which is exactly what a binder refold exists to
+    produce, and the pass criteria then report those bounds as unmet.
+
+    So the order is derived instead, the way AlphaFold 3's own
+    ``StructureConfidenceSummary.from_inference_result`` derives it: the
+    first-appearance order of ``token_chain_ids`` in the full confidences. That
+    is the same array the matrices are indexed by, so it is not a guess at the
+    order -- it is the order.
+
+    Returns an empty list only when neither source says anything, which is
+    still better than a wrong order: no metric is safer than a metric attributed
+    to the wrong chain.
+    """
+    declared = summary_confidences.get("chain_ids")
+    if isinstance(declared, list) and declared:
+        return [str(chain) for chain in declared]
+    tokens = (full_confidences or {}).get("token_chain_ids")
+    if isinstance(tokens, list) and tokens:
+        return list(dict.fromkeys(str(chain) for chain in tokens))
+    return []
+
+
 def extract_confidence_metrics(
     summary_confidences: dict,
     chain_of_interest: Any | None,
@@ -342,6 +378,7 @@ class OracleMetric(Metric):
 
         Returns the metrics dict (the same one that was just persisted).
         """
+        raise TypeError(f"{type(self).__name__} does not implement fold_one().")
 
     @abstractmethod
     def fold_batch(self, jobs: list[OracleJobInput]) -> int:
@@ -352,6 +389,7 @@ class OracleMetric(Metric):
           Implementations that skip already-cached designs must still count
           them: callers compare this against ``len(jobs)`` to assert coverage.
         """
+        raise TypeError(f"{type(self).__name__} does not implement fold_batch().")
 
     def apply_transform(self, jobs: list[OracleJobInput]) -> list[OracleJobInput]:
         """Apply :attr:`pre_oracle_transform` to each job's atom_array (if set).

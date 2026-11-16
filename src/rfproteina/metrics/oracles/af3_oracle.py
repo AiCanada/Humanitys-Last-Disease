@@ -16,6 +16,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from datetime import date
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +36,12 @@ from biotite.structure.io.pdbx import CIFFile
 from biotite.structure.residues import apply_residue_wise, residue_iter, spread_residue_wise
 
 from rfproteina.af3.af3_apptainer import build_apptainer_fold_command
-from rfproteina.metrics.oracles.oracle_metric import OracleJobInput, OracleMetric, extract_confidence_metrics
+from rfproteina.metrics.oracles.oracle_metric import (
+    OracleJobInput,
+    OracleMetric,
+    chain_order_from_confidences,
+    extract_confidence_metrics,
+)
 from rfproteina.transforms.utils.conditioning_utils import align_atom_array_to_input_frame
 from rfproteina.utils.chain import get_chain_of_interest
 from rfproteina.utils.ddp import RankedLogger
@@ -268,6 +274,39 @@ def _is_implicit_backbone_link(res_name_i: str, atom_name_i: str, res_name_j: st
 
 
 _OF3_PROVENANCE_FILENAME = "of3_ported_weights.provenance.json"
+#: Decompression bound for AF3's full confidences JSON. Its arrays are O(tokens²)
+#: -- a 5,000-token job's PAE matrix alone is 25 million numbers -- so the bound
+#: is generous, but a compressed file is still not allowed to expand without one.
+_FULL_CONFIDENCE_LIMIT = 2 * 1024 * 1024 * 1024
+
+
+@cache
+def _full_confidence_errors() -> tuple[type[BaseException], ...]:
+    """Every error reading the full confidences can raise, the zstd module's own included.
+
+    ``zstandard.ZstdError`` subclasses ``Exception`` and not ``ValueError``, so
+    catching the usual read errors left a truncated or mislabelled
+    ``_confidences.json.zst`` -- what an interrupted copy produces -- to escape
+    and take the refold with it. That is the opposite of the contract the caller
+    reads :py:meth:`AF3Oracle._parse_af3_full_confidences` under, where an
+    unusable file means no chain order rather than no refold. Hitting
+    :py:data:`_FULL_CONFIDENCE_LIMIT` raises the same error, so the bound that
+    exists to contain a huge file would otherwise have crashed on one.
+
+    The same trap is guarded the same way in
+    :py:func:`rfproteina.disease.screen._read_errors`.
+    """
+    errors: tuple[type[BaseException], ...] = (OSError, UnicodeError, ValueError, ImportError)
+    try:
+        import zstandard
+    except ImportError:
+        return errors
+    found = getattr(zstandard, "ZstdError", None)
+    if isinstance(found, type) and issubclass(found, BaseException):
+        return (*errors, found)
+    return errors
+
+
 # Custom CCD codes shaped like the one tests/e2e uses for its user-CCD heme.
 _ATOMIZED_CODE_FORMAT = "L:{index}"
 
@@ -420,6 +459,12 @@ class AF3Oracle(OracleMetric):
             the CIF; see ``folding_input.from_mmcif``). When ``False``, res_ids are
             collapsed to a contiguous ``1..N`` per chain via
             :py:meth:`_renumber_res_ids_per_chain` before folding.
+        cached_only: Read refolds that are already on disk and fold nothing. No
+            daemon is started, so no AlphaFold 3 image, weights or GPU are
+            needed. This is the mode for refolds produced elsewhere -- the
+            hosted AlphaFold Server, another machine -- and filed by
+            :py:mod:`rfproteina.metrics.oracles.imported_refolds`. A design with
+            no refold on disk raises rather than being counted as folded.
     """
 
     def __init__(
@@ -429,12 +474,14 @@ class AF3Oracle(OracleMetric):
         extra_af3_flags: list[str] | None = None,
         seed: int | None = None,
         preserve_res_id: bool = True,
+        cached_only: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(oracle_name=oracle_name, template_query=template_query, **kwargs)
         self.extra_flags = extra_af3_flags or []
         self.seed = seed
         self.preserve_res_id = preserve_res_id
+        self.cached_only = cached_only
 
     # ------------------------------------------------------------------
     # OracleMetric framework hooks
@@ -445,8 +492,21 @@ class AF3Oracle(OracleMetric):
 
         Called only when this oracle's tags matched a validation set, so a run that
         never refolds never pays the worker's ~10 GB.
+
+        ``cached_only`` starts nothing. Reading a refold that is already on disk
+        needs no model, no image and no weights -- and that is the whole case
+        for :py:mod:`rfproteina.metrics.oracles.imported_refolds`, where the fold
+        was produced somewhere this machine cannot run. Without this, turning a
+        refolding tag on to *read* such a fold would launch the daemon and fail
+        for want of the very runtime the import existed to avoid.
         """
         super().setup()
+        if self.cached_only:
+            logger.info(
+                f"{self.oracle_name}: cached_only, so no AF3 daemon is started. "
+                "Refolds already on disk are read; a design without one is not folded."
+            )
+            return
 
         # A slurm launcher (or the shebang wrapper) already pre-spawned the daemons.
         if template := os.environ.get("AF3_LAUNCHER_SOCKET_TEMPLATE"):
@@ -529,6 +589,17 @@ class AF3Oracle(OracleMetric):
         n_cached = len(jobs) - len(pending)
         if not pending:
             return n_cached
+        if self.cached_only:
+            # Said, not silently counted as zero. A caller reading imported
+            # refolds wants to know which designs have none, and a run that
+            # quietly reported a short denominator would look like a pass rate.
+            missing = ", ".join(sorted(job.example_id for job in pending)[:10])
+            raise RuntimeError(
+                f"{self.oracle_name}: cached_only, so nothing is folded, and "
+                f"{len(pending)} of {len(jobs)} design(s) have no refold on disk: {missing}"
+                f"{' ...' if len(pending) > 10 else ''}. Import them first "
+                "(rfd4-af3server retrieve), or unset cached_only to fold locally."
+            )
 
         daemon_rank = _resolve_daemon_rank(_resolve_local_rank())
 
@@ -756,7 +827,14 @@ class AF3Oracle(OracleMetric):
             if not coi_unambiguous:
                 chain_of_interest = None
 
-        af3_chain_ids_in_order: list[str] = summary_confidences.get("chain_ids", [])
+        # Derived rather than read: `chain_ids` is a local-only key of AF3's
+        # summary and is absent from older local runs as well as from every
+        # hosted AlphaFold Server result. Read as [] it silently removed every
+        # per-chain and interface metric -- see chain_order_from_confidences.
+        af3_chain_ids_in_order = chain_order_from_confidences(
+            summary_confidences,
+            self._parse_af3_full_confidences(state.af3_output_dir, state.job_name),
+        )
         if state.af3_chain_id_to_original_iid is not None:
             chains_in_order = [state.af3_chain_id_to_original_iid.get(c) for c in af3_chain_ids_in_order]
         else:
@@ -947,6 +1025,34 @@ class AF3Oracle(OracleMetric):
             return None
         with open(json_path) as f:
             return json.load(f)
+
+    def _parse_af3_full_confidences(self, af3_output_dir: Path, job_name: str) -> dict | None:
+        """Parse AF3's full confidences JSON, which carries ``token_chain_ids``.
+
+        Only needed when the summary does not name its own chain order, which is
+        the case for an older AlphaFold 3 and for every hosted AlphaFold Server
+        result. Absent is not an error: the caller falls back to no chain order,
+        which is what it did unconditionally before.
+
+        ``--compress_large_output_files`` zstd-compresses this file and not the
+        summary beside it, so both spellings are looked for.
+        """
+        for name in (f"{job_name}_confidences.json", f"{job_name}_confidences.json.zst"):
+            path = af3_output_dir / name
+            if not path.exists():
+                continue
+            try:
+                raw = path.read_bytes()
+                if name.endswith(".zst"):
+                    import zstandard
+
+                    raw = zstandard.ZstdDecompressor().decompress(raw, max_output_size=_FULL_CONFIDENCE_LIMIT)
+                loaded = json.loads(raw.decode("utf-8"))
+            except _full_confidence_errors() as exc:
+                logger.warning(f"AF3 full confidences at {path} could not be read: {exc}")
+                return None
+            return loaded if isinstance(loaded, dict) else None
+        return None
 
     # ------------------------------------------------------------------
     # Chain / atom remapping helpers

@@ -9,6 +9,12 @@ refolding is its own metric family and how a design can carry more than one refo
 [metrics reference](../reference/metrics.md); for how individual refolds get named, see the
 [output format reference](../reference/output-format.md).
 
+If you cannot run an oracle locally — the AlphaFold 3 weights are licence-gated and the container
+runtime may be unavailable — you can refold a handful of designs on the free hosted AlphaFold Server
+instead and file the results at these same canonical paths. See
+[Refold on the hosted AlphaFold Server](af3-server.md). It is a way to check what the model produced,
+not a screening backend: that account allows 30 jobs a day.
+
 ## Set up the oracle
 
 Refolding needs a structure prediction **oracle**, which runs in a separate runtime from

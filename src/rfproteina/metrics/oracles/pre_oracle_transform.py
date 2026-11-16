@@ -37,6 +37,10 @@ from atomworks.ml.transforms.atom_array import add_global_atom_id_annotation
 from atomworks.ml.transforms.crop import get_token_count
 from biotite.structure import AtomArray
 
+# rfproteina's own standard annotations register themselves on import, and
+# STANDARD_ANNOTATIONS is read below. Imported here rather than in the package
+# __init__, where it made every import of rfproteina load atomworks and torch.
+import rfproteina.utils.standard_annotations  # noqa: F401
 from rfproteina.transforms.utils.ppi_utils import crop_spatial_keep_full_binder
 from rfproteina.utils.chain import get_chain_of_interest
 from rfproteina.utils.ddp import RankedLogger
@@ -96,6 +100,7 @@ class PreOracleTransform(ABC):
         a design's refolds without re-running the transform — so it must match
         what ``forward`` returns.
         """
+        raise TypeError(f"{type(self).__name__} does not implement expected_save_ids().")
 
     @abstractmethod
     def forward(self, atom_array: AtomArray) -> list[PreOracleOutput]:
@@ -108,6 +113,7 @@ class PreOracleTransform(ABC):
             A non-empty list of :py:class:`PreOracleOutput` whose save_ids are
             :py:meth:`expected_save_ids`. The common case is a single-element list.
         """
+        raise TypeError(f"{type(self).__name__} does not implement forward().")
 
 
 def _binder_pn_unit_iid(atom_array: AtomArray, coi_mask: np.ndarray) -> str:
