@@ -57,6 +57,9 @@ nn:
   torch_compile_fullgraph: null
   tri_mult_backend: null
   attention_type: null
+  # Binder kind an unlabeled batch asks to be clear on, for a checkpoint trained with the
+  # combination projection. Null keeps the kind the checkpoint was trained with.
+  disease_binder_kind: null
 
 precision: bf16-mixed
 

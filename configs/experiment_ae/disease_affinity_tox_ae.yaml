@@ -1,0 +1,48 @@
+# @package _global_
+# Full fine-tune of the released autoencoder at crop 261 (256 plus the 5
+# disease tokens). The new encoder and decoder projections are zero-initialized,
+# so released weights stay identical until those layers train. fallback_policy
+# stays unset. This file does not locate class files and does not launch
+# training. A null directory refuses the released mixture. Structure files that
+# name one binder kind and one axis are the contrast. A coarse name does not
+# set an axis.
+
+defaults:
+  - /releases/ae/2026_10_15_unified_biomolecule
+  - _self_
+
+run_name_: disease_affinity_tox_ae
+_ae_crop_size: 261
+# 22 liability axes, stored as state then applicability mask.
+disease_class_condition_dim: 44
+
+pretrain_ckpt_path: ${oc.env:DATA_PATH}/ae_checkpoints/rfd4-proteina-ae-release-2026-10-19.ckpt
+
+weight_loading:
+  _target_: rfproteina.utils.weights.WeightLoadingConfig
+  default_policy: copy
+  param_policies:
+    "encoder.disease_combination.*": zero_init
+    "decoder.disease_combination.*": zero_init
+
+nn_ae:
+  disease_combination: true
+  disease_binder_kind: protein
+  # 261 is not divisible by 16.
+  use_torch_compile: false
+
+dataloaders:
+  train:
+    length_bucketing:
+      # Bucketing reads a length-metadata table aligned with the dataset's indices, and the
+      # class-file dataset carries none. prepare_disease_training also turns this off, so a
+      # run cannot reach the sampler with bucketing still on.
+      enabled: false
+
+# The class names and the condition width are checked against the module constants at
+# startup, so a config and the axis list cannot drift apart unnoticed.
+disease_class_data:
+  directory: null
+  file_limit: null
+  good_class: high_affinity_clean
+  bad_class: high_affinity_toxic

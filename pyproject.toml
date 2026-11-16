@@ -5,7 +5,7 @@ description = "Flow-matching foundation model for all-atom biomolecular design: 
 readme = "README.md"
 license-files = ["LICENSE"]
 license = "BSD-3-Clause"
-requires-python = ">=3.12,<3.15"
+requires-python = ">=3.12,<3.13"
 authors = [
     { name = "Institute for Protein Design", email = "contact@ipd.uw.edu" },
 ]
@@ -26,16 +26,13 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: Implementation :: CPython",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 dependencies = [
-    # AtomWorks 3.1 changes CIF IO and selects Biotite 2's incompatible structure API.
-    # Keep the supported 3.0 API; AtomWorks pins its compatible Biotite version.
-    "atomworks[ml,openbabel]>=3.0.4,<3.1",
+    # AtomWorks pins the exact Biotite it supports, so Biotite is only given a floor here.
+    "atomworks[ml,openbabel]>=3.0.4,<4",
     "biotite>=1.6.0",
     # Configuration & CLI (inherited from the root rc-foundry project)
     "rootutils>=1.0.7,<1.1",
@@ -71,10 +68,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-api = [
-    "fastapi>=0.133,<1",
-    "uvicorn>=0.34,<1",
-]
 docs = [
     "linkify-it-py>=2.0.0,<3",
     "myst-parser>=4.0.0,<5",
@@ -106,7 +99,7 @@ all-cuda13 = [
     "cuequivariance-torch>=0.13.0,<0.14; sys_platform == 'linux'",
     "cuequivariance-ops-cu13>=0.13.0,<0.14; sys_platform == 'linux'",
     "cuequivariance-ops-torch-cu13>=0.13.0,<0.14; sys_platform == 'linux'",
-    "bionemo-ir>=0.2.1,<0.3; sys_platform == 'linux'",
+    "bionemo-ir>=0.2.0,<0.3; sys_platform == 'linux'",
 ]
 all-cuda12 = [
     "tmol[cu12]>=0.2.0,<0.3; sys_platform == 'linux'",
@@ -128,16 +121,18 @@ dev = [
     # Debugger/interactive
     "debugpy>=1.8.5,<2",
     "ipykernel>=6.31.0,<7",
-    # Testing tools
-    "httpx>=0.28,<1",
-    "fastapi>=0.133,<1",
+    # Testing tools. Every installed pytest plugin is imported on every pytest
+    # invocation (autoload costs 5.1s here, measured), so an unused one is a tax
+    # on each targeted run. pytest-testmon (1.4s) and pytest-benchmark (0.3s)
+    # were dropped as unreferenced: no `--testmon`, no benchmarked test, no use
+    # of the `benchmark` fixture anywhere in the tree. The `benchmark` marker
+    # stays registered and the CPU lane keeps filtering it, so re-adding the
+    # plugin is a one-line change.
     "pytest>=8.2.0,<9",
-    "pytest-testmon>=2.1.1,<3",
     "pytest-xdist>=3.6.1,<4",
     "pytest-dotenv>=0.5.2,<1",
     "pytest-cov>=4.1.0,<5",
     "coverage[toml]>=7.10.2,<8",
-    "pytest-benchmark>=5.0.0,<6",
 ]
 
 [project.urls]
@@ -151,6 +146,8 @@ rfd4-generate = "script_utils.entrypoints:generate"
 rfd4-evaluate = "rfproteina.evaluate:main_hydra"
 rfd4-train = "rfproteina.train:main"
 rfd4-train-ae = "rfproteina.partial_autoencoder.train:main"
+rfd4-af3server = "rfproteina.af3server.cli:main"
+human = "rfproteina.disease.cli:main"
 
 [tool.uv]
 conflicts = [
@@ -162,6 +159,8 @@ conflicts = [
 
 # Pytest
 [tool.pytest.ini_options]
+# The Apptainer smoke script and the website checks are not part of this suite.
+testpaths = ["tests"]
 # Register the markers used across the suite so `-m` filters (and any future
 # `--strict-markers`) stay warning-free.
 markers = [
@@ -171,6 +170,7 @@ markers = [
     "slow: slower tests",
     "very_slow: tests too slow for the default CPU lane",
     "benchmark: pytest-benchmark performance tests",
+    "digs: host-specific sanity checks, maintainer clusters only",
     "fast: fast-running tests",
     "no_checkpoint_cache: opt out of the shared checkpoint-load fixture (needs fresh model state per run)",
 ]
@@ -318,7 +318,11 @@ ignore = [
     "ANN204",  # missing return type annotation for special method `__init__`
     "ANN401",  # disallow `Any` type
     "F722",  # for jaxtyping shape annotation
-    "F821",  # temporary to avoid jaxtyping warnings
+    # F821 (undefined name) is NOT ignored globally. It was, "temporarily", for
+    # jaxtyping's shape strings -- but that switched the check off for the whole
+    # tree, so any typo'd name in src/ passed lint and surfaced only when the
+    # line ran. It is now exempted per file below, for the files whose
+    # annotations ruff cannot resolve.
     "E741",  # enable us to use variables like "L"
     "N806",  # enable us to use capital letters in variable names, also like "L"
     "N812",  # allow standard conventions like `import lightning as L` and `import torch.nn.functional as F`
@@ -338,6 +342,24 @@ convention = "google"
 "__init__.py" = ["F401"]              # re-exports and import-for-side-effect
 "tests/*" = ["D", "E", "RUF", "ANN"]  # annotating test signatures buys nothing
 "docs/**/*.ipynb" = ["D", "E", "RUF", "ANN"]  # tutorial helpers: annotations/style buy nothing (B stays on)
+
+# F821 where ruff cannot resolve the annotation, so the check stays on
+# everywhere else. Two causes, both false positives:
+#   jaxtyping shape strings -- Float[Tensor, "b n 3"] names b, n as if they were
+#   values; and beartype.typing.Literal, which ruff does not recognise as
+#   typing.Literal, so Literal["mean"] reads as a forward reference.
+# A file leaving this list as its annotations change is the point. Nothing here
+# is a dangling name: a real one was found in rasa_metrics.py when the global
+# ignore came off, and was fixed rather than listed.
+"src/rfproteina/conditions.py" = ["F821"]
+"src/rfproteina/flow_matching/product_space_flow_matcher.py" = ["F821"]
+"src/rfproteina/flow_matching/signed_volume_loss.py" = ["F821"]
+"src/rfproteina/metrics/gt_structure_comparison.py" = ["F821"]
+"src/rfproteina/metrics/physics/contact_ms/*.py" = ["F821"]
+"src/rfproteina/nn/feature_factory.py" = ["F821"]
+"src/rfproteina/partial_autoencoder/autoencoder.py" = ["F821"]
+"src/rfproteina/proteina.py" = ["F821"]
+"src/rfproteina/utils/atom_permutation.py" = ["F821"]
 
 [tool.pyright]
 typeCheckingMode = "off"

@@ -28,9 +28,17 @@ format:
 LIBSTDCXX := $(firstword $(wildcard /lib/x86_64-linux-gnu/libstdc++.so.6 /usr/lib/x86_64-linux-gnu/libstdc++.so.6))
 PYTHON := $(firstword $(wildcard .venv/bin/python) python)
 
+# Both CI lanes run the suite under xdist (.github/workflows/ci.yaml and
+# .github/ci/run_cpu_lane.sh); `make test` ran it serially, so the local command
+# and the one that gates a PR were not the same command. Kept in its own variable
+# so passing extra flags does not silently drop the parallelism:
+#   make test PYTEST_ARGS='-m "not gpu"'   parallel, skipping GPU tests
+#   make test PYTEST_PARALLEL=             serial, e.g. to read a traceback
+PYTEST_PARALLEL ?= -n auto --dist=worksteal
+
 ## Run the test suite
 test:
-	LD_PRELOAD=$(LIBSTDCXX) $(PYTHON) -m pytest tests/ $(PYTEST_ARGS)
+	LD_PRELOAD=$(LIBSTDCXX) $(PYTHON) -m pytest tests/ $(PYTEST_PARALLEL) $(PYTEST_ARGS)
 
 #################################################################################
 # Self Documenting Commands                                                     #

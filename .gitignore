@@ -149,6 +149,15 @@ celerybeat.pid
 .env
 /.env.*
 !/.env.local.example
+
+# API keys and panel logs stay out of repository uploads.
+**/api_keys.json
+**/master.key
+# Encrypted credential blobs written beside the key store (key_store.save_secret).
+**/af3_session.enc.json
+**/Humanitys-Last-Disease.log
+**/Humanitys-Last-Disease.log.*
+**/.config/Humanitys-Last-Disease/
 # Private user-created runtime profile
 .ipd/.env.local
 .venv
@@ -254,6 +263,11 @@ tests/data/pdb/*
 **/inference/
 **/inference_samples/
 **/inference_metrics/
+# Finished disease-panel generations stay in the repository.
+!disease_runs/**/inference_samples/
+!disease_runs/**/inference_samples/**
+!disease_runs/**/inference_metrics/
+!disease_runs/**/inference_metrics/**
 **/evaluation_results*/
 **/slurm_run_outputs/
 **/slurm_logs/

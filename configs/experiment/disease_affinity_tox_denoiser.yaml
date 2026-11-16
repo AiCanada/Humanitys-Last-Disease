@@ -1,0 +1,42 @@
+# @package _global_
+# Full fine-tune from the pretrain release named by the LoRA recipe, at crop
+# 389 (384 plus the 5 disease tokens). A new parameter cannot join a strict
+# adapter load, so LoRA is off. The trunk copies that pretrain checkpoint.
+# The release flow EMA file is not the base. The new projection is
+# zero-initialized, and fallback_policy stays unset so any other mismatch is
+# still a hard error. This file does not locate class files and does not
+# launch training. A null directory refuses the released mixture. Structure
+# files that name one binder kind and one axis are the contrast. A coarse
+# name does not set an axis.
+
+defaults:
+  - /releases/flow/2026_10_19_hero_lora_c384
+  - _self_
+
+run_name_: disease_affinity_tox_denoiser
+_max_tokens: 389
+# 22 liability axes, stored as state then applicability mask.
+disease_class_condition_dim: 44
+
+# Full-model training. The inherited LoRA block cannot sit beside weight_loading.
+lora: null
+
+weight_loading:
+  _target_: rfproteina.utils.weights.WeightLoadingConfig
+  default_policy: copy
+  param_policies:
+    "nn.disease_combination.*": zero_init
+
+nn:
+  disease_combination: true
+  disease_binder_kind: protein
+  # 389 is not divisible by 16, so compiled training would assert.
+  use_torch_compile: false
+
+# The class names and the condition width are checked against the module constants at
+# startup, so a config and the axis list cannot drift apart unnoticed.
+disease_class_data:
+  directory: null
+  file_limit: null
+  good_class: high_affinity_clean
+  bad_class: high_affinity_toxic

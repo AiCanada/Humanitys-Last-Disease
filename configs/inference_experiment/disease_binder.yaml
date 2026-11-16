@@ -1,0 +1,21 @@
+# @package _global_
+# Disease-binder generation from a checkpoint trained with the combination projection.
+# Beam search stays off. Toxicology is the per-axis combination label on the real tokens.
+#
+# The run asks for a clear combination on the kind the checkpoint was trained with. Choose
+# another kind per run with nn.disease_binder_kind, which rebuilds a non-persistent buffer
+# and loads no different weights.
+#
+# cuda_graph_max_tokens is a CUDA-graph capture threshold, not a capacity limit: a longer
+# request runs the trunk eagerly rather than being refused. It is read only when
+# inference_backend is bioir, and the default backend is native, so raising it changes
+# nothing by itself. It covers the five extra tokens when graphs are in use.
+
+defaults:
+  - inference_on_user_inputs
+  - _self_
+
+run_name_: disease_binder
+
+bioir:
+  cuda_graph_max_tokens: 516

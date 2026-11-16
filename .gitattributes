@@ -1,4 +1,11 @@
-# Scoped to the reports on purpose. A repo-wide "* text=auto eol=lf" would mark
-# every file of the inherited tree for renormalisation and produce a diff of
-# thousands of line-ending-only changes.
-reports/*.md text eol=lf
+# Shell scripts must stay LF so bash can parse a checkout made on Windows.
+*.sh text eol=lf
+*.bash text eol=lf
+# Source that is committed stays LF, including a checkout edited on Windows.
+*.py text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.rst text eol=lf
+*.json text eol=lf

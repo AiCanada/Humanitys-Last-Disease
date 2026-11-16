@@ -9,9 +9,55 @@ Use the workflow docs and task skills for details; do not duplicate model intern
 - Check `git status --short` before edits and preserve user changes. Do not discard, stage,
   commit, stash, reset, or switch branches without explicit instruction.
 - Keep generated runs, checkpoints, datasets, caches, credentials, and local environment
-  files out of source changes. Do not publish packages or public releases without authorization.
+  files out of source changes unless the user has asked for a named output directory to
+  be tracked. Do not publish packages or public releases without authorization.
 - Preserve existing outputs. Record inputs, effective config, code/checkpoint identity,
   seed, output directory, and job IDs without recording secrets.
+- Before every commit or push, follow [Before every commit or push](#before-every-commit-or-push).
+
+## Before every commit or push
+
+Do this before every `git commit` and before every push to an online remote. Stop when
+personal data or a secret is still in the content that would leave this machine.
+
+- Read the staged diff before a commit. Read every commit that the push would send before
+  a push. Search file names and file text.
+- Remove personal data. That includes home directories, user-profile paths, machine names,
+  account names, and absolute paths that identify this computer: `/home/<name>`,
+  `C:\Users\<name>`, `/mnt/<letter>/Users/<name>`, and this checkout's absolute path.
+  A path inside the checkout is stored relative to the repository.
+- Remove secrets. That includes API keys, access tokens, passwords, private keys, and
+  authorization headers, including values that start with `sk-`, `xai-`, `nvapi-`, `hf_`,
+  `ghp_`, `github_pat_`, or `AKIA`, and any `Authorization: Bearer` token.
+- Do not commit or push `api_keys.json`, `master.key`, `Humanitys-Last-Disease.log`,
+  secret `.env` files, or anything under `~/.config/Humanitys-Last-Disease`.
+- Text saved for a later upload goes through `scrub_for_upload`. A path written into a
+  tracked file goes through `repository_relative`.
+- A fake key that an existing test already uses may stay in that test. A real key may not.
+- Do not push unless the user asks. Preparing or creating a commit does not authorize a push.
+  Publishing the production report documents to the destination named below is
+  authorized. Nothing else is.
+
+## Online destination for the disease work
+
+Online updates for this disease work go to one repository and no other:
+
+- GitHub: `https://github.com/AiCanada/Humanitys-Last-Disease`
+
+**That repository is public.** Hugging Face is not a destination. Do not upload the
+disease work anywhere else.
+
+Because it is public, anything pushed there is permanently readable. It is also a fork
+of a public upstream, so pushed objects stay fetchable from that fork network even if
+the repository is later made private. Treat every push as irreversible publication and
+apply [Before every commit or push](#before-every-commit-or-push) to all of it.
+
+Authorized: the production report documents. Not authorized without asking: the disease
+source, run outputs, checkpoints, credentials, and anything else in this checkout.
+
+This checkout's `origin` is `https://github.com/AiCanada/RFD4-Proteina.git`. Do not use
+that remote for the disease work, and do not add a remote to this checkout. Clone the
+destination into its own directory outside the checkout.
 
 ## Choose the workflow
 
