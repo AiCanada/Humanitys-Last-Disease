@@ -47,7 +47,13 @@ As you code
 
    make format
    ruff check src tests
-   pytest -m "not gpu"
+   make test PYTEST_ARGS='-m "not gpu"'
+
+``make test`` runs the suite in parallel, as both CI lanes do; GPU tests are
+skipped automatically when CUDA is unavailable, so the marker filter above is
+only needed on a machine that has one. The CPU lane in CI adds a few more
+exclusions -- see ``.github/ci/run_cpu_lane.sh`` for the exact expression, which
+the collect and run steps must share.
 
 As you commit
 -------------

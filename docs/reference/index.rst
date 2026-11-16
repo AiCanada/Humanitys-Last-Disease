@@ -15,6 +15,7 @@ walkthroughs, start at :doc:`../concepts/workflow` instead.
    cli-options
    yaml-json
    metrics
+   screen-inputs
    search-parameters
    output-format
    troubleshooting
@@ -52,6 +53,11 @@ walkthroughs, start at :doc:`../concepts/workflow` instead.
        <span class="wf-card-title">Metrics</span>
        <span class="wf-card-body">Every metric, oracle, pass criterion, and pre-oracle filter that
        ships, and the tag that turns each one on.</span>
+     </a>
+     <a class="wf-card" href="screen-inputs.html">
+       <span class="wf-card-title">Screen inputs</span>
+       <span class="wf-card-body">The predictor tables, reference proteins, and proteome the
+       liability screen reads, and what every refusal means.</span>
      </a>
      <a class="wf-card" href="search-parameters.html">
        <span class="wf-card-title">Search parameters</span>
@@ -105,4 +111,5 @@ aggregating metrics once samples are written.
    api/search
    api/rewards
    api/metrics
+   api/af3server
    api/inference_utils

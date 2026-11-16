@@ -5,6 +5,46 @@ Installation
 This installs the environment, downloads the configured released model weights, and configures
 ``DATA_PATH``. See the :doc:`quickstart` to generate your first design.
 
+.. _windows-quick-install:
+
+Quick install on Windows
+------------------------
+
+For the ``human`` panel on a Windows computer, one command does the whole thing:
+WSL, an Ubuntu distribution, the system packages, the environment, and a desktop
+icon. From a PowerShell window in the checkout::
+
+    powershell -ExecutionPolicy Bypass -File .\scripts\Install-Human.ps1
+
+It is safe to run again, and each step checks before acting, so a second run
+after a restart carries on where the first stopped. Useful options:
+
+``-SkipWeights``
+    Install the environment without the model weights. The panel runs and the
+    screen works; generation needs the weights later.
+``-SkipSearchEnvs``
+    Skip the optional AlphaFold 2 / AlphaFold 3 search environments.
+``-Distro <name>``
+    Use a distribution other than ``Ubuntu``.
+``-Repository <url>``
+    Clone the program first, for a computer with no checkout yet.
+``-WhatIf``
+    Print what each step would do and change nothing.
+
+Installing WSL itself needs administrator rights and usually a restart. The
+script detects that case and tells you the one command to run rather than
+half-finishing; after the restart, run it again.
+
+Afterwards, **Human** on your desktop starts the program and the panel opens in
+your browser. The shortcut alone can be added or removed at any time::
+
+    powershell -ExecutionPolicy Bypass -File .\scripts\Install-HumanShortcut.ps1
+    powershell -ExecutionPolicy Bypass -File .\scripts\Install-HumanShortcut.ps1 -Remove
+
+On Linux, the same install is ``bash scripts/install_human.sh``, which adds the
+system packages and then hands over to ``setup.sh``. To reach the panel from a
+phone instead, see ``Cell/README.md``.
+
 Prerequisites
 -------------
 

@@ -78,6 +78,7 @@ the model at all yet.
     </a>
     <div class="wf-card-sublinks">
       <a class="wf-card-subbutton" href="advanced/pre-oracle-transforms.html">Pre-oracle transforms</a>
+      <a class="wf-card-subbutton" href="af3-server.html">Hosted AlphaFold Server</a>
     </div>
   </div>
   <a class="wf-card" href="read-outputs.html">
@@ -108,6 +109,7 @@ advanced/backends
 search
 evaluate-with-metrics
 refolding
+af3-server
 read-outputs
 faq
 ```
