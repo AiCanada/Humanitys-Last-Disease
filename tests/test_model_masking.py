@@ -208,6 +208,23 @@ def test_flow_passes_full_axis_through_autoencoder(token_batch) -> None:
     _assert_grid(latents.ne(0).any(dim=-1), "flow_latent_emit")
 
 
+def _mock_conditioning(model: SimpleNamespace):
+    """Stand in for the model's own ``_conditioning``, composed from the mock's parts.
+
+    The encoder, the decoder and the latents transformer each build token
+    conditioning with ``cond_factory``, put it through the two transitions, and
+    then add the disease-combination label when that module exists. These mocks
+    build no combination module, and ``add_disease_combination`` returns its
+    input unchanged when there is none, so this composition is exactly what the
+    real method reduces to here.
+
+    Composed rather than hardcoded on purpose: the three mocks below do not
+    agree on the conditioning width, so a constant would be right for two of
+    them and wrong for the third.
+    """
+    return lambda features, mask: model.transition_c_2(model.transition_c_1(model.cond_factory(features), mask), mask)
+
+
 @pytest.mark.parametrize(
     ("token", "matters"),
     (("atomized", True), ("context", False), ("padding", False), ("unresolved", True)),
@@ -265,6 +282,7 @@ def test_autoencoder_context_influence_matches_grid(token_batch, token, matters,
         update_pair_repr=False,
         **extras,
     )
+    model._conditioning = _mock_conditioning(model)
     baseline = forward(model, batch)
     observed = forward(model, changed)
 
@@ -304,6 +322,7 @@ def test_decoder_coordinates_are_zero_outside_emit_mask(token_batch) -> None:
         allowed_residue_types=get_allowed_residue_type_mask(),
         residue_atom_mask=get_atom_mask(),
     )
+    model._conditioning = _mock_conditioning(model)
 
     output = DecoderTransformer.forward(model, batch)
 
@@ -338,6 +357,7 @@ def test_flow_attention_includes_every_nonpadding_context(token_batch, token, ma
         sequence_readout_enabled=False,
         _run_trunk=run_trunk,
     )
+    model._conditioning = _mock_conditioning(model)
     batch = {**token_batch, "probe": torch.ones(2, len(TOKEN_NAMES), 2)}
     changed = {**batch, "probe": batch["probe"].clone()}
     changed["probe"][0, TOKEN_NAMES.index(token)] += 1

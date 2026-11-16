@@ -392,7 +392,7 @@ class Metric(ABC):
             return lddt(y_true, y_pred, thres=self.custom_thresholds)
         ```
         """
-        raise NotImplementedError
+        raise TypeError(f"{type(self).__name__} does not implement compute().")
 
     def applies_to_tags(self, tags: set[str] | None, *, explicit: bool = False) -> bool:
         """Return True if this metric would run for a batch with the given tag set.

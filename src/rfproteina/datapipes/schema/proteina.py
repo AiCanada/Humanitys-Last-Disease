@@ -33,6 +33,7 @@ from rfproteina.conditions import (
     SSEnum,
 )
 from rfproteina.datapipes.schema.base import DataSample
+from rfproteina.disease.combinations import CLASS_CONDITION_DIM
 from rfproteina.encoding import TOKEN_TYPE_IDS, UNIFIED_ATOM37_ENCODING
 from rfproteina.transforms.chirality_feature import MAX_OVERLAPPING_CENTERS
 
@@ -70,6 +71,8 @@ SPECS: dict[str, tuple] = {
     "is_resolved_mask": (torch.bool, False, "I"),
     "insertion_source_idx": (torch.int32, -1, "I"),
     "loss_weight": (torch.float32, 1.0, "I"),
+    # State then applicability for each liability axis. Missing examples stay zero.
+    "disease_combination": (torch.float32, 0.0, f"I {CLASS_CONDITION_DIM}"),
     "coord_cond_mask": (torch.bool, False, "I"),
     C_SEC.full_name: (torch.int16, SSEnum.NONE.value, "I"),
     C_IDXGRP.full_name: (torch.int16, -1, "I"),

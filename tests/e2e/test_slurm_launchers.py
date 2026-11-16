@@ -8,6 +8,7 @@ syntax regressions in the launchers without touching the scheduler.
 from __future__ import annotations
 
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -50,9 +51,11 @@ def test_common_sh_pythonpath_resolves_to_real_dirs():
     after the project became its own root). Source the real function and check
     every entry it puts on PYTHONPATH.
     """
+    common = shlex.quote(str(SLURM_UTILS / "common.sh"))
+    scripts = shlex.quote(str(SLURM_UTILS))
     script = f"""
-        source {SLURM_UTILS / "common.sh"}
-        repo_root=$(find_repo_root "{SLURM_UTILS}")
+        source {common}
+        repo_root=$(find_repo_root {scripts})
         setup_pythonpath "$repo_root" >/dev/null
         printf '%s' "$PYTHONPATH"
     """
@@ -66,8 +69,9 @@ def test_common_sh_pythonpath_resolves_to_real_dirs():
 
 def test_af3_daemon_block_exports_runtime_paths():
     """The host-side AF3 supervisor must receive paths loaded before submission."""
+    common = shlex.quote(str(SLURM_UTILS / "common.sh"))
     script = f"""
-        source {SLURM_UTILS / "common.sh"}
+        source {common}
         AF3_IMAGE=/cluster/af3.sif
         AF3_JAX_CACHE_DIR=/cluster/jax-cache
         AF3_MODEL_DIR=/cluster/weights

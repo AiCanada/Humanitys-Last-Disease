@@ -19,6 +19,11 @@ from atomworks.ml.transforms.filters import polymer_terminal_oxygen_mask
 from atomworks.ml.utils.token import apply_and_spread_token_wise, get_token_starts
 from biotite.structure import AtomArray, spread_residue_wise
 
+# rfproteina's own standard annotations register themselves on import, and
+# STANDARD_ANNOTATIONS is iterated below. The package __init__ used to import this for
+# every consumer, which meant importing any part of rfproteina -- including modules
+# that touch neither -- loaded atomworks and torch, about fifty seconds.
+import rfproteina.utils.standard_annotations  # noqa: F401
 from rfproteina.conditions import C_CENTROID, C_CRDGRP, C_IDXGRP, C_INTCRD, SEQUENCE_PROBABILITY_CONDITIONS
 from rfproteina.datapipes.bonds import (
     get_bond_distances,

@@ -1,6 +1,7 @@
 """Detection and geometry of stereogenic centers and E/Z double bonds."""
 
 import warnings
+from collections.abc import Iterator, Mapping
 from itertools import permutations
 
 import numpy as np
@@ -58,12 +59,68 @@ def _enumerate_stereoisomer_templates(template: np.ndarray, tol: float = 1e-5) -
     return reps
 
 
-STEREOISOMER_TEMPLATES: dict[tuple[str, int], list[np.ndarray]] = {
-    (geom, n): _enumerate_stereoisomer_templates(full[:n])
-    for geom, full in IDEAL_POLYHEDRA.items()
-    for n in range(3, len(full) + 1)
-}
-"""Pre-computed stereoisomer templates for all common geometries"""
+class _StereoisomerTemplates(Mapping[tuple[str, int], list[np.ndarray]]):
+    """Stereoisomer templates for every common geometry, enumerated on demand.
+
+    Not for speed. Enumerating all of them costs 0.36s, which is noise beside
+    the 23s that importing ``atomworks.enums`` costs this module anyway -- so
+    this is not an import-time optimisation and should not be described as one.
+
+    The reason is where that work happened. Building the entries eagerly ran
+    ``Rotation.align_vectors`` -- a LAPACK alignment, 1,080 permutations' worth
+    -- at **module import time**, and this module is imported by
+    ``metrics.utils.metrics_utils``, hence by every spawned metrics worker. A
+    full-suite run saw a worker die there during import:
+
+        chirals.py:54, in _enumerate_stereoisomer_templates
+        numpy.linalg.LinAlgError: 0-dimensional array given.
+                                  Array must be at least two-dimensional
+
+    which surfaced in the parent as ``BrokenProcessPool`` and failed
+    ``test_inverse_folding``. The arrays involved are (n, 3) and never
+    0-dimensional, so that message does not describe its own inputs; it was not
+    reproducible in eight spawned workers importing this module directly, and
+    the underlying fragility is not understood. What is certain is that the
+    call no longer runs while a worker is starting up, which is the one place
+    it was observed to fail.
+
+    Keys are known without computing anything, which matters: the membership
+    test in :func:`chiral_centers` is a guard asking whether a geometry is
+    supported at all, and it must not pay for an enumeration to answer.
+
+    Cached per key, so a run that only meets tetrahedral carbon never
+    enumerates the octahedral orbits.
+    """
+
+    def __init__(self, polyhedra: dict[str, np.ndarray]) -> None:
+        self._polyhedra = polyhedra
+        self._keys = tuple((geom, n) for geom, full in polyhedra.items() for n in range(3, len(full) + 1))
+        self._cache: dict[tuple[str, int], list[np.ndarray]] = {}
+
+    def __getitem__(self, key: tuple[str, int]) -> list[np.ndarray]:
+        found = self._cache.get(key)
+        if found is not None:
+            return found
+        if key not in self._keys:
+            raise KeyError(key)
+        geom, n = key
+        found = _enumerate_stereoisomer_templates(self._polyhedra[geom][:n])
+        self._cache[key] = found
+        return found
+
+    def __contains__(self, key: object) -> bool:
+        # Answered from the key list, never by enumerating.
+        return key in self._keys
+
+    def __iter__(self) -> Iterator[tuple[str, int]]:
+        return iter(self._keys)
+
+    def __len__(self) -> int:
+        return len(self._keys)
+
+
+STEREOISOMER_TEMPLATES: Mapping[tuple[str, int], list[np.ndarray]] = _StereoisomerTemplates(IDEAL_POLYHEDRA)
+"""Stereoisomer templates for all common geometries, computed on first use."""
 
 
 def _template_rmsds(centered: np.ndarray, geometry: str) -> np.ndarray | None:

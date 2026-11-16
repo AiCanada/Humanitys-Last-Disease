@@ -2,6 +2,7 @@
 
 import hashlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -28,13 +29,16 @@ def scratch(tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (bin_dir / "apptainer").write_text("#!/bin/sh\nexit 0\n")
-    (bin_dir / "hf").write_text(
-        f"#!{sys.executable}\n"
+    # A shebang cannot contain the space in a Windows mount path, so invoke Python explicitly.
+    (bin_dir / "hf.py").write_text(
         "import pathlib, sys\n"
         "args = sys.argv[1:]\n"
         "target = pathlib.Path(args[args.index('--local-dir') + 1]) / args[2]\n"
         "target.parent.mkdir(parents=True, exist_ok=True)\n"
         "target.write_bytes(b'test runtime image')\n"
+    )
+    (bin_dir / "hf").write_text(
+        "#!/bin/sh\n" f"exec {shlex.quote(sys.executable)} {shlex.quote(str(bin_dir / 'hf.py'))} \"$@\"\n"
     )
     for executable in bin_dir.iterdir():
         executable.chmod(0o755)

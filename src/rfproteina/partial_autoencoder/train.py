@@ -40,6 +40,7 @@ with (
     _config_path = os.path.join(os.environ["PROJECT_ROOT"], "configs")
 
     from rfproteina.callbacks.rank_seed import RankSeedCallback
+    from rfproteina.disease.training import prepare_disease_training
     from rfproteina.partial_autoencoder.autoencoder import AutoEncoder
     from rfproteina.utils.datasets import (
         assemble_distributed_loader,
@@ -274,6 +275,8 @@ def store_n_log_configs(
 )
 @configured_verbosity(default=True)
 def main(cfg_exp: DictConfig) -> None:
+    # A disease run with no class directory fails here, before checkpoint load.
+    prepare_disease_training(cfg_exp)
     # TODO: Sync with how we handle this in the file autoencoder.py
     torch._inductor.config.coordinate_descent_tuning = True
 

@@ -458,24 +458,24 @@ def search_from_native(native: Any) -> RFProteinaBeamSearchConfig | None:
     if strategy is None:
         return None
     if not isinstance(strategy, BeamSearchStrategy):
-        raise NotImplementedError("Full BioIR only bridges native beam search")
+        raise ValueError("Full BioIR only bridges native beam search")
     policy = getattr(strategy, "continuation_policy", "stop")
     if policy != "stop":
-        raise NotImplementedError(
+        raise ValueError(
             f"Full BioIR does not bridge search.continuation_policy={policy!r}; it would stop failing "
             "originals instead. Use inference_backend=native."
         )
     if strategy.save_states or strategy.resume_from is not None:
-        raise NotImplementedError("Full BioIR search does not save or resume candidate states")
+        raise ValueError("Full BioIR search does not save or resume candidate states")
     if strategy.step_checkpoints[-1] != int(native.inf_cfg.args.nsteps):
-        raise NotImplementedError("Full BioIR search needs its last checkpoint at the end of the schedule")
+        raise ValueError("Full BioIR search needs its last checkpoint at the end of the schedule")
     for step, config in strategy.checkpoints.items():
         if (
             config.get("use_clean_prediction")
             or "continuation_criteria" in config
             or config.get("n_branch", strategy.n_branch) != strategy.n_branch
         ):
-            raise NotImplementedError(
+            raise ValueError(
                 f"Full BioIR search supports neither clean-prediction scoring, continuation criteria nor "
                 f"per-checkpoint branching (checkpoint {step})"
             )
@@ -483,7 +483,7 @@ def search_from_native(native: Any) -> RFProteinaBeamSearchConfig | None:
     if criterion := strategy.intermediate_sample_save_criterion:
         thresholds = criterion.metric_thresholds
         if set(thresholds) != {"search.reward"} or set(thresholds["search.reward"]) != {"min"}:
-            raise NotImplementedError("Full BioIR requires a scalar intermediate reward minimum")
+            raise ValueError("Full BioIR requires a scalar intermediate reward minimum")
         threshold = thresholds["search.reward"]["min"]
     # Native checkpoints each own a reward model; BioIR takes one base objective plus per-step replacements.
     models = strategy.reward_models
@@ -505,6 +505,39 @@ def search_from_native(native: Any) -> RFProteinaBeamSearchConfig | None:
 def _fresh_seed() -> int:
     """A seed drawn from the global generator: reproducible under the run seed, different per batch."""
     return int(torch.randint(0, 2**31 - 1, (1,)).item())
+
+
+_RECLAIMS_CACHED_BLOCKS = "_rfproteina_reclaims_cached_blocks"
+
+
+def _reclaim_cached_blocks_before_rejecting_capture(check: Any) -> Any:
+    """Return a capacity check that gives unused allocator cache back before rejecting a capture.
+
+    BioIR compares the capture estimate with ``mem_get_info`` free memory. The caching allocator
+    counts blocks it is holding for reuse as occupied, so a shape that fits is rejected. The
+    rejection does not return those blocks, and the next shape then sees no free memory and is
+    pinned to eager as well.
+    """
+
+    def wrapped(working_set_bytes: int, input_container: Any = None) -> Any:
+        result = check(working_set_bytes, input_container)
+        if result.ok or torch.cuda.is_current_stream_capturing():
+            return result
+        torch.cuda.empty_cache()
+        return check(working_set_bytes, input_container)
+
+    setattr(wrapped, _RECLAIMS_CACHED_BLOCKS, True)
+    return wrapped
+
+
+def _install_capture_reclaim() -> None:
+    """Make BioIR's pre-capture memory check see memory ``empty_cache`` can return."""
+    from bionemo_ir._torch.graph_optimization.cuda_graph import runtime as graph_runtime
+
+    current = graph_runtime.check_capacity_for_capture
+    if getattr(current, _RECLAIMS_CACHED_BLOCKS, False):
+        return
+    graph_runtime.check_capacity_for_capture = _reclaim_cached_blocks_before_rejecting_capture(current)
 
 
 class FullBioIRAdapter:
@@ -592,6 +625,7 @@ class FullBioIRAdapter:
         # Capture verification replays each new graph against an extra eager pass to compare them.
         # That checks the capture machinery, which the test suite covers; here it only adds
         # 0.5-0.9 s to the request that first meets a shape.
+        _install_capture_reclaim()
         self.model.configure_graphs(capacity=capacity, verify_capture=False, max_tokens=max_tokens)
         self.graph_capacity = capacity
 

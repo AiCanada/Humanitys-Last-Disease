@@ -43,6 +43,7 @@ with (
     _config_path = os.path.join(os.environ["PROJECT_ROOT"], "configs")
 
     from rfproteina.callbacks.rank_seed import RankSeedCallback
+    from rfproteina.disease.training import prepare_disease_training
     from rfproteina.proteina import Proteina
     from rfproteina.utils.config_html import save_config_html
     from rfproteina.utils.datasets import (
@@ -269,9 +270,10 @@ def get_model_n_ckpt_resume(cfg_exp: DictConfig, ckpt_path_store: str) -> tuple[
         )
 
         weight_loading_cfg = cfg_exp.get("weight_loading", None)
+        wl_config: WeightLoadingConfig | None = None
         if weight_loading_cfg is not None:
             # Policy-based loading: instantiate WeightLoadingConfig via Hydra and apply
-            wl_config: WeightLoadingConfig = hydra.utils.instantiate(weight_loading_cfg)
+            wl_config = hydra.utils.instantiate(weight_loading_cfg)
             logger.info(
                 f"Using policy-based weight loading: default={wl_config.default_policy}, "
                 f"fallback={wl_config.fallback_policy}, "
@@ -293,6 +295,18 @@ def get_model_n_ckpt_resume(cfg_exp: DictConfig, ckpt_path_store: str) -> tuple[
         # Stash any SimpleEMA state (weights + averaging counter) from the pretrain ckpt to load later
         ema_callback_state = ckpt.get("callbacks", {}).get("SimpleEMA") or {}
         if ema_callback_state.get("ema_state_dict") and not lora_enabled:
+            if wl_config is not None:
+                # Run the EMA weights through the same policies as the live ones. A parameter this
+                # config adds is absent from the pretrain EMA state, and SimpleEMA's restore
+                # forgives only missing LoRA keys, so stashing it unchanged would abort the run in
+                # `on_fit_start` with zero steps. The saved EMA weights are keyed identically to
+                # the model, so the policies apply unchanged.
+                ema_callback_state = {
+                    **ema_callback_state,
+                    "ema_state_dict": load_weights_with_policies(
+                        model, ema_callback_state["ema_state_dict"], wl_config
+                    ),
+                }
             model._pretrain_ema_callback_state = ema_callback_state
             logger.info(
                 f"Stashed SimpleEMA state from pretrain ckpt "
@@ -408,6 +422,8 @@ def log_config_dashboard(
 )
 @configured_verbosity(default=True)
 def main(cfg_exp: DictConfig) -> None:
+    # A disease run with no class directory fails here, before checkpoint load.
+    prepare_disease_training(cfg_exp)
     # Configure torch.compile + warm the local Inductor cache (before any compile).
     setup_run_compile(coordinate_descent_tuning=cfg_exp.opt.get("coordinate_descent_tuning", True))
 

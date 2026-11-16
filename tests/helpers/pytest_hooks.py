@@ -2,7 +2,6 @@
 
 import pytest
 import rootutils
-import torch
 
 from rfproteina.utils.env import load_dotenv
 
@@ -25,7 +24,15 @@ class _SkipGpuPlugin:
     """Auto-skip tests marked @pytest.mark.gpu when CUDA is unavailable."""
 
     def pytest_runtest_setup(self, item):
-        if item.get_closest_marker("gpu") and not torch.cuda.is_available():
+        if not item.get_closest_marker("gpu"):
+            return
+        # Imported after the marker check, so a gpu-marked test pays for torch
+        # and a run without one does not. This hook fires for every test, so a
+        # module-level import here put torch on the startup path of every
+        # pytest invocation; see the note in ``fixtures.gpu``.
+        import torch
+
+        if not torch.cuda.is_available():
             pytest.skip("requires GPU (CUDA not available)")
 
 

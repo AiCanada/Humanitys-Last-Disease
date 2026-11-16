@@ -106,7 +106,7 @@ def test_permutation_cap(metric_class: type, monkeypatch: pytest.MonkeyPatch) ->
     crowded = struc.concatenate([load_structure("4kpy_mn.cif.zst")[-1:]] * 20)
     crowded.molecule_iid = np.arange(20)
     monkeypatch.setattr(np, "tile", lambda *_a, **_k: pytest.fail("Must reject before allocating permutations"))
-    with pytest.raises(NotImplementedError, match="above 720 permutations is not supported"):
+    with pytest.raises(ValueError, match="above 720 permutations is not supported"):
         metric_class().compute(crowded, crowded)
 
 

@@ -310,11 +310,13 @@ class DataSample(ABC):
     @classmethod
     @abstractmethod
     def from_dict(cls, data: dict[str, Any]) -> "DataSample":
-        pass  # Placeholder for from_dict method
+        """Build a sample of this class from ``data``. Every subclass implements it."""
+        raise TypeError(f"{cls.__name__} does not implement from_dict().")
 
     @abstractmethod
     def pad_to_max_lengths(self, max_lengths: dict[str, int]) -> "DataSample":
-        pass  # Placeholder for padding method
+        """Pad this sample to ``max_lengths``. Every subclass implements it."""
+        raise TypeError(f"{type(self).__name__} does not implement pad_to_max_lengths().")
 
     @cached_property
     def max_lengths(self) -> dict[str, int]:

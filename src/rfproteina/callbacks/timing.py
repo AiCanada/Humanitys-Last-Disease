@@ -78,7 +78,7 @@ class LightningTimingCallback(L.Callback):
         """
         Override to do nothing since we're already stopping the optimizer step timer in on_train_batch_end
         """
-        pass
+        return None
 
     def on_train_batch_end(
         self, trainer: L.Trainer, pl_module: L.LightningModule, outputs: Any, batch: Any, batch_idx: int

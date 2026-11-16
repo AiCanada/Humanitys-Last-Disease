@@ -17,6 +17,11 @@ class BaseCallback:
     Where possible, use names consistent with PyTorch Lightning's callback names (see references below).
     Note that if using any callbacks directly within a Model, they must also adhere to this schema.
 
+    Every hook below does nothing, so a subclass overrides only the ones it needs
+    and the trainer can call them all unconditionally. Each returns None rather
+    than standing empty: doing nothing is this class's answer, not an unwritten
+    body, and the two should not look alike.
+
     References:
         - Pytorch Lightning Hooks (https://lightning.ai/docs/pytorch/stable/common/lightning_module.html#hooks)
         - Callbacks Flow (https://pytorch-lightning.readthedocs.io/en/0.10.0/callbacks.html#callbacks)
@@ -25,36 +30,36 @@ class BaseCallback:
     # Epoch loops
     def on_fit_start(self, trainer: Any) -> None:
         """Called at the start of the training"""
-        pass
+        return None
 
     def on_fit_end(self, trainer: Any) -> None:
         """Called at the end of the training"""
-        pass
+        return None
 
     # Training loop
     def on_train_epoch_start(self, trainer: Any) -> None:
         """Called at the start of each training epoch"""
-        pass
+        return None
 
     def on_after_train_loader_iter(self, trainer: Any, **kwargs) -> None:
         """Called after 'iter(train_loader)' is called, but before the first batch is yielded"""
-        pass
+        return None
 
     def on_before_train_loader_next(self, trainer: Any, **kwargs) -> None:
         """Called after each batch is yielded from the train_loader 'next(train_iter)' call"""
-        pass
+        return None
 
     def on_train_batch_start(self, trainer: Any, batch: Any, batch_idx: int) -> None:
         """Called at the start of each training batch"""
-        pass
+        return None
 
     def on_train_batch_end(self, trainer: Any, outputs: Any, batch: Any, batch_idx: int) -> None:
         """Called after each training batch, but before the optimizer.step"""
-        pass
+        return None
 
     def on_before_optimizer_step(self, trainer: Any, optimizer: _FabricOptimizer) -> None:
         """Called before each optimizer.step"""
-        pass
+        return None
 
     def on_after_optimizer_step(self, optimizer: _FabricOptimizer, **kwargs) -> None:
         """Called after each optimizer.step.
@@ -62,22 +67,22 @@ class BaseCallback:
         NOTE: This hook is called internally by Fabric when optimizer.step() executes.
         Trainer is NOT available here. Use optimizer_step for logic requiring trainer.
         """
-        pass
+        return None
 
     def optimizer_step(self, trainer: Any, optimizer: _FabricOptimizer) -> None:
         """Called after optimizer.step completes. Unlike on_after_optimizer_step,
         this hook is called explicitly by the trainer and receives trainer access.
         """
-        pass
+        return None
 
     def on_train_epoch_end(self, trainer: Any) -> None:
         """Called at the end of each training epoch"""
-        pass
+        return None
 
     # Validation loop
     def on_validation_epoch_start(self, trainer: Any) -> None:
         """Called at the start of each validation epoch"""
-        pass
+        return None
 
     def on_validation_batch_start(
         self,
@@ -88,7 +93,7 @@ class BaseCallback:
         dataset_name: str | None = None,
     ) -> None:
         """Called at the start of each validation batch"""
-        pass
+        return None
 
     def on_validation_batch_end(
         self,
@@ -100,13 +105,13 @@ class BaseCallback:
         dataset_name: str | None = None,
     ) -> None:
         """Called after each validation batch"""
-        pass
+        return None
 
     def on_validation_epoch_end(self, trainer: Any) -> None:
         """Called at the end of each validation epoch"""
-        pass
+        return None
 
     # Saving and Loading
     def on_save_checkpoint(self, trainer: Any, state: dict[str, Any]) -> None:
         """Called when saving a checkpoint"""
-        pass
+        return None

@@ -39,4 +39,4 @@ class SearchStrategy(ABC):
         Returns:
             List of generated-structure dicts (formatted).
         """
-        raise NotImplementedError
+        raise TypeError(f"{type(self).__name__} does not implement this search step.")

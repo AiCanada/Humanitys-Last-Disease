@@ -129,7 +129,7 @@ class TriangleMultiplicativeUpdate(nn.Module):
         a: torch.Tensor,
         b: torch.Tensor,
     ) -> torch.Tensor:
-        raise NotImplementedError("This method needs to be overridden")
+        raise TypeError(f"{type(self).__name__} does not override _combine_projections().")
 
     def _cueq_parameters(self) -> dict[str, torch.Tensor | None]:
         """Keyword parameters of ``cuequivariance_ops_torch.triangle_multiplicative_update``.

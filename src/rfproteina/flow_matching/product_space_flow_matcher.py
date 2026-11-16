@@ -1151,7 +1151,7 @@ def get_gt(
         den = t
         gt = num / (den + eps)
     else:
-        raise NotImplementedError(f"gt not implemented {mode}")
+        raise ValueError(f"gt not implemented {mode}")
     gt = transform_gt(gt, f_pow=param)
     gt = torch.clamp(gt, 0, clamp_val)  # If None no clamping
     return gt  # [s]
@@ -1294,4 +1294,4 @@ def _sample_t(cfg_t_dist: dict, shape: tuple, device: torch.device = torch.devic
         u = torch.rand(shape, device=device)
         return torch.where(u < p3, samples_uniform, samples_beta)
     else:
-        raise NotImplementedError(f"Sampling mode for t {cfg_t_dist.name} not implemented")
+        raise ValueError(f"Sampling mode for t {cfg_t_dist.name} not implemented")

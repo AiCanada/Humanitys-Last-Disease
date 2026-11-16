@@ -158,7 +158,14 @@ class Feature(torch.nn.Module):
         return self.dim
 
     def forward(self, batch: dict) -> torch.Tensor:
-        pass  # Implemented by each class
+        """Compute this feature. Every subclass implements it.
+
+        Reached only when one has not. The empty body this replaces returned
+        None from a method declared to return a tensor, so the omission
+        surfaced later as an arithmetic error somewhere else; naming the class
+        that is missing the method says where to look.
+        """
+        raise TypeError(f"{type(self).__name__} does not implement forward().")
 
     def extract_bs_and_n(self, batch: dict) -> tuple[int, int]:
         """

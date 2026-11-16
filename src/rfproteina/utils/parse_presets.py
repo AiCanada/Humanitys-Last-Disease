@@ -10,6 +10,12 @@ Import these directly or pass to :py:func:`~atomworks.io.parser.parse` as the
 from atomworks.constants import CCD_MIRROR_PATH, CRYSTALLIZATION_AIDS
 from atomworks.io.config import ParseConfig
 
+# A preset below sets ``load_standard_annotations=True``, and the parser resolves those
+# annotations by name out of the registry rfproteina's own annotations join on import.
+# Imported here rather than in the package __init__, where it made every import of
+# rfproteina load atomworks and torch.
+import rfproteina.utils.standard_annotations  # noqa: F401
+
 RCSB_WITH_METALS: ParseConfig = ParseConfig(
     # --- PrepareConfig fields ---
     add_missing_atoms=True,

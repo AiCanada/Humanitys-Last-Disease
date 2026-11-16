@@ -79,7 +79,10 @@ def _subunit_candidates(array: AtomArray, classes: np.ndarray, limit: int) -> np
         for factor in range(2, len(group) + 1):
             count *= factor
             if count > limit:
-                raise NotImplementedError(
+                # ValueError, not NotImplementedError: this is a bound on the
+                # input, answered with the setting that lifts it, rather than a
+                # body left unwritten.
+                raise ValueError(
                     f"Subunit symmetry above {limit} permutations is not supported; use resolve_symmetry=[atom]."
                 )
     if count == 1:

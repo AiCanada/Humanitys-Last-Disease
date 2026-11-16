@@ -31,7 +31,7 @@ def run_once(fn: Callable) -> Callable:
 
 def do_nothing(*args: Any, **kwargs: Any) -> None:
     """Does nothing, just returns None"""
-    pass
+    return None
 
 
 def exists(obj: Any) -> bool:

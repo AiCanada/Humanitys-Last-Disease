@@ -4,6 +4,9 @@ import torch
 from jaxtyping import Bool
 from torch import Tensor
 
+# Raised as a TypeError: every method below is @abstractmethod, so reaching one
+# means a concrete class is missing it, which is a fault in the type rather
+# than a feature left unwritten.
 ABS_CLASS_ERR_MSG = "Method not implemented in abstract class"
 
 
@@ -61,7 +64,7 @@ class BaseFlowMatcher:
         Returns:
             Samples from refenrece with shape [*shape, n, ...]
         """
-        raise NotImplementedError(ABS_CLASS_ERR_MSG)
+        raise TypeError(ABS_CLASS_ERR_MSG)
 
     @abstractmethod
     def interpolate(
@@ -83,7 +86,7 @@ class BaseFlowMatcher:
         Returns:
             x_t: Interpolated samples, same shape as x_0 and x_1
         """
-        raise NotImplementedError(ABS_CLASS_ERR_MSG)
+        raise TypeError(ABS_CLASS_ERR_MSG)
 
     @abstractmethod
     def extract_clean_sample_from_batch(self, batch: dict) -> torch.Tensor:
@@ -96,7 +99,7 @@ class BaseFlowMatcher:
         Returns:
             Clean sample x_1, a tensor with batch shape [*]
         """
-        raise NotImplementedError(ABS_CLASS_ERR_MSG)
+        raise TypeError(ABS_CLASS_ERR_MSG)
 
     @abstractmethod
     def nn_out_add_clean_sample_prediction(
@@ -120,7 +123,7 @@ class BaseFlowMatcher:
         Returns:
             The nn_out dictionary updated with clean sample prediction (key "x_1").
         """
-        raise NotImplementedError(ABS_CLASS_ERR_MSG)
+        raise TypeError(ABS_CLASS_ERR_MSG)
 
     @abstractmethod
     def nn_out_add_simulation_tensor(
@@ -144,7 +147,7 @@ class BaseFlowMatcher:
         Returns:
             The nn_out dictionary updated with simulation tensor (key "v" or "score").
         """
-        raise NotImplementedError(ABS_CLASS_ERR_MSG)
+        raise TypeError(ABS_CLASS_ERR_MSG)
 
     @abstractmethod
     def compute_fm_loss(
@@ -174,7 +177,7 @@ class BaseFlowMatcher:
         Returns:
             Loss per batch element, shape [b]
         """
-        raise NotImplementedError(ABS_CLASS_ERR_MSG)
+        raise TypeError(ABS_CLASS_ERR_MSG)
 
     @abstractmethod
     def nn_out_add_guided_simulation_tensor(
@@ -195,7 +198,7 @@ class BaseFlowMatcher:
         Returns:
             The nn_out dictionary updated with guided  simulation tensor ("v" or "score", or whatever is needed).
         """
-        raise NotImplementedError(ABS_CLASS_ERR_MSG)
+        raise TypeError(ABS_CLASS_ERR_MSG)
 
     @abstractmethod
     def simulation_step(
@@ -225,4 +228,4 @@ class BaseFlowMatcher:
         Returns:
             Updated x_t after integration step, same shape as input
         """
-        raise NotImplementedError(ABS_CLASS_ERR_MSG)
+        raise TypeError(ABS_CLASS_ERR_MSG)

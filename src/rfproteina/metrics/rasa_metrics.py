@@ -100,7 +100,7 @@ class RasaAdherenceMetric(Metric):
         else:
             raise ValueError(
                 f"RasaAdherenceMetric expects AtomArray, AtomArrayStack, or list of "
-                f"AtomArrays, but got {type(atom_array)}"
+                f"AtomArrays, but got {type(atom_array_or_stack)}"
             )
 
         for atom_array in atom_array_list:

@@ -26,7 +26,7 @@ import copy
 import math
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 
@@ -42,6 +42,13 @@ from rfproteina.transforms.unindexing import annotate_unindexed_insertion
 from rfproteina.utils.common import design_output_dir
 from rfproteina.utils.ddp import RankedLogger
 from rfproteina.utils.torch import concat_dict_tensors
+
+if TYPE_CHECKING:
+    # Imported for the ``"Proteina"`` annotations only. At runtime Proteina
+    # imports the search strategies, so a module-level import here would be
+    # circular; under TYPE_CHECKING the name still resolves for a type checker
+    # and for the undefined-name lint, without the cycle.
+    from rfproteina.proteina import Proteina
 
 logger = RankedLogger(__name__, rank_zero_only=True)
 

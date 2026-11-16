@@ -6,6 +6,11 @@ from torch.utils.checkpoint import checkpoint
 
 from rfproteina.encoding import UNIFIED_ATOM37_ENCODING
 from rfproteina.model_masks import compute_flow_emit_masks
+from rfproteina.nn.disease_combination import (
+    add_disease_combination,
+    build_disease_combination,
+    take_disease_options,
+)
 from rfproteina.nn.feature_factory import RECYCLE_GRAD_DEPTHS, FeatureFactory
 from rfproteina.nn.modules.attn_n_transition import MultiheadAttnAndTransition
 from rfproteina.nn.modules.norm import make_norm, set_norm_type
@@ -42,13 +47,23 @@ class LocalLatentsTransformer(torch.nn.Module):
     #: Settings of this module's config that may change after training without touching the weights.
     #: ``rfd4-generate`` accepts exactly these as ``nn.<key>`` overrides; any other key would change
     #: the architecture and break strict weight loading.
-    RUNTIME_OPTIONS = ("torch_compile_mode", "torch_compile_fullgraph", "tri_mult_backend", "attention_type")
+    RUNTIME_OPTIONS = (
+        "torch_compile_mode",
+        "torch_compile_fullgraph",
+        "tri_mult_backend",
+        "attention_type",
+        # Which liability axes an unlabeled batch asks to be clear on. It rebuilds a
+        # non-persistent buffer and holds no weights, so a run may choose it freely.
+        "disease_binder_kind",
+    )
 
     def __init__(self, **kwargs):
         """
         Initializes the NN. The seqs and pair representations used are just zero in case
         no features are required."""
         super().__init__()
+        # Pop before FeatureFactory. Those constructors receive every remaining nn key.
+        disease_enabled, disease_kind = take_disease_options(kwargs)
         # Set the process-global norm type before building submodules (make_norm reads it).
         set_norm_type(kwargs.get("norm_type"))
         self.nlayers = kwargs["nlayers"]
@@ -86,6 +101,11 @@ class LocalLatentsTransformer(torch.nn.Module):
 
         self.transition_c_1 = Transition(kwargs["dim_cond"], expansion_factor=2)
         self.transition_c_2 = Transition(kwargs["dim_cond"], expansion_factor=2)
+        self.disease_combination = build_disease_combination(
+            disease_enabled,
+            int(kwargs["dim_cond"]),
+            request_kind=disease_kind,
+        )
 
         # To get pair representation
         self.pair_repr_builder = PairReprBuilder(
@@ -278,13 +298,18 @@ class LocalLatentsTransformer(torch.nn.Module):
 
         return self._forward_impl(input)
 
+    def _conditioning(self, features: dict, seq_mask: torch.Tensor) -> torch.Tensor:
+        """Build token conditioning, then add the combination label when that module exists."""
+        c = self.cond_factory(features)  # [b, n, dim_cond]
+        c = self.transition_c_2(self.transition_c_1(c, seq_mask), seq_mask)  # [b, n, dim_cond]
+        return add_disease_combination(self.disease_combination, c, features.get("disease_combination"), seq_mask)
+
     def _forward_impl(self, input: dict) -> dict[str, dict[str, torch.Tensor]]:
         """Core forward logic. May be wrapped by torch.compile."""
         seq_mask = input["padding_mask"]  # [b, n] boolean, True = valid token
 
         # Conditioning variables
-        c = self.cond_factory({**input, "recycle_remaining": None})  # [b, n, dim_cond]
-        c = self.transition_c_2(self.transition_c_1(c, seq_mask), seq_mask)  # [b, n, dim_cond]
+        c = self._conditioning({**input, "recycle_remaining": None}, seq_mask)
 
         # Initial sequence representation from features
         seq_f_repr = self.init_repr_factory(input)  # [b, n, token_dim]
@@ -403,8 +428,7 @@ class LocalLatentsTransformer(torch.nn.Module):
             grad_on = torch.is_grad_enabled() and cycle >= n_recycle - grad_k
             with torch.set_grad_enabled(grad_on):
                 if cycle > 0 and condition_remaining:
-                    c = self.cond_factory({**input, "recycle_remaining": n_recycle - cycle - 1})
-                    c = self.transition_c_2(self.transition_c_1(c, seq_mask), seq_mask)
+                    c = self._conditioning({**input, "recycle_remaining": n_recycle - cycle - 1}, seq_mask)
                 if grad_on and self.recycle_checkpoint:
                     s, z = checkpoint(trunk, s_in, z_in, c, seq_mask, use_reentrant=False)
                 else:

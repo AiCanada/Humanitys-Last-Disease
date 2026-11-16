@@ -1,6 +1,11 @@
 import torch
 
 from rfproteina.model_masks import compute_ae_masks
+from rfproteina.nn.disease_combination import (
+    add_disease_combination,
+    build_disease_combination,
+    disease_request_kind,
+)
 from rfproteina.nn.feature_factory import FeatureFactory
 from rfproteina.nn.modules.attn_n_transition import MultiheadAttnAndTransition
 from rfproteina.nn.modules.norm import set_norm_type
@@ -51,6 +56,12 @@ class EncoderTransformer(torch.nn.Module):
 
         self.transition_c_1 = Transition(kwargs["encoder"]["dim_cond"], expansion_factor=2)
         self.transition_c_2 = Transition(kwargs["encoder"]["dim_cond"], expansion_factor=2)
+        # Top-level nn_ae keys are not forwarded into the encoder feature dict.
+        self.disease_combination = build_disease_combination(
+            kwargs.get("disease_combination", False),
+            int(kwargs["encoder"]["dim_cond"]),
+            request_kind=disease_request_kind(kwargs),
+        )
 
         # To get pair representation
         self.pair_rep_factory = (
@@ -108,6 +119,12 @@ class EncoderTransformer(torch.nn.Module):
 
         self.ln_z = torch.nn.Identity()
 
+    def _conditioning(self, batch: dict[str, torch.Tensor], attn_mask: torch.Tensor) -> torch.Tensor:
+        """Build token conditioning, then add the combination label when that module exists."""
+        c = self.cond_factory(batch)  # [b, n, dim_cond]
+        c = self.transition_c_2(self.transition_c_1(c, attn_mask), attn_mask)  # [b, n, dim_cond]
+        return add_disease_combination(self.disease_combination, c, batch.get("disease_combination"), attn_mask)
+
     def forward(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """
         Runs the network.
@@ -124,8 +141,7 @@ class EncoderTransformer(torch.nn.Module):
         attn_mask, emit_mask = compute_ae_masks(batch)
 
         # Conditioning variables
-        c = self.cond_factory(batch)  # [b, n, dim_cond]
-        c = self.transition_c_2(self.transition_c_1(c, attn_mask), attn_mask)  # [b, n, dim_cond]
+        c = self._conditioning(batch, attn_mask)
 
         # Iinitial sequence representation from features
         seq_f_repr = self.init_repr_factory(batch)  # [b, n, token_dim]

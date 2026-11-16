@@ -28,6 +28,11 @@ from atomworks.io.utils.chain import create_chain_id_generator
 from atomworks.io.utils.selection import get_residue_starts
 from atomworks.ml.utils.expandable_segment import insert_expandable_segment
 
+# rfproteina's own standard annotations register themselves on import, and this module
+# fills them on an atom array. Imported here rather than in the package __init__, where
+# it made every import of rfproteina load atomworks and torch.
+import rfproteina.utils.standard_annotations  # noqa: F401
+
 # Snapshot value for `original_res_id` on expandable-segment atoms (§4.3.1). Chosen over a
 # small magic number (e.g. -100): real author-supplied res_ids are occasionally negative but
 # always small in magnitude, so int32-min is unreachable by any genuine value while still

@@ -1,25 +1,61 @@
 """Compression-independent structure discovery and filenames."""
 
 from collections.abc import Iterable
+from functools import cache
 from os import PathLike
 from pathlib import Path
 
-from atomworks.io.utils.io_utils import CIF_LIKE_EXTENSIONS
 
-# In this codebase, jsons are never structure files, and instead may be ConditionSpec inputs
-_ALL_SUFFIXES = tuple(suffix for suffix in CIF_LIKE_EXTENSIONS if not suffix.startswith(".json"))
-STRUCTURE_FILE_SUFFIXES = tuple(suffix for suffix in _ALL_SUFFIXES if not suffix.startswith(".pdb"))
+@cache
+def _all_suffixes() -> tuple[str, ...]:
+    """Every recognized structure suffix, including PDB. Resolved on first use.
+
+    ``CIF_LIKE_EXTENSIONS`` is a tuple of strings, but reaching it imports
+    ``atomworks.io``, which pulls in the atomworks stack and torch -- 39 s on a
+    checkout mounted from Windows. Everything else in this module is pure path
+    handling, so a caller that only needs to recognize a filename should not pay
+    for a model framework: :py:mod:`~rfproteina.metrics.oracles.imported_refolds`
+    reads refolds off disk and needs no model, and this import was the whole of
+    its remaining startup cost.
+
+    Deferred rather than hardcoded, because the set of extensions is atomworks'
+    to define and a copy here would drift from it silently.
+    """
+    from atomworks.io.utils.io_utils import CIF_LIKE_EXTENSIONS
+
+    # In this codebase, jsons are never structure files, and instead may be ConditionSpec inputs
+    return tuple(suffix for suffix in CIF_LIKE_EXTENSIONS if not suffix.startswith(".json"))
+
+
+@cache
+def _structure_suffixes() -> tuple[str, ...]:
+    """Recognized structure suffixes with PDB left out."""
+    return tuple(suffix for suffix in _all_suffixes() if not suffix.startswith(".pdb"))
+
+
+def __getattr__(name: str) -> object:
+    """Resolve ``STRUCTURE_FILE_SUFFIXES`` on first access, then cache it.
+
+    It was a module-level constant and stays reachable under that name, so an
+    importer of it is unaffected by the deferral above. Anything else raises
+    :py:class:`AttributeError`, as a missing attribute must.
+    """
+    if name == "STRUCTURE_FILE_SUFFIXES":
+        value = _structure_suffixes()
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def is_structure_file(path: PathLike | str, *, include_pdb: bool = False) -> bool:
     """Recognize exact structure suffixes, excluding backup and temporary files."""
-    return str(path).lower().endswith(_ALL_SUFFIXES if include_pdb else STRUCTURE_FILE_SUFFIXES)
+    return str(path).lower().endswith(_all_suffixes() if include_pdb else _structure_suffixes())
 
 
 def structure_file_stem(path: PathLike | str) -> str:
     """Remove the structure format and compression suffix, preserving dots in IDs."""
     name = Path(path).name
-    for suffix in _ALL_SUFFIXES:
+    for suffix in _all_suffixes():
         if name.lower().endswith(suffix):
             return name[: -len(suffix)]
     raise ValueError(f"Unsupported structure filename: {path}")

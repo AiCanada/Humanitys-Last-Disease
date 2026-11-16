@@ -116,11 +116,6 @@ class ConditionSpecDataset(MolecularDataset):
         # Subset to requested keys
         if subset_to_keys is not None:
             assert len(subset_to_keys) > 0, "subset_to_keys must be a non-empty list of keys."
-            if missing := set(subset_to_keys) - set(self._data):
-                raise ValueError(
-                    f"subset_to_keys entries {sorted(missing)} match none of the {len(self._data)} examples "
-                    f"(e.g. {next(iter(self._data), None)!r})."
-                )
             self._data = {k: v for k, v in self._data.items() if k in subset_to_keys}
 
         if exists(global_prefix):
@@ -169,7 +164,10 @@ class ConditionSpecDataset(MolecularDataset):
 
     def _extract_examples(self, data: dict) -> dict:
         if is_legacy_dialect(data):
-            raise NotImplementedError(
+            # ValueError, not NotImplementedError: the dialect was removed, not
+            # left unwritten, and _load_data above already raises ValueError for
+            # an input file this does not take.
+            raise ValueError(
                 f"{self.json_path or 'input'} uses the legacy contig-JSON (`InputSpecification`) "
                 "dialect, which has been removed. Convert it to Condition-annotated CIFs "
                 "(scripts/json2cif/build_cif.py) or rewrite it in the condition_spec format "

@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from rfproteina.generate import _load_ema_state_dict
 from rfproteina.utils.simple_ema import SimpleEMA
+from rfproteina.utils.weights import WeightLoadingConfig, load_weights_with_policies
 
 
 class _TinyModule(L.LightningModule):
@@ -164,3 +165,47 @@ def test_resume_is_bitwise_identical_to_uninterrupted(tmp_path):
     _assert_identical(uninterrupted["ema"], resumed["ema"], "ema")
     _assert_identical(uninterrupted["opt"], resumed["opt"], "optimizer")
     assert uninterrupted["n_averaged"] == resumed["n_averaged"]
+
+
+class _GrownModule(L.LightningModule):
+    """A fine-tune that adds a parameter the pretrain checkpoint does not have."""
+
+    def __init__(self, with_added: bool):
+        super().__init__()
+        self.trunk = nn.Linear(4, 4)
+        if with_added:
+            self.disease_combination = nn.Linear(4, 4)
+
+
+def test_a_pretrain_ema_state_is_policy_filled_before_restore():
+    """A parameter a fine-tune adds is absent from the pretrain EMA state.
+
+    The restore forgives only missing LoRA keys, so the stashed state has to be brought up to the
+    current architecture by the same weight-loading policies as the live weights. Without that the
+    fine-tune aborts in ``on_fit_start`` with zero steps, however the main state dict was loaded.
+    """
+    pretrained = _GrownModule(with_added=False)
+    pretrain_ema = _clone(pretrained.state_dict())
+    finetune = _GrownModule(with_added=True)
+
+    # Stashed unchanged, the two added keys are missing and the restore refuses them.
+    unfiltered = SimpleEMA(decay=0.99, update_every_n=1)
+    unfiltered.load_state_dict({"ema_state_dict": pretrain_ema, "n_averaged": 1})
+    with pytest.raises(RuntimeError, match="EMA state does not match the model"):
+        unfiltered._ensure_ema_initialized(finetune)
+
+    # Through the policies the added keys arrive zeroed, and the pretrain weights are kept.
+    policy = WeightLoadingConfig(
+        default_policy="copy",
+        param_policies={"disease_combination.*": "zero_init"},
+    )
+    filled = load_weights_with_policies(finetune, pretrain_ema, policy)
+    assert set(filled) == set(finetune.state_dict())
+
+    wired = SimpleEMA(decay=0.99, update_every_n=1)
+    wired.load_state_dict({"ema_state_dict": filled, "n_averaged": 1})
+    wired._ensure_ema_initialized(finetune)
+    assert torch.count_nonzero(wired.ema_model.module.disease_combination.weight) == 0
+    assert torch.count_nonzero(wired.ema_model.module.disease_combination.bias) == 0
+    assert torch.equal(wired.ema_model.module.trunk.weight, pretrained.trunk.weight)
+    assert int(wired.ema_model.n_averaged) == 1

@@ -373,9 +373,6 @@ class Proteina(L.LightningModule):
         # Whether to write per-design chain-of-interest CIFs (only used by foldseek clustering).
         # Overridden for inference via configure_inference; training validation always writes.
         self.save_chain_of_interest = True
-        # Whether designs that fail a pre-oracle filter are deleted. None defers to ``cfg_exp``;
-        # overridden for inference via configure_inference.
-        self.delete_failing_pre_oracle: bool | None = None
         self.output_cif_suffix = ".cif.zst" if cfg_exp.get("compress_outputs", True) else ".cif"
 
         self.inf_cfg = inf_cfg  # Used for inference-like validation
@@ -1264,13 +1261,10 @@ class Proteina(L.LightningModule):
         if pre_oracle_filter_mm is not None:
             if not self._oracle_mms_setup_this_epoch:
                 pre_oracle_filter_mm.on_validation_epoch_start(val_dataset_tags=self.val_dataset_tags)
-            delete_failing = self.delete_failing_pre_oracle
-            if delete_failing is None:
-                delete_failing = self.cfg_exp.get("delete_failing_pre_oracle", True)
             oracle_outputs = apply_pre_oracle_filters(
                 self.validation_output_generation,
                 pre_oracle_filter_mm,
-                delete_failing=delete_failing,
+                delete_failing=self.cfg_exp.get("delete_failing_pre_oracle", True),
             )
             pre_oracle_filter_mm.on_validation_epoch_end()
 
@@ -1602,7 +1596,6 @@ class Proteina(L.LightningModule):
         ckpt_name: str | None = None,
         save_chain_of_interest: bool = False,
         compress_outputs: bool = False,
-        delete_failing_pre_oracle: bool | None = None,
     ) -> None:
         """Sets inference config with all sampling parameters required by the method (dt, etc).
 
@@ -1619,8 +1612,6 @@ class Proteina(L.LightningModule):
                 These are only consumed by foldseek clustering, so they default to ``False``
                 for inference; the launch script enables them when foldseek will run.
             compress_outputs: Write new inference structure artifacts as Zstd instead of plain CIF.
-            delete_failing_pre_oracle: Delete the files of designs that fail a pre-oracle filter.
-                ``None`` keeps the experiment config's value.
         """
         self.inf_cfg = inf_cfg
         if store_dir is not None:
@@ -1635,7 +1626,6 @@ class Proteina(L.LightningModule):
         self.ckpt_path = ckpt_path
         self.ckpt_name = ckpt_name
         self.save_chain_of_interest = save_chain_of_interest
-        self.delete_failing_pre_oracle = delete_failing_pre_oracle
 
         self._check_val_set_name_override()
 
@@ -1992,7 +1982,7 @@ class Proteina(L.LightningModule):
                 batch=batch,
             )
         else:
-            raise NotImplementedError(f"Format {ret_mode} not implemented")
+            raise ValueError(f"Format {ret_mode} not implemented")
 
     def _format_sample_bb_ca(
         self,
@@ -2009,7 +1999,7 @@ class Proteina(L.LightningModule):
                 "padding_mask": padding_mask,  # [b, n]
             }
         else:
-            raise NotImplementedError(f"{ret_mode} format for data modes `[bb_ca]` not implemented")
+            raise ValueError(f"{ret_mode} format for data modes `[bb_ca]` not implemented")
 
     def _format_sample_local_latents(
         self,
@@ -2113,4 +2103,4 @@ class Proteina(L.LightningModule):
                 "padding_mask": padding_mask,  # [b, n] - True for non-padding tokens
             }
         else:
-            raise NotImplementedError(f"{ret_mode} format for data modes `[bb_ca, latent_locals]` not implemented")
+            raise ValueError(f"{ret_mode} format for data modes `[bb_ca, latent_locals]` not implemented")

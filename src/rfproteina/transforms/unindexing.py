@@ -100,7 +100,7 @@ class UnindexFlaggedTokens(Transform):
             elif cond.n_body == 2:
                 dict_to_use = original_2d_conditions
             else:
-                raise NotImplementedError(f"Unindexing does not yet support conditions with n_body={cond.n_body}")
+                raise ValueError(f"Unindexing does not yet support conditions with n_body={cond.n_body}")
 
             if cond.has_annotation(atom_array):
                 if cond.name not in dict_to_use:

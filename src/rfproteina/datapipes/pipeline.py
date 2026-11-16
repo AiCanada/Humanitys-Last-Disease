@@ -104,6 +104,7 @@ from rfproteina.conditions import (
 )
 from rfproteina.datapipes.bonds import compute_token_bond_features
 from rfproteina.datapipes.schema.proteina import TokenType
+from rfproteina.disease.training import AttachDiseaseCombination
 from rfproteina.encoding import (
     RESIDUES_BY_TOKEN_TYPE,
     TOKEN_TYPE_IDS,
@@ -1328,6 +1329,7 @@ def build_design_train_pipeline(
     loss_weight_cfg: dict[str, float] | None = None,
     sampling_transforms: list[Transform] | None = None,
     expandable_segment_rng: np.random.Generator | None = None,
+    disease_class_lookup: dict | None = None,
 ) -> Transform:
     """Build training pipeline for protein design tasks.
 
@@ -1372,6 +1374,8 @@ def build_design_train_pipeline(
         is_inference: If True, realizes expandable segments and skips augmentation.
         sampling_transforms: Optional transforms applied in order after source annotation and
             inference-only segment expansion, before cleanup and featurization.
+        disease_class_lookup: Optional exact example-id map to a 44-d combination row.
+            When set, the row is written onto feats after featurization.
         expandable_segment_rng: Optional local RNG for inference-only segment expansion.
         metrics_tags: Tags to use for determining which Metrics apply to the outputs of this pipeline.
     Returns:
@@ -1412,6 +1416,8 @@ def build_design_train_pipeline(
         convert_absolute_to_internal=convert_absolute_to_internal,
         loss_weight_cfg=loss_weight_cfg,
     )
+    if disease_class_lookup is not None:
+        transforms.append(AttachDiseaseCombination(disease_class_lookup))
 
     return Compose(transforms)
 

@@ -4,7 +4,7 @@ import os
 import sys
 import time
 import warnings
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from contextlib import nullcontext
 from functools import partial
 from os import PathLike
@@ -101,7 +101,10 @@ def _extract_input_data(inputs: PathLike | list[PathLike]) -> tuple[Any, str]:
     if inputs.endswith((".json", ".yaml", ".yml")):
         data = load_spec_file(Path(inputs))
         if is_legacy_dialect(data):
-            raise NotImplementedError(
+            # ValueError, not NotImplementedError: the dialect was removed, not
+            # left unwritten, and the sibling refusal below already raises
+            # ValueError for an input shape this does not take.
+            raise ValueError(
                 f"{inputs}: this file uses the legacy contig-JSON (`InputSpecification`) dialect, which "
                 "has been removed. Convert it to Condition-annotated CIFs (scripts/json2cif/build_cif.py) "
                 "or rewrite it in the condition_spec format (docs/condition_spec_yaml.md)."
@@ -482,7 +485,6 @@ def load_ckpt_n_configure_inference(cfg: dict, model: Proteina | None = None) ->
         ckpt_name=ckpt_name,
         save_chain_of_interest=cfg.get("save_chain_of_interest", False),
         compress_outputs=cfg.get("compress_outputs", False),
-        delete_failing_pre_oracle=cfg.get("delete_failing_pre_oracle"),
     )
 
     model.search_strategy = None
@@ -609,12 +611,7 @@ def _sort_dataset_by_length(dataset: torch.utils.data.Dataset) -> torch.utils.da
 
 @configured_verbosity(default=False)
 def run_generation(
-    cfg: DictConfig,
-    job_id: int = 0,
-    config_name: str | None = None,
-    *,
-    model: Proteina | None = None,
-    prepare_dataset: Callable[[torch.utils.data.Dataset], torch.utils.data.Dataset | list] | None = None,
+    cfg: DictConfig, job_id: int = 0, config_name: str | None = None, *, model: Proteina | None = None
 ) -> None:
     """
     Core generation function that runs inference given a Hydra config.
@@ -624,8 +621,6 @@ def run_generation(
         job_id: Job ID for parallel job splitting
         config_name: Name of the config (used for output directory naming)
         model: Optional model already loaded with ``Proteina.from_pretrained``.
-        prepare_dataset: Optional callback to validate or replace the seeded dataset before
-            partitioning, compilation and loading. The loader consumes the returned samples.
     """
     precision = cfg.precision
     torch.set_float32_matmul_precision("high" if precision in ("32", "32-true") else "medium")
@@ -665,8 +660,6 @@ def run_generation(
         apply_torch_deterministic(logger)
 
     dataset = get_dataset_from_cfg(cfg, job_id)
-    if prepare_dataset is not None:
-        dataset = prepare_dataset(dataset)
 
     # Optionally skip regenerating examples that already have outputs on disk. Skipped
     # designs are routed to an eval-only pass (below) so their metrics are always computed.

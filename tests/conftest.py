@@ -66,10 +66,14 @@ _pin_gpu_for_xdist_worker()
 import shutil
 
 import pytest
-from atomworks.ml.executables import _EXECUTABLES
-from atomworks.ml.executables.dssp import DSSPExecutable
-from atomworks.ml.utils.rng import create_rng_state_from_seeds, rng_state
 
+# Nothing from ``atomworks.ml`` is imported here. It pulls torch, and this file
+# is an *initial* conftest (``testpaths`` in pyproject.toml), so pytest loads it
+# before every run -- 26s of imports on every invocation, including the targeted
+# single-file runs AGENTS.md asks for, for symbols three fixtures use. Each one
+# is imported in the body that needs it, the way ``_af2_image_available`` below
+# already imports from ``rfproteina.af2``. Keeping it that way also keeps
+# ``_pin_gpu_for_xdist_worker`` above genuinely ahead of torch.
 from tests.helpers import (  # noqa: F401
     BENCHMARKS_DIR,
     CONFIGS_DIR,
@@ -124,8 +128,15 @@ DSSP_PATH = os.environ.get("DSSP_PATH", shutil.which("mkdssp") or "")
 
 
 def _has_dssp() -> bool:
-    """Check if DSSP is installed and available."""
+    """Check if DSSP is installed and available.
+
+    The import sits behind the path check, which is what makes this cheap: with
+    no ``mkdssp`` on the machine ``DSSP_PATH`` is empty and atomworks is never
+    imported.
+    """
     if os.path.isfile(DSSP_PATH) and os.access(DSSP_PATH, os.X_OK):
+        from atomworks.ml.executables.dssp import DSSPExecutable
+
         try:
             DSSPExecutable.get_or_initialize(DSSP_PATH)
             return True
@@ -203,6 +214,9 @@ def cleanup_dssp():
 
     Ensures the DSSP executable singleton is reset between tests.
     """
+    from atomworks.ml.executables import _EXECUTABLES
+    from atomworks.ml.executables.dssp import DSSPExecutable
+
     if has_dssp:
         DSSPExecutable.reinitialize(DSSP_PATH)
     yield
@@ -213,5 +227,27 @@ def cleanup_dssp():
 @pytest.fixture
 def deterministic_rng():
     """Fixture for deterministic random number generation."""
+    from atomworks.ml.utils.rng import create_rng_state_from_seeds, rng_state
+
     with rng_state(create_rng_state_from_seeds(np_seed=42, torch_seed=42, py_seed=42)):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _run_log_stays_inside_the_test(tmp_path, monkeypatch):
+    """Send every test's run log to the test's own directory.
+
+    ``main()`` opens the run log through ``start_log(None)``, which resolves to
+    the operator's own file beside the key store. So any test that drove the
+    CLI appended to it, and the file someone reads to see what their campaign
+    did was interleaved with ``/tmp/pytest-of-*`` lines from test runs --
+    including ERROR lines from tests that deliberately pass a bad path.
+
+    Autouse and set here rather than per test, because the cost of forgetting
+    it is silent: the test still passes and the damage lands in a file nobody
+    looks at until they need it.
+
+    ``--log-file`` outranks this, so a test that sets its own is unaffected,
+    and so is one that sets this variable itself.
+    """
+    monkeypatch.setenv("HUMANITYS_LAST_DISEASE_LOG", str(tmp_path / "run.log"))

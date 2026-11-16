@@ -32,6 +32,10 @@ except ImportError:  # TMol 0.1.x exports the same helpers as *_from_biotite
     from tmol.io import build_context_from_biotite as build_context_from_atom_array  # noqa: F401
     from tmol.io import pose_stack_from_biotite as pose_stack_from_atom_array
 
+# rfproteina's own standard annotations register themselves on import, and
+# STANDARD_ANNOTATIONS is iterated below. Imported here rather than in the package
+# __init__, where it made every import of rfproteina load atomworks and torch.
+import rfproteina.utils.standard_annotations  # noqa: F401
 from rfproteina.utils.chain import get_chain_of_interest
 from rfproteina.utils.ddp import RankedLogger
 from rfproteina.utils.mask_spec import resolve_mask

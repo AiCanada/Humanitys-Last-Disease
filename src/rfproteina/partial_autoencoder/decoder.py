@@ -4,6 +4,11 @@ import torch
 from rfproteina.datapipes.schema.proteina import NUM_TOKEN_TYPES, TokenType
 from rfproteina.encoding import RESIDUES_BY_TOKEN_TYPE, TOKEN_TYPE_IDS, UNIFIED_ATOM37_ENCODING
 from rfproteina.model_masks import compute_ae_masks
+from rfproteina.nn.disease_combination import (
+    add_disease_combination,
+    build_disease_combination,
+    disease_request_kind,
+)
 from rfproteina.nn.feature_factory import FeatureFactory
 from rfproteina.nn.modules.attn_n_transition import MultiheadAttnAndTransition
 from rfproteina.nn.modules.norm import set_norm_type
@@ -93,6 +98,12 @@ class DecoderTransformer(torch.nn.Module):
 
         self.transition_c_1 = Transition(kwargs["decoder"]["dim_cond"], expansion_factor=2)
         self.transition_c_2 = Transition(kwargs["decoder"]["dim_cond"], expansion_factor=2)
+        # Top-level nn_ae keys are not forwarded into the decoder feature dict.
+        self.disease_combination = build_disease_combination(
+            kwargs.get("disease_combination", False),
+            int(kwargs["decoder"]["dim_cond"]),
+            request_kind=disease_request_kind(kwargs),
+        )
 
         # To get pair representation
         self.pair_rep_factory = (
@@ -157,6 +168,12 @@ class DecoderTransformer(torch.nn.Module):
             torch.nn.Linear(self.token_dim, 37, bias=False),
         )
 
+    def _conditioning(self, features: dict[str, torch.Tensor], attn_mask: torch.Tensor) -> torch.Tensor:
+        """Build token conditioning, then add the combination label when that module exists."""
+        c = self.cond_factory(features)  # [b, n, dim_cond]
+        c = self.transition_c_2(self.transition_c_1(c, attn_mask), attn_mask)  # [b, n, dim_cond]
+        return add_disease_combination(self.disease_combination, c, features.get("disease_combination"), attn_mask)
+
     def forward(self, input: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """
         Runs the network.
@@ -186,8 +203,7 @@ class DecoderTransformer(torch.nn.Module):
         attn_mask, emit_mask = compute_ae_masks(input)
 
         # Conditioning variables
-        c = self.cond_factory(input)  # [b, n, dim_cond]
-        c = self.transition_c_2(self.transition_c_1(c, attn_mask), attn_mask)  # [b, n, dim_cond]
+        c = self._conditioning(input, attn_mask)
 
         # Iinitial sequence representation from features
         seq_f_repr = self.init_repr_factory(input)  # [b, n, token_dim]
