@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "Humanitys-Last-Disease": {
+      "command": "python",
+      "args": ["-u", "scripts/humanitys_last_disease_mcp.py"]
+    }
+  }
+}

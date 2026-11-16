@@ -1,0 +1,12 @@
+[mcp_servers.Humanitys-Last-Disease]
+command = "python"
+args = ["-u", "scripts/humanitys_last_disease_mcp.py"]
+enabled = true
+startup_timeout_sec = 30
+tool_timeout_sec = 600
+
+[mcp_servers.Humanitys-Last-Disease.tool_timeouts]
+list_options = 120
+run = 600
+screen_directory = 600
+read_verdict = 120
