@@ -9,6 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from http.client import HTTPException
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 import pytest
@@ -185,11 +186,13 @@ from rfproteina.disease.ui import (
 )
 from tests.helpers.disease import (  # noqa: F401
     ROW_P00533,
+    ROW_P35225,
     UBIQUITIN,
     asthma_catalog,
     block_live_calls,
     no_developer_proteome,
     refuse_prompt,
+    structures_json,
 )
 from tests.helpers.fixtures import data_path  # noqa: F401
 from tests.helpers.inference import compose_inference
@@ -199,6 +202,26 @@ CATALOG = [
     Disease("Breast cancer", "EFO_0000305"),
     Disease("Breast carcinoma", "EFO_0000306"),
 ]
+
+#: The landing fields the machine and upload tests share, before the ones each test is about.
+_PANEL_FIELDS = {"disease": ["Asthma"], "binder_kind": ["protein"], "out_dir": ["out"], "remote_dir": ["disease_runs"]}
+
+#: Every provider key variable the landing page offers to stand in for.
+_KEY_ENV_NAMES = (
+    "XAI_API_KEY",
+    "GROK_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "NVIDIA_API_KEY",
+    "NVIDIA_NIM_API_KEY",
+    "OPENROUTER_API_KEY",
+)
+
+
+def _clear_provider_keys(monkeypatch, *extra: str) -> None:
+    """Unset every provider key variable, and ``extra``, so a test sees only the keys it sets."""
+    for name in (*_KEY_ENV_NAMES, *extra):
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -793,28 +816,18 @@ def test_training_configs_record_the_combination_width():
         assert f"disease_class_condition_dim: {CLASS_CONDITION_DIM}" in text
 
 
-def _associated_targets() -> dict:
-    return {
-        "data": {
-            "disease": {
-                "associatedTargets": {
-                    "rows": [
-                        {
-                            "target": {
-                                "approvedSymbol": "IL13",
-                                "proteinIds": [{"id": "P35225", "source": "uniprot_swissprot"}],
-                            }
-                        }
-                    ]
-                }
-            }
-        }
-    }
+def _associated_targets(*targets: tuple[str, str], source: str = "uniprot") -> dict:
+    """Open Targets' associatedTargets answer, one row per (symbol, accession); "" lists no protein."""
+    rows = [
+        {"target": {"approvedSymbol": symbol, "proteinIds": [{"id": accession, "source": source}] if accession else []}}
+        for symbol, accession in targets
+    ]
+    return {"data": {"disease": {"associatedTargets": {"rows": rows}}}}
 
 
 def _structure_post(url: str, payload: dict) -> dict:
     if url == OPENTARGETS_URL:
-        return _associated_targets()
+        return _associated_targets(("IL13", "P35225"), source="uniprot_swissprot")
     assert url == RCSB_SEARCH_URL
     parameters = payload["query"]["parameters"]
     assert parameters["operator"] == "exact_match"
@@ -845,18 +858,33 @@ def _structure_get(url: str) -> dict:
     raise AssertionError(url)
 
 
+class _CureRun(NamedTuple):
+    """One terminal run. It unpacks as five values, and ``out``/``err`` read like ``capsys.readouterr()``."""
+
+    code: int
+    out_dir: Path
+    fetched: list[tuple[str, str]]
+    out: str
+    err: str
+
+
 def _run_cure(
     tmp_path: Path,
     monkeypatch,
     capsys,
     extra: list[str],
-    read_line,
+    read_line=refuse_prompt,
     *,
-    runner=None,
-    transfer=None,
-    retrieve=None,
-    read_json=None,
-):
+    out_dir: Path | None = None,
+    **seams,
+) -> _CureRun:
+    """Run the Asthma catalog from the terminal, accepting its one disease.
+
+    The structure search is answered by ``_structure_post`` and ``_structure_get``. A run handed its
+    records with ``--structures-json`` needs no search, so it keeps the program's own ``post`` and
+    ``get``, which ``block_live_calls`` turns into failures. Any other seam passes through, and
+    ``fetch`` defaults to one that records what was downloaded.
+    """
     block_live_calls(monkeypatch)
     fetched: list[tuple[str, str]] = []
 
@@ -864,7 +892,11 @@ def _run_cure(
         fetched.append((option.group, option.entry_id))
         return b"data_source\n"
 
-    out_dir = tmp_path / "runs"
+    seams.setdefault("fetch", fetch)
+    if "--structures-json" not in extra:
+        seams.setdefault("post", _structure_post)
+        seams.setdefault("get", _structure_get)
+    out_dir = out_dir or tmp_path / "runs"
     code = cure_main(
         [
             "--catalog",
@@ -876,17 +908,18 @@ def _run_cure(
             str(out_dir),
             *extra,
         ],
-        post=_structure_post,
-        get=_structure_get,
-        fetch=fetch,
         read_line=read_line,
-        runner=runner,
-        transfer=transfer,
-        retrieve=retrieve,
-        read_json=read_json,
+        **seams,
     )
     captured = capsys.readouterr()
-    return code, out_dir, fetched, captured.out, captured.err
+    return _CureRun(code, out_dir, fetched, captured.out, captured.err)
+
+
+def _run_panel(monkeypatch, exchange, *argv: str, **seams) -> int:
+    """Run the browser panel with live calls refused. A terminal prompt fails unless ``read_line`` is given."""
+    block_live_calls(monkeypatch)
+    seams.setdefault("read_line", refuse_prompt)
+    return cure_main(["--ui", *argv], exchange=exchange, **seams)
 
 
 def _commands(stdout: str) -> list[str]:
@@ -1013,61 +1046,22 @@ def test_cure_asks_for_a_choice_before_download(tmp_path, monkeypatch, capsys):
 
 
 def test_cure_skips_a_safety_panel_structure(tmp_path, monkeypatch, capsys):
-    block_live_calls(monkeypatch)
-    records = tmp_path / "structures.json"
-    records.write_text(
-        json.dumps(
-            [
-                {
-                    "group": "protein",
-                    "accession": "Q12809",
-                    "entry_id": "1HER",
-                    "chain": "A",
-                    "title": "herg",
-                    "predicted": False,
-                    "source": "fixture",
-                },
-                {
-                    "group": "protein",
-                    "accession": "P00533",
-                    "entry_id": "1EGFR",
-                    "chain": "A",
-                    "title": "egfr",
-                    "predicted": False,
-                    "source": "fixture",
-                },
-            ]
-        ),
-        encoding="utf-8",
+    records = structures_json(
+        tmp_path,
+        {
+            "group": "protein",
+            "accession": "Q12809",
+            "entry_id": "1HER",
+            "chain": "A",
+            "title": "herg",
+            "predicted": False,
+            "source": "fixture",
+        },
+        ROW_P00533,
     )
-    out_dir = tmp_path / "runs"
-
-    def fetch(option: StructureOption) -> bytes:
-        return b"data_source\n"
-
-    def unused(*_args, **_kwargs):
-        raise AssertionError("structure search")
-
-    code = cure_main(
-        [
-            "--catalog",
-            str(asthma_catalog(tmp_path)),
-            "--disease",
-            "Asthma",
-            "--accept-only",
-            "--structures-json",
-            str(records),
-            "--all",
-            "--confirm-inference",
-            "--out-dir",
-            str(out_dir),
-        ],
-        post=unused,
-        get=unused,
-        fetch=fetch,
-        read_line=refuse_prompt,
+    code, out_dir, _fetched, stdout, _stderr = _run_cure(
+        tmp_path, monkeypatch, capsys, ["--structures-json", str(records), "--all", "--confirm-inference"]
     )
-    stdout = capsys.readouterr().out
     assert code == 0
     assert "Skipped 1HER:" in stdout
     assert "safety panel" in stdout
@@ -1100,19 +1094,6 @@ def test_cure_rejects_a_structure_number_outside_the_list(tmp_path, monkeypatch,
 def test_post_json_retries_a_blank_body(monkeypatch):
     bodies = [b"", b'{"data": {"ok": true}}']
 
-    class _Response:
-        def __init__(self, body: bytes) -> None:
-            self._body = body
-
-        def read(self) -> bytes:
-            return self._body
-
-        def __enter__(self) -> "_Response":
-            return self
-
-        def __exit__(self, *_args: object) -> bool:
-            return False
-
     def fake_open(_request, timeout=45):
         assert timeout == 45
         return _Response(bodies.pop(0))
@@ -1126,22 +1107,10 @@ def test_post_json_retries_a_blank_body(monkeypatch):
 def test_post_json_reads_http_204_as_no_hits(monkeypatch):
     calls = {"n": 0}
 
-    class _Response:
-        status = 204
-
-        def read(self) -> bytes:
-            return b""
-
-        def __enter__(self) -> "_Response":
-            return self
-
-        def __exit__(self, *_args: object) -> bool:
-            return False
-
     def fake_open(_request, timeout=45):
         assert timeout == 45
         calls["n"] += 1
-        return _Response()
+        return _Response(status=204)
 
     monkeypatch.setattr("rfproteina.disease.sources.urlopen", fake_open)
     assert post_json("https://example.test/lookup", {"q": 1}) == {"result_set": [], "total_count": 0}
@@ -1151,20 +1120,10 @@ def test_post_json_reads_http_204_as_no_hits(monkeypatch):
 def test_post_json_does_not_retry_a_json_list(monkeypatch):
     calls = {"n": 0}
 
-    class _Response:
-        def read(self) -> bytes:
-            return b"[1]"
-
-        def __enter__(self) -> "_Response":
-            return self
-
-        def __exit__(self, *_args: object) -> bool:
-            return False
-
     def fake_open(_request, timeout=45):
         assert timeout == 45
         calls["n"] += 1
-        return _Response()
+        return _Response(b"[1]")
 
     monkeypatch.setattr("rfproteina.disease.sources.urlopen", fake_open)
     with pytest.raises(ValueError, match="Expected a JSON object"):
@@ -1241,28 +1200,7 @@ def test_a_fasta_header_names_a_published_model_and_a_bare_sequence_does_not():
 def test_collect_structure_options_adds_nucleic_companions_and_keeps_a_missing_entry():
     def post(url: str, payload: dict) -> dict:
         if url == OPENTARGETS_URL:
-            return {
-                "data": {
-                    "disease": {
-                        "associatedTargets": {
-                            "rows": [
-                                {
-                                    "target": {
-                                        "approvedSymbol": "gene",
-                                        "proteinIds": [{"id": "PHYB00", "source": "uniprot"}],
-                                    }
-                                },
-                                {
-                                    "target": {
-                                        "approvedSymbol": "EGFR",
-                                        "proteinIds": [{"id": "P00533", "source": "uniprot"}],
-                                    }
-                                },
-                            ]
-                        }
-                    }
-                }
-            }
+            return _associated_targets(("gene", "PHYB00"), ("EGFR", "P00533"))
         value = payload["query"]["parameters"]["value"]
         if value == "PHYB00":
             return {"result_set": [{"identifier": "3HYB_B"}, {"identifier": "9SKIP_A"}, {"identifier": "8SKIP"}]}
@@ -1301,22 +1239,7 @@ def test_collect_structure_options_adds_nucleic_companions_and_keeps_a_missing_e
 def test_computed_model_identifiers_keep_the_full_entry_id():
     def post(url: str, payload: dict) -> dict:
         if url == OPENTARGETS_URL:
-            return {
-                "data": {
-                    "disease": {
-                        "associatedTargets": {
-                            "rows": [
-                                {
-                                    "target": {
-                                        "approvedSymbol": "gene",
-                                        "proteinIds": [{"id": "P20930", "source": "uniprot"}],
-                                    }
-                                }
-                            ]
-                        }
-                    }
-                }
-            }
+            return _associated_targets(("gene", "P20930"))
         assert payload["query"]["parameters"]["value"] == "P20930"
         return {"result_set": [{"identifier": "4PCW_1"}, {"identifier": "AF_AFP20930F10_1"}]}
 
@@ -1345,23 +1268,7 @@ def test_collect_structure_options_stops_at_the_association_cap():
 
     def post(url: str, payload: dict) -> dict:
         if url == OPENTARGETS_URL:
-            return {
-                "data": {
-                    "disease": {
-                        "associatedTargets": {
-                            "rows": [
-                                {
-                                    "target": {
-                                        "approvedSymbol": f"G{index}",
-                                        "proteinIds": [{"id": f"P{index}", "source": "uniprot"}],
-                                    }
-                                }
-                                for index in range(9)
-                            ]
-                        }
-                    }
-                }
-            }
+            return _associated_targets(*((f"G{index}", f"P{index}") for index in range(9)))
         seen.append(payload["query"]["parameters"]["value"])
         return {"result_set": []}
 
@@ -1511,25 +1418,18 @@ def test_cure_run_starts_this_machine_and_a_remote_machine_together(tmp_path, mo
 
 
 def test_a_remote_run_copies_the_condition_spec_and_its_structure(tmp_path, monkeypatch, capsys):
-    block_live_calls(monkeypatch)
-    records = tmp_path / "structures.json"
-    records.write_text(
-        json.dumps(
-            [
-                {
-                    "group": "protein",
-                    "accession": "P20930",
-                    "entry_id": "4PCW",
-                    "chain": "1",
-                    "title": "target",
-                    "predicted": False,
-                    "source": "fixture",
-                }
-            ]
-        ),
-        encoding="utf-8",
+    records = structures_json(
+        tmp_path,
+        {
+            "group": "protein",
+            "accession": "P20930",
+            "entry_id": "4PCW",
+            "chain": "1",
+            "title": "target",
+            "predicted": False,
+            "source": "fixture",
+        },
     )
-    out_dir = tmp_path / "runs"
     transferred: list[tuple[str, str, str]] = []
 
     def fetch(_option: StructureOption) -> bytes:
@@ -1547,13 +1447,11 @@ def test_a_remote_run_copies_the_condition_spec_and_its_structure(tmp_path, monk
     def unused(*_args, **_kwargs):
         raise AssertionError("structure search")
 
-    code = cure_main(
+    code, out_dir, _fetched, stdout, _stderr = _run_cure(
+        tmp_path,
+        monkeypatch,
+        capsys,
         [
-            "--catalog",
-            str(asthma_catalog(tmp_path)),
-            "--disease",
-            "Asthma",
-            "--accept-only",
             "--structures-json",
             str(records),
             "--all",
@@ -1565,18 +1463,14 @@ def test_a_remote_run_copies_the_condition_spec_and_its_structure(tmp_path, monk
             "--remote-dir",
             "/srv/disease",
             "--run",
-            "--out-dir",
-            str(out_dir),
         ],
         post=unused,
         get=unused,
         fetch=fetch,
-        read_line=refuse_prompt,
         runner=runner,
         transfer=transfer,
         retrieve=lambda *_args: None,
     )
-    stdout = capsys.readouterr().out
     assert code == 0
     assert "protein_4PCW_1.yaml" in stdout
     assert "inputs=/srv/disease/protein_4PCW_1.yaml" in stdout
@@ -1727,21 +1621,13 @@ def test_a_truncated_response_does_not_cost_the_run(tmp_path, monkeypatch, capsy
 
 def test_a_finished_generation_is_saved_by_disease_and_target(tmp_path, monkeypatch, capsys):
     """A finished design is copied under the disease name and the target. The live files stay."""
-
-    def runner(argv: list[str]) -> int:
-        out = next(part.split("=", 1)[1] for part in argv if part.startswith("out_dir="))
-        sample = Path(out) / "inference_samples"
-        sample.mkdir(parents=True)
-        (sample / "design.cif").write_text("data_design\n", encoding="utf-8")
-        return 0
-
     code, out_dir, _fetched, stdout, stderr = _run_cure(
         tmp_path,
         monkeypatch,
         capsys,
         ["--all", "--confirm-inference", "--run"],
         read_line=refuse_prompt,
-        runner=runner,
+        runner=_design_runner,
         transfer=_reject_remote,
         retrieve=_reject_remote,
     )
@@ -1895,6 +1781,7 @@ def test_an_unreadable_metrics_file_still_writes_the_screen(tmp_path, monkeypatc
     """A metrics path that cannot be read does not fail a generation that exited 0."""
 
     def runner(argv: list[str]) -> int:
+        _design_runner(argv)
         out = Path(next(part.split("=", 1)[1] for part in argv if part.startswith("out_dir=")))
         metrics = out / "inference_metrics"
         metrics.mkdir(parents=True)
@@ -1903,9 +1790,6 @@ def test_an_unreadable_metrics_file_still_writes_the_screen(tmp_path, monkeypatc
             "example_id,ppi.pass\n0,1\n",
             encoding="utf-8",
         )
-        sample = out / "inference_samples"
-        sample.mkdir()
-        (sample / "design.cif").write_text("data_design\n", encoding="utf-8")
         return 0
 
     code, out_dir, _fetched, stdout, stderr = _run_cure(
@@ -3060,22 +2944,7 @@ def test_one_request_per_deposit_however_many_rows_it_answers():
 
     def post(url: str, payload: dict) -> dict:
         if url == OPENTARGETS_URL:
-            return {
-                "data": {
-                    "disease": {
-                        "associatedTargets": {
-                            "rows": [
-                                {
-                                    "target": {
-                                        "approvedSymbol": "TP53",
-                                        "proteinIds": [{"id": "P04637", "source": "uniprot"}],
-                                    }
-                                }
-                            ]
-                        }
-                    }
-                }
-            }
+            return _associated_targets(("TP53", "P04637"))
         return {"result_set": [{"identifier": "1TUP_1"}, {"identifier": "1TUP_2"}]}
 
     def get(url: str) -> dict:
@@ -3283,22 +3152,7 @@ def test_deposit_records_are_read_several_at_a_time_without_moving_a_row():
 
     def post(url: str, payload: dict) -> dict:
         if url == OPENTARGETS_URL:
-            return {
-                "data": {
-                    "disease": {
-                        "associatedTargets": {
-                            "rows": [
-                                {
-                                    "target": {
-                                        "approvedSymbol": "TP53",
-                                        "proteinIds": [{"id": "P04637", "source": "uniprot"}],
-                                    }
-                                }
-                            ]
-                        }
-                    }
-                }
-            }
+            return _associated_targets(("TP53", "P04637"))
         if UNIPROT_ATTRIBUTE not in json.dumps(payload):
             return {"result_set": []}
         return {"result_set": [{"identifier": f"{entry}_1"} for entry in ids]}
@@ -3350,22 +3204,7 @@ def test_a_repeated_deposit_is_still_read_once_and_alone_needs_no_pool():
 
     def post(url: str, payload: dict) -> dict:
         if url == OPENTARGETS_URL:
-            return {
-                "data": {
-                    "disease": {
-                        "associatedTargets": {
-                            "rows": [
-                                {
-                                    "target": {
-                                        "approvedSymbol": "TP53",
-                                        "proteinIds": [{"id": "P04637", "source": "uniprot"}],
-                                    }
-                                }
-                            ]
-                        }
-                    }
-                }
-            }
+            return _associated_targets(("TP53", "P04637"))
         if UNIPROT_ATTRIBUTE not in json.dumps(payload):
             return {"result_set": []}
         return {"result_set": [{"identifier": "1TUP_1"}, {"identifier": "1TUP_2"}, {"identifier": "1TUP_3"}]}
@@ -3391,22 +3230,7 @@ def test_the_caller_can_hold_the_deposit_records_so_going_back_rereads_nothing()
 
     def post(url: str, payload: dict) -> dict:
         if url == OPENTARGETS_URL:
-            return {
-                "data": {
-                    "disease": {
-                        "associatedTargets": {
-                            "rows": [
-                                {
-                                    "target": {
-                                        "approvedSymbol": "TP53",
-                                        "proteinIds": [{"id": "P04637", "source": "uniprot"}],
-                                    }
-                                }
-                            ]
-                        }
-                    }
-                }
-            }
+            return _associated_targets(("TP53", "P04637"))
         if UNIPROT_ATTRIBUTE not in json.dumps(payload):
             return {"result_set": []}
         return {"result_set": [{"identifier": "1TUP_1"}, {"identifier": "2TUP_1"}, {"identifier": "1BAD_1"}]}
@@ -3527,7 +3351,6 @@ def test_an_unknown_disease_asks_for_another_name(tmp_path: Path, monkeypatch, c
 
 
 def test_the_panel_asks_again_when_the_disease_is_not_found(tmp_path, monkeypatch, capsys):
-    block_live_calls(monkeypatch)
     catalog = asthma_catalog(tmp_path)
     records = tmp_path / "records.json"
     records.write_text(
@@ -3539,17 +3362,7 @@ def test_the_panel_asks_again_when_the_disease_is_not_found(tmp_path, monkeypatc
     pages: list[str] = []
 
     def fields(name: str) -> dict[str, list[str]]:
-        return {
-            "disease": [name],
-            "catalog": [str(catalog)],
-            "accept_only": ["yes"],
-            "structures_json": [str(records)],
-            "take_all": ["yes"],
-            "binder_kind": ["protein"],
-            "out_dir": [str(out)],
-            "where": ["local"],
-            "confirm_inference": ["yes"],
-        }
+        return _panel_landing(catalog, records, out, disease=[name], confirm_inference=["yes"])
 
     def exchange(page: str) -> dict[str, list[str]]:
         pages.append(page)
@@ -3559,12 +3372,11 @@ def test_the_panel_asks_again_when_the_disease_is_not_found(tmp_path, monkeypatc
             return fields("Asthma")
         return fields("not-a-disease")
 
-    code = cure_main(
-        ["--ui"],
+    code = _run_panel(
+        monkeypatch,
+        exchange,
         runner=lambda _argv: 0,  # Continue starts generation now.
         fetch=lambda _option: b"data_4PCW\n#\n",
-        read_line=lambda prompt: (_ for _ in ()).throw(AssertionError(prompt)),
-        exchange=exchange,
     )
     assert code == 0
     assert len(pages) == 3, "landing, not found, then the generation page"
@@ -3683,13 +3495,7 @@ def test_windows_file_explorer_adds_the_selected_remote_machine(tmp_path, monkey
 
     def exchange(page: str) -> dict[str, list[str]]:
         pages.append(page)
-        common = {
-            "disease": ["Asthma"],
-            "binder_kind": ["protein"],
-            "out_dir": ["out"],
-            "remote_dir": ["disease_runs"],
-            "where": ["local-and-remote"],
-        }
+        common = {**_PANEL_FIELDS, "where": ["local-and-remote"]}
         if len(pages) == 1:
             return {**common, "hosts": ["vm-typed"], "__action": ["browse-machine"]}
         held = page.split('<textarea name="hosts">', 1)[1].split("</textarea>", 1)[0]
@@ -3717,13 +3523,7 @@ def test_a_cancelled_explorer_stays_on_the_page_and_a_folder_is_refused(tmp_path
 
     def exchange(page: str) -> dict[str, list[str]]:
         pages.append(page)
-        common = {
-            "disease": ["Asthma"],
-            "binder_kind": ["protein"],
-            "out_dir": ["out"],
-            "remote_dir": ["disease_runs"],
-            "where": ["local"],
-        }
+        common = {**_PANEL_FIELDS, "where": ["local"]}
         if len(pages) < 3:
             return {**common, "__action": ["browse-machine"]}
         return common
@@ -3777,10 +3577,7 @@ def test_a_ticked_machine_becomes_a_named_host(tmp_path, monkeypatch, capsys):
     _ssh_files(tmp_path, monkeypatch, "Host vm-a\nHost vm-b\n")
     argv = OptionPanel(
         lambda _page: {
-            "disease": ["Asthma"],
-            "binder_kind": ["protein"],
-            "out_dir": ["out"],
-            "remote_dir": ["disease_runs"],
+            **_PANEL_FIELDS,
             "where": ["local-and-remote"],
             "hosts": ["vm-typed"],
             "remote_pick": ["vm-a", "vm-b", "vm-typed"],
@@ -3797,12 +3594,7 @@ def test_ticking_machines_while_set_to_this_machine_only_asks_again(tmp_path, mo
 
     def exchange(page: str) -> dict[str, list[str]]:
         pages.append(page)
-        common = {
-            "disease": ["Asthma"],
-            "binder_kind": ["protein"],
-            "out_dir": ["out"],
-            "remote_dir": ["disease_runs"],
-        }
+        common = dict(_PANEL_FIELDS)
         if len(pages) == 1:
             return {**common, "where": ["local"], "remote_pick": ["vm-a"]}
         return {**common, "where": ["local-and-remote"], "remote_pick": ["vm-a"]}
@@ -3819,13 +3611,7 @@ def test_searching_keeps_what_was_typed_and_what_was_ticked(tmp_path, monkeypatc
 
     def exchange(page: str) -> dict[str, list[str]]:
         pages.append(page)
-        common = {
-            "disease": ["Asthma"],
-            "binder_kind": ["ligand"],
-            "out_dir": ["kept-out"],
-            "remote_dir": ["disease_runs"],
-            "where": ["local-and-remote"],
-        }
+        common = {**_PANEL_FIELDS, "binder_kind": ["ligand"], "out_dir": ["kept-out"], "where": ["local-and-remote"]}
         if len(pages) == 1:
             # Tick one machine, then search instead of continuing.
             return {**common, "remote_pick": ["vm-a"], "machine_search": ["gpu"], "__action": ["search"]}
@@ -3911,57 +3697,27 @@ def test_an_upload_cannot_write_outside_its_directory(tmp_path):
 
 def test_an_upload_with_the_wrong_suffix_is_refused():
     with pytest.raises(ValueError, match=r"Upload a \.pdb, \.cif file"):
-        form_from_fields(
-            {
-                "disease": ["Asthma"],
-                "binder_kind": ["protein"],
-                "out_dir": ["out"],
-                "remote_dir": ["disease_runs"],
-                "target_structure": ["/tmp/up/notes.txt"],
-            }
-        )
-    kept = form_from_fields(
-        {
-            "disease": ["Asthma"],
-            "binder_kind": ["protein"],
-            "out_dir": ["out"],
-            "remote_dir": ["disease_runs"],
-            "target_structure": ["/tmp/up/shape.PDB"],
-        }
-    )
+        form_from_fields({**_PANEL_FIELDS, "target_structure": ["/tmp/up/notes.txt"]})
+    kept = form_from_fields({**_PANEL_FIELDS, "target_structure": ["/tmp/up/shape.PDB"]})
     assert kept.target_structure == "/tmp/up/shape.PDB", "the suffix check ignores case"
 
 
 def test_an_uploaded_target_is_listed_with_the_searched_structures(tmp_path, monkeypatch, capsys):
-    block_live_calls(monkeypatch)
-    catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(json.dumps([dict(ROW_P00533)]), encoding="utf-8")
+    records = structures_json(tmp_path, ROW_P00533)
     custom = tmp_path / "my-target.cif"
     custom.write_text("data_MINE\n_atom_site.id 1\n", encoding="utf-8")
     out = tmp_path / "with-upload"
     fetched: list[str] = []
 
-    code = cure_main(
-        [
-            "--catalog",
-            str(catalog),
-            "--disease",
-            "Asthma",
-            "--accept-only",
-            "--structures-json",
-            str(records),
-            "--target-structure",
-            str(custom),
-            "--pick",
-            "1",
-            "--confirm-inference",
-            "--out-dir",
-            str(out),
-        ],
+    captured = _run_cure(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        ["--structures-json", str(records), "--target-structure", str(custom), "--pick", "1", "--confirm-inference"],
+        out_dir=out,
         fetch=lambda option: fetched.append(option.entry_id) or b"data_X\n#\n",
     )
-    captured = capsys.readouterr()
+    code = captured.code
     assert code == 0, captured.err
     assert f"Custom target: {out / 'uploads' / 'my-target.cif'}" in captured.out
 
@@ -3983,33 +3739,20 @@ def test_an_uploaded_target_is_listed_with_the_searched_structures(tmp_path, mon
     ],
 )
 def test_a_bad_custom_target_is_refused_without_writing_it(tmp_path, monkeypatch, capsys, name, body, reason):
-    block_live_calls(monkeypatch)
-    catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(json.dumps([dict(ROW_P00533)]), encoding="utf-8")
+    records = structures_json(tmp_path, ROW_P00533)
     custom = tmp_path / name
     custom.write_bytes(body)
     out = tmp_path / f"refused-{name}-{reason[:6]}".replace(" ", "-")
 
-    code = cure_main(
-        [
-            "--catalog",
-            str(catalog),
-            "--disease",
-            "Asthma",
-            "--accept-only",
-            "--structures-json",
-            str(records),
-            "--target-structure",
-            str(custom),
-            "--all",
-            "--confirm-inference",
-            "--out-dir",
-            str(out),
-        ],
+    captured = _run_cure(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        ["--structures-json", str(records), "--target-structure", str(custom), "--all", "--confirm-inference"],
+        out_dir=out,
         fetch=lambda _option: (_ for _ in ()).throw(AssertionError("download")),
     )
-    captured = capsys.readouterr()
+    code = captured.code
     assert code == 2
     assert "The uploaded target could not be read:" in captured.err
     assert reason in captured.err
@@ -4410,15 +4153,7 @@ def test_the_option_panel_uses_dropdowns_and_tick_boxes():
         assert key_pos < model_pos
         key_at.append(key_pos)
     assert key_at == sorted(key_at)
-    for env_name in (
-        "XAI_API_KEY",
-        "GROK_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-        "NVIDIA_API_KEY",
-        "NVIDIA_NIM_API_KEY",
-        "OPENROUTER_API_KEY",
-    ):
+    for env_name in _KEY_ENV_NAMES:
         assert f"Leave blank to use {env_name}" not in html
     assert "Leave blank to keep it." not in html
     assert "Leave the last box clear to print commands and not start generation." not in html
@@ -4613,10 +4348,8 @@ def test_choosing_remote_machines_with_none_named_keeps_the_panel_open(tmp_path,
     Choosing remote machines and naming none used to raise out of main(), which closed
     the browser session and lost the whole form.
     """
-    block_live_calls(monkeypatch)
     catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(json.dumps([dict(ROW_P00533)]), encoding="utf-8")
+    records = structures_json(tmp_path, ROW_P00533)
     out = tmp_path / "recovered"
     pages: list[str] = []
 
@@ -4626,28 +4359,17 @@ def test_choosing_remote_machines_with_none_named_keeps_the_panel_open(tmp_path,
             return {"accept": ["yes"]}
         if 'name="binder_kind"' not in page:
             return {}  # the search page: leave the providers unticked
-        common = {
-            "disease": ["Asthma"],
-            "catalog": [str(catalog)],
-            "accept_only": ["yes"],
-            "structures_json": [str(records)],
-            "take_all": ["yes"],
-            "binder_kind": ["protein"],
-            "out_dir": [str(out)],
-            "remote_dir": ["disease_runs"],
-            "confirm_inference": ["yes"],
-        }
+        common = _panel_landing(catalog, records, out, confirm_inference=["yes"])
         if len(pages) == 1:
             return {**common, "where": ["remote"], "hosts": [""]}
         return {**common, "where": ["local"]}
 
-    code = cure_main(
-        ["--ui"],
+    code = _run_panel(
+        monkeypatch,
+        exchange,
         runner=lambda _argv: 0,  # Continue starts generation now.
         fetch=lambda _option: b"data_1EGFR\n#\n",
         read_json=lambda _url: {},
-        exchange=exchange,
-        read_line=lambda prompt: (_ for _ in ()).throw(AssertionError(prompt)),
     )
     captured = capsys.readouterr()
     assert code == 0, captured.err
@@ -4666,10 +4388,8 @@ def test_choosing_remote_machines_with_none_named_keeps_the_panel_open(tmp_path,
 
 
 def test_the_run_log_records_a_refusal_and_never_an_api_key(tmp_path, monkeypatch, capsys):
-    block_live_calls(monkeypatch)
     catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(json.dumps([dict(ROW_P00533)]), encoding="utf-8")
+    records = structures_json(tmp_path, ROW_P00533)
     out = tmp_path / "logged"
     log_file = tmp_path / "logs" / "run.log"
     pages: list[str] = []
@@ -4678,28 +4398,18 @@ def test_the_run_log_records_a_refusal_and_never_an_api_key(tmp_path, monkeypatc
         pages.append(page)
         if 'name="binder_kind"' not in page:
             return {}
-        common = {
-            "disease": ["Asthma"],
-            "catalog": [str(catalog)],
-            "accept_only": ["yes"],
-            "structures_json": [str(records)],
-            "take_all": ["yes"],
-            "binder_kind": ["protein"],
-            "out_dir": [str(out)],
-            "remote_dir": ["disease_runs"],
-            "confirm_inference": ["yes"],
-            "grok_key": ["sk-must-not-be-logged"],
-        }
+        common = _panel_landing(catalog, records, out, confirm_inference=["yes"], grok_key=["sk-must-not-be-logged"])
         if len(pages) == 1:
             return {**common, "local_workers": ["custom"], "local_workers_custom": ["many"]}
         return {**common, "local_workers": ["every"]}
 
-    code = cure_main(
-        ["--ui", "--log-file", str(log_file)],
+    code = _run_panel(
+        monkeypatch,
+        exchange,
+        "--log-file",
+        str(log_file),
         fetch=lambda _option: b"data_1EGFR\n#\n",
         read_json=lambda _url: {},
-        exchange=exchange,
-        read_line=lambda prompt: (_ for _ in ()).throw(AssertionError(prompt)),
     )
     captured = capsys.readouterr()
     assert code == 0, captured.err
@@ -4720,34 +4430,21 @@ def test_the_run_log_records_a_refusal_and_never_an_api_key(tmp_path, monkeypatc
 
 def test_an_unexpected_failure_is_logged_with_its_traceback(tmp_path, monkeypatch, capsys):
     """An error no handler expected is recorded, not printed as a raw traceback."""
-    block_live_calls(monkeypatch)
-    catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(json.dumps([dict(ROW_P00533)]), encoding="utf-8")
+    records = structures_json(tmp_path, ROW_P00533)
     log_file = tmp_path / "run.log"
 
     def fetch(_option):
         raise RuntimeError("the mirror went away")
 
-    code = cure_main(
-        [
-            "--catalog",
-            str(catalog),
-            "--disease",
-            "Asthma",
-            "--accept-only",
-            "--structures-json",
-            str(records),
-            "--all",
-            "--confirm-inference",
-            "--log-file",
-            str(log_file),
-            "--out-dir",
-            str(tmp_path / "boom"),
-        ],
+    captured = _run_cure(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        ["--structures-json", str(records), "--all", "--confirm-inference", "--log-file", str(log_file)],
+        out_dir=tmp_path / "boom",
         fetch=fetch,
     )
-    captured = capsys.readouterr()
+    code = captured.code
     assert code == 2
     assert "human stopped on an unexpected error." in captured.err
     assert str(log_file) in captured.err
@@ -4759,32 +4456,19 @@ def test_an_unexpected_failure_is_logged_with_its_traceback(tmp_path, monkeypatc
 
 
 def test_a_log_that_cannot_be_opened_does_not_stop_the_run(tmp_path, monkeypatch, capsys):
-    block_live_calls(monkeypatch)
-    catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(json.dumps([dict(ROW_P00533)]), encoding="utf-8")
+    records = structures_json(tmp_path, ROW_P00533)
     blocker = tmp_path / "not-a-directory"
     blocker.write_text("", encoding="utf-8")
 
-    code = cure_main(
-        [
-            "--catalog",
-            str(catalog),
-            "--disease",
-            "Asthma",
-            "--accept-only",
-            "--structures-json",
-            str(records),
-            "--all",
-            "--confirm-inference",
-            "--log-file",
-            str(blocker / "run.log"),
-            "--out-dir",
-            str(tmp_path / "unlogged"),
-        ],
+    captured = _run_cure(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        ["--structures-json", str(records), "--all", "--confirm-inference", "--log-file", str(blocker / "run.log")],
+        out_dir=tmp_path / "unlogged",
         fetch=lambda _option: b"data_1EGFR\n#\n",
     )
-    captured = capsys.readouterr()
+    code = captured.code
     assert code == 0, captured.err
     assert "The run log could not be opened" in captured.out
     assert "Selected 1 structure(s) for download." in captured.out
@@ -4850,33 +4534,19 @@ def test_the_panel_opens_through_powershell_outside_this_directory(monkeypatch, 
 
 
 def test_the_panel_ticks_structures_and_builds_both_host_commands(tmp_path, monkeypatch, capsys):
-    block_live_calls(monkeypatch)
     catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(
-        json.dumps(
-            [
-                {
-                    "group": "protein",
-                    "accession": "P00533",
-                    "entry_id": "1EGFR",
-                    "chain": "A",
-                    "title": "egfr",
-                    "predicted": False,
-                    "source": "fixture",
-                },
-                {
-                    "group": "protein",
-                    "accession": "P35225",
-                    "entry_id": "1IL13",
-                    "chain": "A",
-                    "title": "il13",
-                    "predicted": False,
-                    "source": "fixture",
-                },
-            ]
-        ),
-        encoding="utf-8",
+    records = structures_json(
+        tmp_path,
+        ROW_P00533,
+        {
+            "group": "protein",
+            "accession": "P35225",
+            "entry_id": "1IL13",
+            "chain": "A",
+            "title": "il13",
+            "predicted": False,
+            "source": "fixture",
+        },
     )
     out = tmp_path / "ui-runs"
     pages: list[str] = []
@@ -4884,19 +4554,17 @@ def test_the_panel_ticks_structures_and_builds_both_host_commands(tmp_path, monk
     def exchange(page: str) -> dict[str, list[str]]:
         pages.append(page)
         if 'name="binder_kind"' in page:
-            return {
-                "disease": ["Asthma"],
-                "catalog": [str(catalog)],
-                "accept_only": ["yes"],
-                "structures_json": [str(records)],
-                "binder_kind": ["peptide"],
-                "out_dir": [str(out)],
-                "where": ["local-and-remote"],
-                "hosts": ["vm-a"],
-                "remote_dir": ["disease_runs"],
-                "local_workers": ["every"],
-                "confirm_inference": ["yes"],
-            }
+            return _panel_landing(
+                catalog,
+                records,
+                out,
+                take_all=False,
+                binder_kind=["peptide"],
+                where=["local-and-remote"],
+                hosts=["vm-a"],
+                local_workers=["every"],
+                confirm_inference=["yes"],
+            )
         if 'type="checkbox" name="pick"' in page:
             assert "Instances of Structure in same databases 0" in page
             assert "Instances of Structure in different databases 0/8" in page
@@ -4913,20 +4581,19 @@ def test_the_panel_ticks_structures_and_builds_both_host_commands(tmp_path, monk
     def unused(*_args, **_kwargs):
         raise AssertionError("network")
 
-    code = cure_main(
-        ["--ui"],
+    code = _run_panel(
+        monkeypatch,
+        exchange,
         post=unused,
         get=unused,
         fetch=lambda _option: b"data_source\n",
         # The structures page asks the public databases for each row's program score.
         read_json=lambda _url: {},
-        read_line=lambda prompt: (_ for _ in ()).throw(AssertionError(prompt)),
         runner=lambda _argv: 0,
         # This run is local-and-remote, and the page starts generation now, so
         # the remote half would ssh and scp for real without these.
         transfer=lambda _host, _local, _remote: None,
         retrieve=lambda _host, _remote, _local: None,
-        exchange=exchange,
     )
     captured = capsys.readouterr()
     assert code == 0
@@ -4939,7 +4606,7 @@ def test_the_panel_ticks_structures_and_builds_both_host_commands(tmp_path, monk
     assert "Compared with the program search:" not in captured.out
     assert "Using the original release model." in captured.out
     assert captured.out.strip().endswith("Generation finished.")
-    commands = [line for line in captured.out.splitlines() if line.startswith("rfd4-generate")]
+    commands = _commands(captured.out)
     assert len(commands) == 2
     assert "+disease.host=local" in commands[0]
     assert "+disease.host=vm-a" in commands[1]
@@ -5035,40 +4702,27 @@ def test_a_changed_answer_stops_forward_past_that_page():
 
 def test_the_panel_goes_back_from_the_structures_page_to_the_landing_page(tmp_path, monkeypatch, capsys):
     """Back on a later page re-shows the earlier one and the run still finishes."""
-    block_live_calls(monkeypatch)
     catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(json.dumps([dict(ROW_P00533)]), encoding="utf-8")
+    records = structures_json(tmp_path, ROW_P00533)
     out = tmp_path / "went-back"
     pages: list[str] = []
 
     def exchange(page: str) -> dict[str, list[str]]:
         pages.append(page)
         if 'name="binder_kind"' in page:
-            return {
-                "disease": ["Asthma"],
-                "catalog": [str(catalog)],
-                "accept_only": ["yes"],
-                "structures_json": [str(records)],
-                "binder_kind": ["protein"],
-                "out_dir": [str(out)],
-                "where": ["local"],
-                "remote_dir": ["disease_runs"],
-                "confirm_inference": ["yes"],
-            }
+            return _panel_landing(catalog, records, out, take_all=False, confirm_inference=["yes"])
         if _is_generation_page(page):
             return {"accept": ["yes"]}
         # The structures page: go back the first time it is shown, then take every row.
         seen_pages = sum(1 for seen in pages if 'type="checkbox" name="pick"' in seen)
         return {"__nav": ["back"]} if seen_pages == 1 else {"all": ["yes"]}
 
-    code = cure_main(
-        ["--ui"],
+    code = _run_panel(
+        monkeypatch,
+        exchange,
         runner=lambda _argv: 0,  # Continue starts generation now.
         fetch=lambda _option: b"data_1EGFR\n#\n",
         read_json=lambda _url: {},
-        exchange=exchange,
-        read_line=lambda prompt: (_ for _ in ()).throw(AssertionError(prompt)),
     )
     captured = capsys.readouterr()
     assert code == 0, captured.err
@@ -5171,10 +4825,8 @@ def _panel_landing(catalog, records, out, *, take_all: bool = True, **extra) -> 
 
 def test_the_panel_asks_for_inference_instead_of_the_terminal(tmp_path, monkeypatch, capsys):
     """The reported gap: the confirmation was a terminal prompt a panel run could not answer."""
-    block_live_calls(monkeypatch)
     catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(json.dumps([dict(ROW_P00533)]), encoding="utf-8")
+    records = structures_json(tmp_path, ROW_P00533)
     out = tmp_path / "panel-inference"
     pages: list[str] = []
     started: list[list[str]] = []
@@ -5185,12 +4837,11 @@ def test_the_panel_asks_for_inference_instead_of_the_terminal(tmp_path, monkeypa
             return _panel_landing(catalog, records, out)
         return {"accept": ["yes"], "run": ["yes"]}
 
-    code = cure_main(
-        ["--ui"],
+    code = _run_panel(
+        monkeypatch,
+        exchange,
         fetch=lambda _option: b"data_1EGFR\n#\n",
         read_json=lambda _url: {},
-        exchange=exchange,
-        read_line=refuse_prompt,
         runner=lambda argv: started.append(list(argv)) or 0,
     )
     captured = capsys.readouterr()
@@ -5212,10 +4863,8 @@ def test_the_panel_asks_for_inference_instead_of_the_terminal(tmp_path, monkeypa
 
 
 def test_clearing_the_inference_box_stops_and_keeps_the_downloads(tmp_path, monkeypatch, capsys):
-    block_live_calls(monkeypatch)
     catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(json.dumps([dict(ROW_P00533)]), encoding="utf-8")
+    records = structures_json(tmp_path, ROW_P00533)
     out = tmp_path / "declined"
 
     def exchange(page: str) -> dict[str, list[str]]:
@@ -5223,12 +4872,11 @@ def test_clearing_the_inference_box_stops_and_keeps_the_downloads(tmp_path, monk
             return _panel_landing(catalog, records, out)
         return {}  # neither box ticked
 
-    code = cure_main(
-        ["--ui"],
+    code = _run_panel(
+        monkeypatch,
+        exchange,
         fetch=lambda _option: b"data_1EGFR\n#\n",
         read_json=lambda _url: {},
-        exchange=exchange,
-        read_line=refuse_prompt,
         runner=lambda _argv: (_ for _ in ()).throw(AssertionError("generation")),
     )
     captured = capsys.readouterr()
@@ -5248,11 +4896,9 @@ def test_download_goes_straight_to_the_generation_page_after_a_search(tmp_path, 
     fetched and that nothing was fetched before it: the ticked structure, once,
     after the last page that could still change the selection.
     """
-    block_live_calls(monkeypatch)
     monkeypatch.setenv("XAI_API_KEY", "test-key")
     catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(json.dumps([dict(ROW_P00533)]), encoding="utf-8")
+    records = structures_json(tmp_path, ROW_P00533)
     out = tmp_path / "straight-to-generation"
     pages: list[str] = []
     fetched: list[str] = []
@@ -5282,14 +4928,13 @@ def test_download_goes_straight_to_the_generation_page_after_a_search(tmp_path, 
         model_calls["n"] += 1
         return json.dumps({"rating": 50, "reason": "", "ideas": "An idea.", "structures": []})
 
-    code = cure_main(
-        ["--ui"],
+    code = _run_panel(
+        monkeypatch,
+        exchange,
         runner=lambda _argv: 0,  # Continue starts generation now.
         fetch=lambda option: fetched.append(option.entry_id) or b"data_1EGFR\n#\n",
         read_json=lambda _url: {},
         complete=complete,
-        exchange=exchange,
-        read_line=refuse_prompt,
     )
     captured = capsys.readouterr()
     assert code == 0, captured.err
@@ -5316,24 +4961,7 @@ def test_download_fetches_the_selected_structure_from_the_searched_archive(tmp_p
     block_live_calls(monkeypatch)
     monkeypatch.setenv("XAI_API_KEY", "test-key")
     catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(
-        json.dumps(
-            [
-                dict(ROW_P00533),
-                {
-                    "group": "protein",
-                    "accession": "P35225",
-                    "entry_id": "2IL13",
-                    "chain": "B",
-                    "title": "interleukin 13",
-                    "predicted": False,
-                    "source": "rcsb",
-                },
-            ]
-        ),
-        encoding="utf-8",
-    )
+    records = structures_json(tmp_path, ROW_P00533, {**ROW_P35225, "source": "rcsb"})
     out = tmp_path / "selected-archive"
     reads: list[str] = []
     structure_urls: list[str] = []
@@ -5350,22 +4978,9 @@ def test_download_fetches_the_selected_structure_from_the_searched_archive(tmp_p
         assert "2IL13" in user
         return json.dumps({"ranked": [{"pdb_id": "1EGFR", "chain": "A", "rating": 20, "reason": "Listed."}]})
 
-    class _File:
-        def __init__(self, payload: bytes) -> None:
-            self._payload = payload
-
-        def read(self) -> bytes:
-            return self._payload
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args) -> bool:
-            return False
-
     def structure_open(request, timeout=0):
         structure_urls.append(request.full_url)
-        return _File(b"data_1EGFR\n#\n")
+        return _Response(b"data_1EGFR\n#\n")
 
     monkeypatch.setattr("rfproteina.disease.sources.urlopen", structure_open)
 
@@ -5416,43 +5031,37 @@ def test_download_fetches_the_selected_structure_from_the_searched_archive(tmp_p
 
 def test_found_structures_are_appended_and_research_keeps_its_rank(tmp_path, monkeypatch, capsys):
     """A new find takes the next number after the list, and an earlier rank stays."""
-    block_live_calls(monkeypatch)
     monkeypatch.setenv("XAI_API_KEY", "test-key")
     catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(
-        json.dumps(
-            [
-                {
-                    "group": "protein",
-                    "accession": "P00533",
-                    "entry_id": "1EGF",
-                    "chain": "A",
-                    "title": "egfr",
-                    "predicted": False,
-                    "source": "rcsb",
-                },
-                {
-                    "group": "protein",
-                    "accession": "P35225",
-                    "entry_id": "2IL1",
-                    "chain": "B",
-                    "title": "interleukin",
-                    "predicted": False,
-                    "source": "rcsb",
-                },
-                {
-                    "group": "dna",
-                    "accession": "NUC1",
-                    "entry_id": "1DNA",
-                    "chain": "C",
-                    "title": "a dna complex",
-                    "predicted": False,
-                    "source": "rcsb",
-                },
-            ]
-        ),
-        encoding="utf-8",
+    records = structures_json(
+        tmp_path,
+        {
+            "group": "protein",
+            "accession": "P00533",
+            "entry_id": "1EGF",
+            "chain": "A",
+            "title": "egfr",
+            "predicted": False,
+            "source": "rcsb",
+        },
+        {
+            "group": "protein",
+            "accession": "P35225",
+            "entry_id": "2IL1",
+            "chain": "B",
+            "title": "interleukin",
+            "predicted": False,
+            "source": "rcsb",
+        },
+        {
+            "group": "dna",
+            "accession": "NUC1",
+            "entry_id": "1DNA",
+            "chain": "C",
+            "title": "a dna complex",
+            "predicted": False,
+            "source": "rcsb",
+        },
     )
     out = tmp_path / "appended"
     pages: list[str] = []
@@ -5482,14 +5091,13 @@ def test_found_structures_are_appended_and_research_keeps_its_rank(tmp_path, mon
             return json.dumps({"ranked": [{"pdb_id": "1EGF", "chain": "A", "rating": 20, "reason": "Listed."}]})
         return json.dumps({"structures": [{"pdb_id": "3NEW", "chain": "A", "reason": "A new deposit."}]})
 
-    code = cure_main(
-        ["--ui"],
+    code = _run_panel(
+        monkeypatch,
+        exchange,
         get=lambda _url: {"struct": {"title": "a new deposit"}},
         read_json=lambda _url: {},
         fetch=lambda _option: b"data_1EGFR\n#\n",
         complete=complete,
-        exchange=exchange,
-        read_line=refuse_prompt,
     )
     captured = capsys.readouterr()
     assert code == 0, captured.err
@@ -5504,10 +5112,8 @@ def test_the_page_can_ask_for_the_modified_model_and_it_is_launched(tmp_path, mo
     modified one loads that checkpoint instead of the release pair; the structure
     and its output directory are the same either way, because one model runs.
     """
-    block_live_calls(monkeypatch)
     catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(json.dumps([dict(ROW_P00533)]), encoding="utf-8")
+    records = structures_json(tmp_path, ROW_P00533)
     out = tmp_path / "both-models"
     checkpoint = tmp_path / "disease.ckpt"
     checkpoint.write_bytes(b"not-a-checkpoint")
@@ -5527,12 +5133,11 @@ def test_the_page_can_ask_for_the_modified_model_and_it_is_launched(tmp_path, mo
         assert page.count('name="generate_with"') == 2, "two models, so two choices"
         return {"accept": ["yes"], "run": ["yes"], "generate_with": ["modified"]}
 
-    code = cure_main(
-        ["--ui"],
+    code = _run_panel(
+        monkeypatch,
+        exchange,
         fetch=lambda _option: b"data_1EGFR\n#\n",
         read_json=lambda _url: {},
-        exchange=exchange,
-        read_line=refuse_prompt,
         runner=lambda argv: launched.append(list(argv)) or 0,
     )
     captured = capsys.readouterr()
@@ -5553,10 +5158,8 @@ def test_the_page_can_ask_for_the_modified_model_and_it_is_launched(tmp_path, mo
 
 
 def test_the_inference_page_cannot_go_back_because_the_downloads_are_done(tmp_path, monkeypatch, capsys):
-    block_live_calls(monkeypatch)
     catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(json.dumps([dict(ROW_P00533)]), encoding="utf-8")
+    records = structures_json(tmp_path, ROW_P00533)
     out = tmp_path / "sealed"
     pages: list[str] = []
 
@@ -5568,13 +5171,12 @@ def test_the_inference_page_cannot_go_back_because_the_downloads_are_done(tmp_pa
             return {"all": ["yes"]}
         return {"accept": ["yes"]}
 
-    code = cure_main(
-        ["--ui"],
+    code = _run_panel(
+        monkeypatch,
+        exchange,
         runner=lambda _argv: 0,  # Continue starts generation now.
         fetch=lambda _option: b"data_1EGFR\n#\n",
         read_json=lambda _url: {},
-        exchange=exchange,
-        read_line=refuse_prompt,
     )
     captured = capsys.readouterr()
     assert code == 0, captured.err
@@ -6034,7 +5636,6 @@ def test_the_confirm_page_uses_the_tick_or_the_matching_names_menu():
 
 def test_a_clear_confirm_tick_uses_the_matching_names_menu(tmp_path, monkeypatch, capsys):
     """One exact hit stays on the tick page, and a clear tick follows the menu."""
-    block_live_calls(monkeypatch)
     catalog = tmp_path / "two.json"
     catalog.write_text(
         json.dumps(
@@ -6045,8 +5646,7 @@ def test_a_clear_confirm_tick_uses_the_matching_names_menu(tmp_path, monkeypatch
         ),
         encoding="utf-8",
     )
-    records = tmp_path / "structures.json"
-    records.write_text(json.dumps([dict(ROW_P00533)]), encoding="utf-8")
+    records = structures_json(tmp_path, ROW_P00533)
     pages: list[str] = []
 
     def exchange(page: str) -> dict[str, list[str]]:
@@ -6072,13 +5672,13 @@ def test_a_clear_confirm_tick_uses_the_matching_names_menu(tmp_path, monkeypatch
         assert "Allergic asthma (EFO_0002682)" in page
         return {"choice": ["2"]}
 
-    code = cure_main(
-        ["--ui"],
+    code = _run_panel(
+        monkeypatch,
+        exchange,
         runner=lambda _argv: 0,  # Continue starts generation now.
         post=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("network")),
         get=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("network")),
         fetch=lambda _option: b"data_source\n",
-        exchange=exchange,
     )
     stdout = capsys.readouterr().out
     assert code == 0
@@ -6088,29 +5688,12 @@ def test_a_clear_confirm_tick_uses_the_matching_names_menu(tmp_path, monkeypatch
 
 
 def test_the_panel_picks_a_similar_name_from_the_dropdown(tmp_path, monkeypatch, capsys):
-    block_live_calls(monkeypatch)
     catalog = tmp_path / "two.json"
     catalog.write_text(
         '[{"name": "Breast cancer", "disease_id": "A"}, {"name": "Breast carcinoma", "disease_id": "B"}]',
         encoding="utf-8",
     )
-    records = tmp_path / "structures.json"
-    records.write_text(
-        json.dumps(
-            [
-                {
-                    "group": "protein",
-                    "accession": "P00533",
-                    "entry_id": "1EGFR",
-                    "chain": "A",
-                    "title": "egfr",
-                    "predicted": False,
-                    "source": "fixture",
-                }
-            ]
-        ),
-        encoding="utf-8",
-    )
+    records = structures_json(tmp_path, ROW_P00533)
     pages: list[str] = []
 
     def exchange(page: str) -> dict[str, list[str]]:
@@ -6135,13 +5718,13 @@ def test_the_panel_picks_a_similar_name_from_the_dropdown(tmp_path, monkeypatch,
         assert '<select name="choice"' in page
         return {"choice": ["2"]}
 
-    code = cure_main(
-        ["--ui"],
+    code = _run_panel(
+        monkeypatch,
+        exchange,
         runner=lambda _argv: 0,  # Continue starts generation now.
         post=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("network")),
         get=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("network")),
         fetch=lambda _option: b"data_source\n",
-        exchange=exchange,
     )
     stdout = capsys.readouterr().out
     assert code == 0
@@ -6337,23 +5920,7 @@ def test_a_landing_page_key_is_saved_encrypted(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("GROK_API_KEY", raising=False)
     secret = "panel-secret-key"
     catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(
-        json.dumps(
-            [
-                {
-                    "group": "protein",
-                    "accession": "P00533",
-                    "entry_id": "1EGFR",
-                    "chain": "A",
-                    "title": "egfr",
-                    "predicted": False,
-                    "source": "fixture",
-                }
-            ]
-        ),
-        encoding="utf-8",
-    )
+    records = structures_json(tmp_path, ROW_P00533)
     out = tmp_path / "keyed"
     seen: dict[str, object] = {}
     chats: list[str] = []
@@ -6362,17 +5929,7 @@ def test_a_landing_page_key_is_saved_encrypted(tmp_path, monkeypatch, capsys):
         assert secret not in page
         if 'name="binder_kind"' in page:
             assert 'type="password" name="claude_key"' in page
-            return {
-                "disease": ["Asthma"],
-                "catalog": [str(catalog)],
-                "accept_only": ["yes"],
-                "structures_json": [str(records)],
-                "binder_kind": ["protein"],
-                "out_dir": [str(out)],
-                "where": ["local"],
-                "confirm_inference": ["yes"],
-                "grok_key": [secret],
-            }
+            return _panel_landing(catalog, records, out, take_all=False, confirm_inference=["yes"], grok_key=[secret])
         if 'type="checkbox" name="pick"' in page:
             assert 'name="all_models"' in page
             assert 'name="research"' not in page, "provider boxes are gone"
@@ -6408,7 +5965,7 @@ def test_a_landing_page_key_is_saved_encrypted(tmp_path, monkeypatch, capsys):
         fetch=lambda _option: b"data_1EGFR\n#\n",
         read_json=read,
         exchange=exchange,
-        read_line=lambda prompt: (_ for _ in ()).throw(AssertionError(prompt)),
+        read_line=refuse_prompt,
     )
     captured = capsys.readouterr()
     assert code == 0
@@ -6437,23 +5994,7 @@ def test_a_saved_key_is_used_on_the_next_run(tmp_path, monkeypatch, capsys):
     save_api_keys({"grok": secret})
     assert secret not in _stored_key_text()
     catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(
-        json.dumps(
-            [
-                {
-                    "group": "protein",
-                    "accession": "P00533",
-                    "entry_id": "1EGFR",
-                    "chain": "A",
-                    "title": "egfr",
-                    "predicted": False,
-                    "source": "fixture",
-                }
-            ]
-        ),
-        encoding="utf-8",
-    )
+    records = structures_json(tmp_path, ROW_P00533)
     seen: dict[str, object] = {}
 
     def read(url: str):
@@ -6530,31 +6071,18 @@ def test_research_score_is_the_record_count_and_names_real_structures_for_genera
     block_live_calls(monkeypatch)
     monkeypatch.setenv("XAI_API_KEY", "sk-should-not-appear")
     catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(
-        json.dumps(
-            [
-                {
-                    "group": "protein",
-                    "accession": "P00533",
-                    "entry_id": "1EGFR",
-                    "chain": "A",
-                    "title": "egfr",
-                    "predicted": False,
-                    "source": "fixture",
-                },
-                {
-                    "group": "protein",
-                    "accession": "P00533",
-                    "entry_id": "9ZZZ",
-                    "chain": "B",
-                    "title": "predicted egfr",
-                    "predicted": True,
-                    "source": "fixture",
-                },
-            ]
-        ),
-        encoding="utf-8",
+    records = structures_json(
+        tmp_path,
+        ROW_P00533,
+        {
+            "group": "protein",
+            "accession": "P00533",
+            "entry_id": "9ZZZ",
+            "chain": "B",
+            "title": "predicted egfr",
+            "predicted": True,
+            "source": "fixture",
+        },
     )
     fetched: list[str] = []
 
@@ -6688,27 +6216,9 @@ def test_every_listed_target_is_scored_not_just_the_first_few():
 
 def test_the_structures_page_scores_each_row_by_its_record_count(tmp_path, monkeypatch, capsys):
     """The choose-structures score is the record count, and the databases answer once."""
-    block_live_calls(monkeypatch)
     monkeypatch.setenv("XAI_API_KEY", "test-key")
     catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(
-        json.dumps(
-            [
-                dict(ROW_P00533),
-                {
-                    "group": "protein",
-                    "accession": "P35225",
-                    "entry_id": "2IL13",
-                    "chain": "B",
-                    "title": "interleukin 13",
-                    "predicted": True,
-                    "source": "fixture",
-                },
-            ]
-        ),
-        encoding="utf-8",
-    )
+    records = structures_json(tmp_path, ROW_P00533, {**ROW_P35225, "predicted": True})
     reads: list[str] = []
 
     def read(url: str):
@@ -6730,17 +6240,7 @@ def test_the_structures_page_scores_each_row_by_its_record_count(tmp_path, monke
     def exchange(page: str) -> dict[str, list[str]]:
         pages.append(page)
         if 'name="binder_kind"' in page:
-            return {
-                "disease": ["Asthma"],
-                "catalog": [str(catalog)],
-                "accept_only": ["yes"],
-                "structures_json": [str(records)],
-                "binder_kind": ["protein"],
-                "out_dir": [str(out)],
-                "where": ["local"],
-                "remote_dir": ["disease_runs"],
-                "confirm_inference": ["yes"],
-            }
+            return _panel_landing(catalog, records, out, take_all=False, confirm_inference=["yes"])
         if 'type="checkbox" name="pick"' in page:
             shown = sum(1 for seen in pages if 'type="checkbox" name="pick"' in seen)
             if shown == 1:
@@ -6749,13 +6249,12 @@ def test_the_structures_page_scores_each_row_by_its_record_count(tmp_path, monke
             return {"pick": ["1"]}
         return {}
 
-    code = cure_main(
-        ["--ui"],
+    code = _run_panel(
+        monkeypatch,
+        exchange,
         fetch=lambda _option: b"data_X\n#\n",
         read_json=read,
         complete=lambda *_args: json.dumps({"rating": 70, "reason": "", "ideas": "An idea."}),
-        exchange=exchange,
-        read_line=refuse_prompt,
     )
     captured = capsys.readouterr()
     assert code == 0, captured.err
@@ -6789,52 +6288,27 @@ def test_the_structures_page_scores_each_row_by_its_record_count(tmp_path, monke
 
 def test_the_deposit_method_does_not_change_the_ranked_score(tmp_path, monkeypatch, capsys):
     """Ranking scores on records alone. Experimental against predicted is not in it."""
-    block_live_calls(monkeypatch)
-    catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(
-        json.dumps(
-            [
-                dict(ROW_P00533),
-                {
-                    "group": "protein",
-                    "accession": "P00533",
-                    "entry_id": "3POZ",
-                    "chain": "A",
-                    "title": "egfr",
-                    "predicted": False,
-                    "source": "fixture",
-                },
-                {
-                    "group": "gene",
-                    "accession": "GATA3",
-                    "entry_id": "GATA3",
-                    "chain": "A",
-                    "title": "gata3",
-                    "predicted": True,
-                    "source": "fixture",
-                },
-            ]
-        ),
-        encoding="utf-8",
+    records = structures_json(
+        tmp_path,
+        ROW_P00533,
+        {**ROW_P00533, "entry_id": "3POZ"},
+        {
+            "group": "gene",
+            "accession": "GATA3",
+            "entry_id": "GATA3",
+            "chain": "A",
+            "title": "gata3",
+            "predicted": True,
+            "source": "fixture",
+        },
     )
     out = tmp_path / "record-score"
-    code = cure_main(
-        [
-            "--catalog",
-            str(catalog),
-            "--disease",
-            "Asthma",
-            "--accept-only",
-            "--structures-json",
-            str(records),
-            "--all",
-            "--confirm-inference",
-            "--research",
-            "grok",
-            "--out-dir",
-            str(out),
-        ],
+    captured = _run_cure(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        ["--structures-json", str(records), "--all", "--confirm-inference", "--research", "grok"],
+        out_dir=out,
         fetch=lambda _option: b"data_X\n#\n",
         # Only the protein has a UniProt record, so the two targets differ on the score.
         read_json=lambda url: (
@@ -6842,7 +6316,7 @@ def test_the_deposit_method_does_not_change_the_ranked_score(tmp_path, monkeypat
         ),
         complete=lambda *_args: json.dumps({"rating": 70, "reason": "", "ideas": "An idea."}),
     )
-    captured = capsys.readouterr()
+    code = captured.code
     assert code == 0, captured.err
 
     # The score is the record count for each protein or gene.
@@ -6975,17 +6449,16 @@ def test_both_searches_report_below_the_llm_search():
     """
     rows = [_option("protein", "1EGFR"), _option("protein", "2XYZ")]
     ranking = [
-        {
-            "number": 2,
-            "entry_id": "2XYZ",
-            "chain": "A",
-            "accession": "ACC-2XYZ",
-            "title": "2XYZ",
-            "source": "llm",
-            "ratings": {"grok grok-4.7": 40},
-            "reasons": {"grok grok-4.7": "Worth a binder design."},
-            "value": 40.0,
-        }
+        _ranked(
+            2,
+            "2XYZ",
+            "ACC-2XYZ",
+            {"grok grok-4.7": 40},
+            40.0,
+            title="2XYZ",
+            source="llm",
+            reasons={"grok grok-4.7": "Worth a binder design."},
+        )
     ]
     found = merge_found_by({}, {"found_by": {"grok grok-4.7": [["2XYZ", "A"]]}})
     results = llm_results(rows, found=found, ranking={"ranked": ranking})
@@ -7107,6 +6580,22 @@ def test_the_first_search_only_adds_structures_the_data_bank_really_has():
     assert all("1AAA" not in url for url in asked), "a row already listed is not looked up again"
 
 
+def _af_record(
+    accession: str, fragment: int = 1, description: str = "EGFR", *, sequence: str | None = "MKTSHOULDNOTBESTORED"
+) -> dict:
+    """One AlphaFold prediction record as the EBI API lists it; ``sequence=None`` leaves it out."""
+    entry = f"AF-{accession}-F{fragment}"
+    record = {
+        "entryId": entry,
+        "uniprotAccession": accession,
+        "uniprotDescription": description,
+        "cifUrl": f"https://alphafold.ebi.ac.uk/files/{entry}-model_v6.cif",
+    }
+    if sequence is not None:
+        record["sequence"] = sequence
+    return record
+
+
 def test_the_first_search_keeps_a_published_af_id():
     """An AlphaFold Database id is added when that model exists. Its sequence is not stored.
 
@@ -7122,19 +6611,9 @@ def test_the_first_search_keeps_a_published_af_id():
 
     def verify(url):
         assert url == "https://alphafold.ebi.ac.uk/api/prediction/P00533"
-        return [
-            {
-                "entryId": "AF-P00533-F1",
-                "uniprotAccession": "P00533",
-                "uniprotDescription": "EGFR",
-                "cifUrl": "https://alphafold.ebi.ac.uk/files/AF-P00533-F1-model_v6.cif",
-                "sequence": "MKTSHOULDNOTBESTORED",
-            }
-        ]
+        return [_af_record("P00533")]
 
-    added, report = missing_structures(
-        Disease("Asthma", "EFO_0000270"), rows, providers="grok", verify=verify, complete=complete
-    )
+    added, report = missing_structures(CATALOG[0], rows, providers="grok", verify=verify, complete=complete)
     assert [(row.entry_id, row.accession, row.predicted, row.source) for row in added] == [
         ("AF-P00533-F1", "P00533", True, "alphafold")
     ]
@@ -7165,20 +6644,10 @@ def test_the_first_search_uses_an_alphafold_id_when_the_pdb_id_is_missing():
     def verify(url):
         asked.append(url)
         if url == "https://alphafold.ebi.ac.uk/api/prediction/A0AB40D056":
-            return [
-                {
-                    "entryId": "AF-A0AB40D056-F2",
-                    "uniprotAccession": "A0AB40D056",
-                    "uniprotDescription": "Long protein fragment 2",
-                    "cifUrl": "https://alphafold.ebi.ac.uk/files/AF-A0AB40D056-F2-model_v6.cif",
-                    "sequence": "MKTSHOULDNOTBESTORED",
-                }
-            ]
+            return [_af_record("A0AB40D056", 2, "Long protein fragment 2")]
         return {}
 
-    added, report = missing_structures(
-        Disease("Asthma", "EFO_0000270"), rows, providers="grok", verify=verify, complete=complete
-    )
+    added, report = missing_structures(CATALOG[0], rows, providers="grok", verify=verify, complete=complete)
     assert [(row.entry_id, row.accession, row.predicted, row.source) for row in added] == [
         ("AF-A0AB40D056-F2", "A0AB40D056", True, "alphafold")
     ]
@@ -7197,18 +6666,9 @@ def test_a_uniprot_id_alone_uses_the_first_alphafold_fragment():
 
     def verify(url):
         assert url == "https://alphafold.ebi.ac.uk/api/prediction/A0AB40D056"
-        return [
-            {
-                "entryId": "AF-A0AB40D056-F1",
-                "uniprotAccession": "A0AB40D056",
-                "uniprotDescription": "Long protein",
-                "cifUrl": "https://alphafold.ebi.ac.uk/files/AF-A0AB40D056-F1-model_v6.cif",
-            }
-        ]
+        return [_af_record("A0AB40D056", 1, "Long protein", sequence=None)]
 
-    added, _report = missing_structures(
-        Disease("Asthma", "EFO_0000270"), rows, providers="grok", verify=verify, complete=complete
-    )
+    added, _report = missing_structures(CATALOG[0], rows, providers="grok", verify=verify, complete=complete)
     assert [(row.entry_id, row.accession, row.predicted, row.source) for row in added] == [
         ("AF-A0AB40D056-F1", "A0AB40D056", True, "alphafold")
     ]
@@ -7239,9 +6699,7 @@ def test_a_pdb_deposit_is_kept_when_the_reply_also_names_an_alphafold_model():
         assert "alphafold.ebi.ac.uk" not in url
         return {"struct": {"title": "EGFR kinase domain"}}
 
-    added, _report = missing_structures(
-        Disease("Asthma", "EFO_0000270"), rows, providers="grok", verify=verify, complete=complete
-    )
+    added, _report = missing_structures(CATALOG[0], rows, providers="grok", verify=verify, complete=complete)
     assert [(row.entry_id, row.predicted, row.source) for row in added] == [("3POZ", False, "llm")]
     assert asked == ["https://data.rcsb.org/rest/v1/core/entry/3POZ"]
 
@@ -7266,19 +6724,9 @@ def test_a_uniprot_id_uses_the_only_published_fragment_when_f1_is_absent():
 
     def verify(url):
         assert url == "https://alphafold.ebi.ac.uk/api/prediction/A0AB40D056"
-        return [
-            {
-                "entryId": "AF-A0AB40D056-F2",
-                "uniprotAccession": "A0AB40D056",
-                "uniprotDescription": "Long protein fragment 2",
-                "cifUrl": "https://alphafold.ebi.ac.uk/files/AF-A0AB40D056-F2-model_v6.cif",
-                "sequence": "MKTSHOULDNOTBESTORED",
-            }
-        ]
+        return [_af_record("A0AB40D056", 2, "Long protein fragment 2")]
 
-    added, report = missing_structures(
-        Disease("Asthma", "EFO_0000270"), rows, providers="grok", verify=verify, complete=complete
-    )
+    added, report = missing_structures(CATALOG[0], rows, providers="grok", verify=verify, complete=complete)
     assert [(row.entry_id, row.accession, row.chain, row.predicted, row.source) for row in added] == [
         ("AF-A0AB40D056-F2", "A0AB40D056", "A", True, "alphafold")
     ]
@@ -7444,8 +6892,8 @@ def test_the_second_search_ranks_every_listed_structure():
     assert unrated["ratings"] == {}
 
 
-def _ranked(number, entry_id, accession, ratings, value, *, chain="A", title="t", source="rcsb"):
-    return {
+def _ranked(number, entry_id, accession, ratings, value, *, chain="A", title="t", source="rcsb", reasons=None):
+    ranked = {
         "number": number,
         "entry_id": entry_id,
         "chain": chain,
@@ -7453,8 +6901,11 @@ def _ranked(number, entry_id, accession, ratings, value, *, chain="A", title="t"
         "title": title,
         "source": source,
         "ratings": dict(ratings),
-        "value": value,
     }
+    if reasons is not None:
+        ranked["reasons"] = dict(reasons)
+    ranked["value"] = value
+    return ranked
 
 
 def test_the_first_search_keeps_which_model_named_each_structure():
@@ -7904,10 +7355,8 @@ def test_the_second_search_runs_without_the_first():
 
 
 def test_a_search_with_no_model_ticked_says_so_and_keeps_the_page(tmp_path, monkeypatch, capsys):
-    block_live_calls(monkeypatch)
     catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(json.dumps([dict(ROW_P00533)]), encoding="utf-8")
+    records = structures_json(tmp_path, ROW_P00533)
     out = tmp_path / "no-model"
     pages: list[str] = []
 
@@ -7922,13 +7371,12 @@ def test_a_search_with_no_model_ticked_says_so_and_keeps_the_page(tmp_path, monk
             return {"next": ["missing"]}  # pressed with nothing ticked
         return {"all": ["yes"]}
 
-    code = cure_main(
-        ["--ui"],
+    code = _run_panel(
+        monkeypatch,
+        exchange,
         runner=lambda _argv: 0,  # Continue starts generation now.
         fetch=lambda _option: b"data_X\n#\n",
         read_json=lambda _url: {},
-        exchange=exchange,
-        read_line=refuse_prompt,
     )
     captured = capsys.readouterr()
     assert code == 0, captured.err
@@ -8325,19 +7773,9 @@ def test_grok_bot_needs_no_key_and_stays_out_of_the_saved_key_list():
     assert 'value="grokbot|chief-of-staff" data-saved="no"' in keyed
 
 
-def test_submit_question_includes_grok_bot_and_the_searches_do_not(monkeypatch, tmp_path):
+def test_submit_question_includes_grok_bot_and_the_searches_do_not(monkeypatch):
     """Only Submit question keeps the keyless tick. Download and both searches drop it."""
-    monkeypatch.setenv("RFD4_KEY_DIR", str(tmp_path / "keys"))
-    for name in (
-        "XAI_API_KEY",
-        "GROK_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-        "NVIDIA_API_KEY",
-        "NVIDIA_NIM_API_KEY",
-        "OPENROUTER_API_KEY",
-    ):
-        monkeypatch.delenv(name, raising=False)
+    _clear_provider_keys(monkeypatch)
     rows = [_option("protein", "1AAA")]
 
     def chosen(fields: dict[str, list[str]]) -> tuple[str, list[str]]:
@@ -8520,23 +7958,9 @@ def test_submit_question_returns_the_grok_bot_reply_and_the_searches_do_not(tmp_
     import re
     from html import unescape
 
-    block_live_calls(monkeypatch)
-    monkeypatch.setenv("RFD4_KEY_DIR", str(tmp_path / "keys"))
-    for name in (
-        "XAI_API_KEY",
-        "GROK_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-        "NVIDIA_API_KEY",
-        "NVIDIA_NIM_API_KEY",
-        "OPENROUTER_API_KEY",
-        "GROK_BOT_LINK",
-        "GROK_BOT_API_KEY",
-    ):
-        monkeypatch.delenv(name, raising=False)
+    _clear_provider_keys(monkeypatch, "GROK_BOT_LINK", "GROK_BOT_API_KEY")
     catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(json.dumps([dict(ROW_P00533)]), encoding="utf-8")
+    records = structures_json(tmp_path, ROW_P00533)
     out = tmp_path / "grok-bot"
     pages: list[str] = []
     calls: list[str] = []
@@ -8594,12 +8018,11 @@ def test_submit_question_returns_the_grok_bot_reply_and_the_searches_do_not(tmp_
         assert len(calls) == 1
         return {"pick": ["1"], "llm_question": [box_text(page)]}
 
-    code = cure_main(
-        ["--ui"],
+    code = _run_panel(
+        monkeypatch,
+        exchange,
         fetch=lambda _option: b"data_X\n#\n",
         read_json=lambda _url: {},
-        exchange=exchange,
-        read_line=refuse_prompt,
         ask_desktop=ask_desktop,
         runner=lambda _argv: (_ for _ in ()).throw(AssertionError("generation")),
     )
@@ -8618,13 +8041,10 @@ def test_a_panel_question_returns_to_the_same_box_and_download_does_not_ask(tmp_
 
     from rfproteina.disease.research import ASK_PROMPT
 
-    block_live_calls(monkeypatch)
-    monkeypatch.setenv("RFD4_KEY_DIR", str(tmp_path / "keys"))
     monkeypatch.setenv("XAI_API_KEY", "test-key")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(json.dumps([dict(ROW_P00533)]), encoding="utf-8")
+    records = structures_json(tmp_path, ROW_P00533)
     out = tmp_path / "question-box"
     pages: list[str] = []
     calls: list[tuple[str, str]] = []
@@ -8689,12 +8109,11 @@ def test_a_panel_question_returns_to_the_same_box_and_download_does_not_ask(tmp_
         assert calls[2][1].endswith("Second question about the same target.")
         return {"pick": ["1"], "llm_question": [text]}
 
-    code = cure_main(
-        ["--ui"],
+    code = _run_panel(
+        monkeypatch,
+        exchange,
         fetch=lambda _option: b"data_X\n#\n",
         read_json=lambda _url: {},
-        exchange=exchange,
-        read_line=refuse_prompt,
         complete=complete,
         runner=lambda _argv: (_ for _ in ()).throw(AssertionError("generation")),
     )
@@ -8711,15 +8130,7 @@ def test_a_ticked_search_or_research_reply_is_sent_with_the_new_question(monkeyp
     monkeypatch.setenv("XAI_API_KEY", "test-key")
     rows = [_option("protein", "1AAA"), _option("protein", "2BBB")]
     ranking = [
-        {
-            "number": 2,
-            "entry_id": "2BBB",
-            "chain": "A",
-            "accession": "ACC-2BBB",
-            "ratings": {"grok grok-4.7": 40},
-            "reasons": {"grok grok-4.7": "Worth a binder design."},
-            "value": 40.0,
-        }
+        _ranked(2, "2BBB", "ACC-2BBB", {"grok grok-4.7": 40}, 40.0, reasons={"grok grok-4.7": "Worth a binder design."})
     ]
     results = llm_results(rows, found={"grok grok-4.7": [["1AAA", "A"]]}, ranking={"ranked": ranking})
     page = render_structures(rows, saved=("grok",), ranking=ranking, results=results)
@@ -8933,26 +8344,8 @@ def test_research_subjects_put_uniprot_accessions_before_genes():
 
 
 def test_research_ranks_a_target_from_its_records_and_the_provider_rating(tmp_path, monkeypatch, capsys):
-    block_live_calls(monkeypatch)
     monkeypatch.setenv("XAI_API_KEY", "sk-should-not-appear")
-    catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(
-        json.dumps(
-            [
-                {
-                    "group": "protein",
-                    "accession": "P00533",
-                    "entry_id": "1EGFR",
-                    "chain": "A",
-                    "title": "egfr",
-                    "predicted": False,
-                    "source": "fixture",
-                }
-            ]
-        ),
-        encoding="utf-8",
-    )
+    records = structures_json(tmp_path, ROW_P00533)
     sequence = "ACDEFGHIKLMNPQRSTVWY" * 3
     calls: list[str] = []
 
@@ -9020,27 +8413,17 @@ def test_research_ranks_a_target_from_its_records_and_the_provider_rating(tmp_pa
         )
 
     out = tmp_path / "research-runs"
-    code = cure_main(
-        [
-            "--catalog",
-            str(catalog),
-            "--disease",
-            "Asthma",
-            "--accept-only",
-            "--structures-json",
-            str(records),
-            "--all",
-            "--confirm-inference",
-            "--research",
-            "grok",
-            "--out-dir",
-            str(out),
-        ],
+    captured = _run_cure(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        ["--structures-json", str(records), "--all", "--confirm-inference", "--research", "grok"],
+        out_dir=out,
         fetch=lambda _option: b"data_1EGFR\n#\n",
         read_json=read,
         complete=complete,
     )
-    captured = capsys.readouterr()
+    code = captured.code
     assert code == 0
     assert captured.err == ""
     assert "protein:" in captured.out
@@ -9087,33 +8470,18 @@ def test_research_ranks_a_target_from_its_records_and_the_provider_rating(tmp_pa
 
 def test_every_api_key_searches_once_and_the_ratings_are_compared(tmp_path, monkeypatch, capsys):
     """Every provider reads one set of records, and the spread is reported."""
-    block_live_calls(monkeypatch)
-    catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(
-        json.dumps(
-            [
-                {
-                    "group": "protein",
-                    "accession": "P00533",
-                    "entry_id": "1EGFR",
-                    "chain": "A",
-                    "title": "egfr",
-                    "predicted": False,
-                    "source": "fixture",
-                },
-                {
-                    "group": "gene",
-                    "accession": "IL13",
-                    "entry_id": "IL13",
-                    "chain": "A",
-                    "title": "interleukin 13",
-                    "predicted": True,
-                    "source": "fixture",
-                },
-            ]
-        ),
-        encoding="utf-8",
+    records = structures_json(
+        tmp_path,
+        ROW_P00533,
+        {
+            "group": "gene",
+            "accession": "IL13",
+            "entry_id": "IL13",
+            "chain": "A",
+            "title": "interleukin 13",
+            "predicted": True,
+            "source": "fixture",
+        },
     )
     reads: list[str] = []
     asked: list[tuple[str, str]] = []
@@ -9138,27 +8506,17 @@ def test_every_api_key_searches_once_and_the_ratings_are_compared(tmp_path, monk
         return json.dumps({"rating": rating, "reason": f"{provider} read the records.", "ideas": "An idea."})
 
     out = tmp_path / "all-keys"
-    code = cure_main(
-        [
-            "--catalog",
-            str(catalog),
-            "--disease",
-            "Asthma",
-            "--accept-only",
-            "--structures-json",
-            str(records),
-            "--all",
-            "--confirm-inference",
-            "--research",
-            "all",
-            "--out-dir",
-            str(out),
-        ],
+    captured = _run_cure(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        ["--structures-json", str(records), "--all", "--confirm-inference", "--research", "all"],
+        out_dir=out,
         fetch=lambda _option: b"data_1EGFR\n#\n",
         read_json=read,
         complete=complete,
     )
-    captured = capsys.readouterr()
+    code = captured.code
     assert code == 0, captured.err
     assert "with grok, claude, openai, nvidia, openrouter" in captured.out
 
@@ -9194,10 +8552,7 @@ def test_every_api_key_searches_once_and_the_ratings_are_compared(tmp_path, monk
 
 
 def test_providers_that_agree_are_marked_and_a_failed_provider_keeps_the_rest(tmp_path, monkeypatch, capsys):
-    block_live_calls(monkeypatch)
-    catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(json.dumps([json.loads(json.dumps(ROW_P00533))]), encoding="utf-8")
+    records = structures_json(tmp_path, ROW_P00533)
 
     def complete(provider: str, _system: str, _user: str) -> str:
         if provider == "openai":
@@ -9205,27 +8560,17 @@ def test_providers_that_agree_are_marked_and_a_failed_provider_keeps_the_rest(tm
         return json.dumps({"rating": 70 if provider == "grok" else 78, "reason": "", "ideas": "An idea."})
 
     out = tmp_path / "agreeing"
-    code = cure_main(
-        [
-            "--catalog",
-            str(catalog),
-            "--disease",
-            "Asthma",
-            "--accept-only",
-            "--structures-json",
-            str(records),
-            "--all",
-            "--confirm-inference",
-            "--research",
-            "grok,claude,openai",
-            "--out-dir",
-            str(out),
-        ],
+    captured = _run_cure(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        ["--structures-json", str(records), "--all", "--confirm-inference", "--research", "grok,claude,openai"],
+        out_dir=out,
         fetch=lambda _option: b"data_1EGFR\n#\n",
         read_json=lambda _url: {},
         complete=complete,
     )
-    captured = capsys.readouterr()
+    code = captured.code
     assert code == 0, captured.err
     report = json.loads((out / "target_research.json").read_text(encoding="utf-8"))
     subject = report["subjects"][0]
@@ -9241,24 +8586,7 @@ def test_a_chosen_target_decides_which_structures_go_to_generation(tmp_path, mon
     """--target restricts the download; it does not add to every named structure."""
     block_live_calls(monkeypatch)
     catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(
-        json.dumps(
-            [
-                dict(ROW_P00533),
-                {
-                    "group": "protein",
-                    "accession": "P35225",
-                    "entry_id": "2IL13",
-                    "chain": "B",
-                    "title": "interleukin 13",
-                    "predicted": False,
-                    "source": "fixture",
-                },
-            ]
-        ),
-        encoding="utf-8",
-    )
+    records = structures_json(tmp_path, ROW_P00533, ROW_P35225)
     fetched: list[str] = []
 
     def complete(_provider: str, _system: str, user: str) -> str:
@@ -9275,28 +8603,17 @@ def test_a_chosen_target_decides_which_structures_go_to_generation(tmp_path, mon
         )
 
     out = tmp_path / "chosen-target"
-    code = cure_main(
-        [
-            "--catalog",
-            str(catalog),
-            "--disease",
-            "Asthma",
-            "--accept-only",
-            "--structures-json",
-            str(records),
-            "--confirm-inference",
-            "--research",
-            "grok",
-            "--target",
-            "P35225",
-            "--out-dir",
-            str(out),
-        ],
+    captured = _run_cure(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        ["--structures-json", str(records), "--confirm-inference", "--research", "grok", "--target", "P35225"],
+        out_dir=out,
         fetch=lambda option: fetched.append(option.entry_id) or b"data_X\n#\n",
         read_json=lambda _url: {},
         complete=complete,
     )
-    captured = capsys.readouterr()
+    code = captured.code
     assert code == 0, captured.err
     assert fetched == ["2IL13"], "only the chosen target is downloaded"
     assert "Selected 1 structure(s) for download." in captured.out
@@ -9336,35 +8653,23 @@ def test_a_chosen_target_decides_which_structures_go_to_generation(tmp_path, mon
 def test_a_target_outside_the_ranking_is_refused(tmp_path, monkeypatch, capsys):
     block_live_calls(monkeypatch)
     catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(json.dumps([dict(ROW_P00533)]), encoding="utf-8")
+    records = structures_json(tmp_path, ROW_P00533)
     out = tmp_path / "bad-target"
 
     def fetch(_option):
         raise AssertionError("download")
 
-    code = cure_main(
-        [
-            "--catalog",
-            str(catalog),
-            "--disease",
-            "Asthma",
-            "--accept-only",
-            "--structures-json",
-            str(records),
-            "--confirm-inference",
-            "--research",
-            "grok",
-            "--target",
-            "Q99999",
-            "--out-dir",
-            str(out),
-        ],
+    captured = _run_cure(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        ["--structures-json", str(records), "--confirm-inference", "--research", "grok", "--target", "Q99999"],
+        out_dir=out,
         fetch=fetch,
         read_json=lambda _url: {},
         complete=lambda *_args: json.dumps({"rating": 50, "reason": "", "ideas": "An idea."}),
     )
-    captured = capsys.readouterr()
+    code = captured.code
     assert code == 2
     assert "is not on the ranked list" in captured.err
     assert "P00533" in captured.err, "the error names what was ranked"
@@ -9400,8 +8705,7 @@ def test_a_target_outside_the_ranking_is_refused(tmp_path, monkeypatch, capsys):
 def test_target_without_research_is_refused(tmp_path, monkeypatch, capsys):
     block_live_calls(monkeypatch)
     catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(json.dumps([dict(ROW_P00533)]), encoding="utf-8")
+    records = structures_json(tmp_path, ROW_P00533)
     code = cure_main(
         [
             "--catalog",
@@ -9424,32 +8728,19 @@ def test_target_without_research_is_refused(tmp_path, monkeypatch, capsys):
 
 
 def test_a_provider_answer_that_is_not_json_is_kept_as_ideas(tmp_path, monkeypatch, capsys):
-    block_live_calls(monkeypatch)
-    catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(json.dumps([json.loads(json.dumps(ROW_P00533))]), encoding="utf-8")
+    records = structures_json(tmp_path, ROW_P00533)
     out = tmp_path / "prose"
-    code = cure_main(
-        [
-            "--catalog",
-            str(catalog),
-            "--disease",
-            "Asthma",
-            "--accept-only",
-            "--structures-json",
-            str(records),
-            "--all",
-            "--confirm-inference",
-            "--research",
-            "grok",
-            "--out-dir",
-            str(out),
-        ],
+    captured = _run_cure(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        ["--structures-json", str(records), "--all", "--confirm-inference", "--research", "grok"],
+        out_dir=out,
         fetch=lambda _option: b"data_1EGFR\n#\n",
         read_json=lambda _url: {},
         complete=lambda *_args: "The records support a knockout study.",
     )
-    captured = capsys.readouterr()
+    code = captured.code
     assert code == 0, captured.err
     report = json.loads((out / "target_research.json").read_text(encoding="utf-8"))
     model = report["subjects"][0]["models"]["grok"]
@@ -9461,51 +8752,23 @@ def test_a_provider_answer_that_is_not_json_is_kept_as_ideas(tmp_path, monkeypat
 
 
 def test_research_without_an_api_key_stops_before_download(tmp_path, monkeypatch, capsys):
-    block_live_calls(monkeypatch)
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.delenv("GROK_API_KEY", raising=False)
-    catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(
-        json.dumps(
-            [
-                {
-                    "group": "protein",
-                    "accession": "P00533",
-                    "entry_id": "1EGFR",
-                    "chain": "A",
-                    "title": "egfr",
-                    "predicted": False,
-                    "source": "fixture",
-                }
-            ]
-        ),
-        encoding="utf-8",
-    )
+    records = structures_json(tmp_path, ROW_P00533)
     out = tmp_path / "missing-key"
 
     def fetch(_option):
         raise AssertionError("download")
 
-    code = cure_main(
-        [
-            "--catalog",
-            str(catalog),
-            "--disease",
-            "Asthma",
-            "--accept-only",
-            "--structures-json",
-            str(records),
-            "--all",
-            "--confirm-inference",
-            "--research",
-            "grok",
-            "--out-dir",
-            str(out),
-        ],
+    captured = _run_cure(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        ["--structures-json", str(records), "--all", "--confirm-inference", "--research", "grok"],
+        out_dir=out,
         fetch=fetch,
     )
-    captured = capsys.readouterr()
+    code = captured.code
     assert code == 2
     assert "Target research failed:" in captured.err
     assert "XAI_API_KEY" in captured.err
@@ -9518,22 +8781,17 @@ def test_research_with_no_uniprot_id_does_not_call_a_model(tmp_path, monkeypatch
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.delenv("GROK_API_KEY", raising=False)
     catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(
-        json.dumps(
-            [
-                {
-                    "group": "protein",
-                    "accession": "ACC-1ABC",
-                    "entry_id": "1ABC",
-                    "chain": "A",
-                    "title": "plain",
-                    "predicted": False,
-                    "source": "fixture",
-                }
-            ]
-        ),
-        encoding="utf-8",
+    records = structures_json(
+        tmp_path,
+        {
+            "group": "protein",
+            "accession": "ACC-1ABC",
+            "entry_id": "1ABC",
+            "chain": "A",
+            "title": "plain",
+            "predicted": False,
+            "source": "fixture",
+        },
     )
     out = tmp_path / "no-accession"
 
@@ -9570,42 +8828,16 @@ def test_research_with_no_uniprot_id_does_not_call_a_model(tmp_path, monkeypatch
 
 
 def test_the_panel_offers_model_research_after_the_structure_list(tmp_path, monkeypatch, capsys):
-    block_live_calls(monkeypatch)
     monkeypatch.setenv("XAI_API_KEY", "sk-should-not-appear")
     catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(
-        json.dumps(
-            [
-                {
-                    "group": "protein",
-                    "accession": "P00533",
-                    "entry_id": "1EGFR",
-                    "chain": "A",
-                    "title": "egfr",
-                    "predicted": False,
-                    "source": "fixture",
-                }
-            ]
-        ),
-        encoding="utf-8",
-    )
+    records = structures_json(tmp_path, ROW_P00533)
     out = tmp_path / "panel-research"
     pages: list[str] = []
 
     def exchange(page: str) -> dict[str, list[str]]:
         pages.append(page)
         if 'name="binder_kind"' in page:
-            return {
-                "disease": ["Asthma"],
-                "catalog": [str(catalog)],
-                "accept_only": ["yes"],
-                "structures_json": [str(records)],
-                "binder_kind": ["protein"],
-                "out_dir": [str(out)],
-                "where": ["local"],
-                "confirm_inference": ["yes"],
-            }
+            return _panel_landing(catalog, records, out, take_all=False, confirm_inference=["yes"])
         if 'type="checkbox" name="pick"' in page:
             shown = sum(1 for seen in pages if 'type="checkbox" name="pick"' in seen)
             assert "<h2>LLM search</h2>" in page
@@ -9631,14 +8863,13 @@ def test_the_panel_offers_model_research_after_the_structure_list(tmp_path, monk
         model_calls["n"] += 1
         return "No record stated a mechanism."
 
-    code = cure_main(
-        ["--ui"],
+    code = _run_panel(
+        monkeypatch,
+        exchange,
         runner=lambda _argv: 0,  # Continue starts generation now.
         fetch=lambda _option: b"data_1EGFR\n#\n",
         read_json=read,
         complete=complete,
-        exchange=exchange,
-        read_line=lambda prompt: (_ for _ in ()).throw(AssertionError(prompt)),
     )
     captured = capsys.readouterr()
     assert code == 0
@@ -9772,27 +9003,9 @@ def test_llm_research_follows_the_confirmed_program_options(tmp_path, monkeypatc
     The search button is what asks the model. Download fetches the ticked
     structure and does not ask the model again.
     """
-    block_live_calls(monkeypatch)
     monkeypatch.setenv("XAI_API_KEY", "test-key")
     catalog = asthma_catalog(tmp_path)
-    records = tmp_path / "structures.json"
-    records.write_text(
-        json.dumps(
-            [
-                dict(ROW_P00533),
-                {
-                    "group": "protein",
-                    "accession": "P35225",
-                    "entry_id": "2IL13",
-                    "chain": "B",
-                    "title": "interleukin 13",
-                    "predicted": False,
-                    "source": "fixture",
-                },
-            ]
-        ),
-        encoding="utf-8",
-    )
+    records = structures_json(tmp_path, ROW_P00533, ROW_P35225)
     out = tmp_path / "confirmed-first"
     pages: list[str] = []
     fetched: list[str] = []
@@ -9800,16 +9013,7 @@ def test_llm_research_follows_the_confirmed_program_options(tmp_path, monkeypatc
     def exchange(page: str) -> dict[str, list[str]]:
         pages.append(page)
         if 'name="binder_kind"' in page:
-            return {
-                "disease": ["Asthma"],
-                "catalog": [str(catalog)],
-                "accept_only": ["yes"],
-                "structures_json": [str(records)],
-                "binder_kind": ["protein"],
-                "out_dir": [str(out)],
-                "where": ["local"],
-                "confirm_inference": ["yes"],
-            }
+            return _panel_landing(catalog, records, out, take_all=False, confirm_inference=["yes"])
         if 'type="checkbox" name="pick"' in page:
             shown = sum(1 for seen in pages if 'type="checkbox" name="pick"' in seen)
             # Both searches run from this page and neither fetches a structure.
@@ -9839,14 +9043,13 @@ def test_llm_research_follows_the_confirmed_program_options(tmp_path, monkeypatc
             }
         )
 
-    code = cure_main(
-        ["--ui"],
+    code = _run_panel(
+        monkeypatch,
+        exchange,
         runner=lambda _argv: 0,  # Continue starts generation now.
         fetch=lambda option: fetched.append(option.entry_id) or b"data_X\n#\n",
         read_json=lambda _url: {},
         complete=complete,
-        exchange=exchange,
-        read_line=lambda prompt: (_ for _ in ()).throw(AssertionError(prompt)),
     )
     captured = capsys.readouterr()
     assert code == 0, captured.err
@@ -9906,9 +9109,13 @@ def test_a_selected_model_is_the_model_id_that_is_sent(monkeypatch):
         complete_chat("grok", "sys", "user", None, {"grok": "grok-9000"})
 
 
-class _JsonResponse:
-    def __init__(self, payload: dict):
-        self._raw = json.dumps(payload).encode()
+class _Response:
+    """What a faked urlopen hands back: ``read()`` gives ``body``; ``status`` exists only when given."""
+
+    def __init__(self, body: bytes = b"", status: int | None = None) -> None:
+        self._raw = body
+        if status is not None:
+            self.status = status
 
     def read(self) -> bytes:
         return self._raw
@@ -9918,6 +9125,11 @@ class _JsonResponse:
 
     def __exit__(self, *_args) -> bool:
         return False
+
+
+class _JsonResponse(_Response):
+    def __init__(self, payload: dict):
+        super().__init__(json.dumps(payload).encode())
 
 
 class _StreamResponse:

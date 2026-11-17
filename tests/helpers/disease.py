@@ -119,6 +119,24 @@ ROW_P00533 = {
     "source": "fixture",
 }
 
+#: A second deposited structure, for a structures page with more than one row.
+ROW_P35225 = {
+    "group": "protein",
+    "accession": "P35225",
+    "entry_id": "2IL13",
+    "chain": "B",
+    "title": "interleukin 13",
+    "predicted": False,
+    "source": "fixture",
+}
+
+
+def structures_json(directory: Path, *rows: dict[str, object]) -> Path:
+    """The records file ``--structures-json`` reads, listing ``rows`` in order."""
+    path = directory / "structures.json"
+    path.write_text(json.dumps(list(rows)), encoding="utf-8")
+    return path
+
 
 # --- keeping the developer's own machine out of a test -----------------------
 #
