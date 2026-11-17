@@ -115,13 +115,18 @@ def test_a_design_with_no_chain_of_interest_is_named_not_guessed() -> None:
     catalog[0]["binder_chains"] = []
     found = binder_sequences(catalog, store.get)
     assert found[0].blocker == "no_chain_of_interest"
-    assert "no_chain_of_interest" in perform(OUTPUT_FASTA, catalog, store.get).sentence
+    # The record keeps the slug and the sentence spends words on it, so this
+    # pins the words. Asserting the slug appeared was the weaker check of the
+    # two: a blocker with no entry in _BLOCKER_TEXT still renders -- as "no
+    # chain of interest" -- and only the sentence tells a word from a slug.
+    said = perform(OUTPUT_FASTA, catalog, store.get).sentence
+    assert "binder_0: no chain of interest is recorded" in said
 
 
 def test_an_unreadable_structure_does_not_end_the_run() -> None:
     catalog, _store = one_design()
     said = perform(OUTPUT_FASTA, catalog, lambda token: None).sentence
-    assert "structure_unreadable" in said
+    assert "binder_0: its structure file could not be read" in said
 
 
 # ------------------------------------------- the two labels that cannot stand

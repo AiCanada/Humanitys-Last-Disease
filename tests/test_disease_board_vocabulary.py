@@ -1,4 +1,9 @@
-"""Every blocker the screening code can name has a sentence on the board.
+"""Every blocker the disease code can name has a sentence where it is shown.
+
+There are four places it can be shown, not one: the screening board, and the
+results page's retrieval, comparison and export surfaces, each with its own
+vocabulary. :data:`_VOCABULARIES` maps a module to the table that renders its
+names, and records what checking all four against the board alone cost.
 
 A blocker name is the whole explanation an untested axis gets. ``_blocker_lines``
 falls back to the name with its underscores removed, so a name the board does not
@@ -48,13 +53,60 @@ at all.
 """
 
 import ast
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
-from rfproteina.disease import screen_board
+from rfproteina.disease import results_actions, results_compare, results_retrieve, screen_board
 
 _PACKAGE = Path(screen_board.__file__).parent
+
+#: The board's own vocabulary, which is what a module is checked against unless
+#: it renders its blockers somewhere else.
+_BOARD = (("screen_board._BLOCKERS", screen_board._BLOCKERS),)
+
+#: Which vocabulary turns a module's blocker names into words for the reader.
+#:
+#: There is more than one surface. The screening board explains an untested axis
+#: on the screen; the results page explains a retrieval, a comparison and an
+#: export, and holds its own words for each because it speaks in its own voice --
+#: a comparison says "The retrieved model has no chains to compare", an export
+#: says "(design_007: its structure file could not be read)", and neither reads
+#: right in the other's place.
+#:
+#: This mapping exists because the check used to ignore that. It asked every
+#: name in the package for a sentence in ``screen_board._BLOCKERS``, and when the
+#: results modules arrived with 21 names of their own it reported 21 missing
+#: sentences -- while 17 of them already had one, in the table that actually
+#: renders them. The failure was real and the diagnosis was not: the suggested
+#: fix, adding all 21 to the board, would have duplicated 17 sentences into a
+#: table that never renders them and left the two copies free to drift apart.
+#:
+#: Checking each name against the surface that shows it keeps the guarantee on
+#: all four surfaces instead of one, and keeps it honest: a results blocker with
+#: no words anywhere can no longer be quieted by adding it to the board.
+_VOCABULARIES: dict[str, tuple[tuple[str, Mapping[str, str]], ...]] = {
+    "results_retrieve.py": (("results_retrieve._BLOCKER_TEXT", results_retrieve._BLOCKER_TEXT),),
+    "results_compare.py": (
+        ("results_compare._BLOCKER_TEXT", results_compare._BLOCKER_TEXT),
+        ("results_compare._COMPLEX_BLOCKERS", results_compare._COMPLEX_BLOCKERS),
+    ),
+    "results_actions.py": (("results_actions._BLOCKER_TEXT", results_actions._BLOCKER_TEXT),),
+}
+
+
+def _vocabulary_for(where: str) -> tuple[tuple[str, Mapping[str, str]], ...]:
+    """The tables that put one module's blocker names into words."""
+    return _VOCABULARIES.get(where, _BOARD)
+
+
+#: Every sentence written on any surface, for the checks that work backwards
+#: from the words to the names. Anything less would let a name added to a
+#: results table in an unscannable shape escape the ratchet below.
+_ALL_SENTENCES = frozenset(
+    name for tables in (_BOARD, *_VOCABULARIES.values()) for _, table in tables for name in table
+)
 
 # The scan found this many on the day it was written. It is a floor, not a count:
 # it fails if a refactor moves the emissions out of the shapes below, which would
@@ -139,6 +191,22 @@ def _called_name(node: ast.Call) -> str | None:
     return None
 
 
+def _parsed(path: Path) -> ast.Module:
+    """One module of the package, as a syntax tree.
+
+    Read as ``utf-8-sig`` and not as ``utf-8``, because that is what Python
+    itself accepts: its source loader strips a leading byte-order mark, so a
+    module saved with one imports perfectly well and nothing about it is
+    broken. Handing such a file to :func:`ast.parse` as plain ``utf-8`` leaves
+    the mark in the text as U+FEFF, which is a syntax error, and the whole of
+    this file then fails to collect over an encoding chosen in some unrelated
+    module. A scan that claims to read every module in the package has to read
+    everything the interpreter will. On a file saved without a mark the codec
+    is a no-op, so this costs nothing.
+    """
+    return ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
+
+
 def _blocker_helpers() -> dict[str, int]:
     """Helpers that take a blocker, and which positional argument it is.
 
@@ -159,7 +227,7 @@ def _blocker_helpers() -> dict[str, int]:
     """
     found: dict[str, int] = {}
     for path in sorted(_PACKAGE.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = _parsed(path)
         for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
                 continue
@@ -186,7 +254,7 @@ def _blocker_names() -> dict[str, set[str]]:
 
     # Recursive, because a subpackage module is still this package.
     for path in sorted(_PACKAGE.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = _parsed(path)
         where = path.relative_to(_PACKAGE).as_posix()
         for node in ast.walk(tree):
             # A blocker handed to a helper that takes one, at whatever position
@@ -257,14 +325,23 @@ def test_the_scan_still_finds_the_blocker_names() -> None:
 
 
 @pytest.mark.parametrize("name", sorted(_FOUND))
-def test_every_named_blocker_has_a_board_sentence(name: str) -> None:
-    """A name with no sentence renders as its own slug and explains nothing."""
-    assert name in screen_board._BLOCKERS, (
-        f"{name} is named as a blocker in {', '.join(sorted(_FOUND[name]))} but the "
-        f"board has no sentence for it, so the reader is shown '{name.replace('_', ' ')}' "
-        "and nothing else. Add a line to _BLOCKERS, and an action to _ACTIONS unless "
-        "there is genuinely nothing the reader can do."
-    )
+def test_every_named_blocker_has_a_sentence_on_its_own_surface(name: str) -> None:
+    """A name with no sentence renders as its own slug and explains nothing.
+
+    Checked once per emitting file, against that file's surface. A name emitted
+    in two places has to be explained in both, because each site renders through
+    its own table: ``no_chains`` is written by the retriever and by the
+    comparison, and a reader meeting it on either page needs words there.
+    """
+    for where in sorted(_FOUND[name]):
+        vocabulary = _vocabulary_for(where)
+        assert any(name in table for _, table in vocabulary), (
+            f"{name} is named as a blocker in {where}, but "
+            f"{' / '.join(label for label, _ in vocabulary)} has no sentence for it, so the "
+            f"reader is shown '{name.replace('_', ' ')}' and nothing else. Add a line there. "
+            "On the board, add an action to _ACTIONS too unless there is genuinely nothing "
+            "the reader can do; the results surfaces carry their advice in the sentence."
+        )
 
 
 def test_every_action_belongs_to_a_blocker() -> None:
@@ -300,10 +377,18 @@ _UNSEEN_BY_THE_SCAN = frozenset(
         "metrics_too_large",
         "metrics_unreadable",
         "no_nine_mer_ligand",
+        # The next three are handed back by ``refold_export.design_fasta`` and
+        # ``binder_fasta`` as a bare ``return "name"`` from a function named for
+        # neither convention -- the third shape the docstring above discloses.
+        # They reach the reader through ``results_actions._why``, which is why
+        # that table spells them out even though nothing can demand it.
+        "no_polymer_sequence",
         "no_presented_ligand",
         "not_requested",
         "oracle_not_configured",
+        "over_residue_limit",
         "target_accession_ambiguous",
+        "too_many_chains",
         "toxicology_not_configured",
         "toxicology_unreadable",
         "unscored_windows",
@@ -323,10 +408,10 @@ def test_no_new_blocker_hides_in_a_shape_the_scan_cannot_see() -> None:
     blocker, saw it render as its own slug, and wrote the sentence. Pinning the
     set turns the next one into a failure.
     """
-    unseen = sorted(set(screen_board._BLOCKERS) - set(_FOUND))
+    unseen = sorted(_ALL_SENTENCES - set(_FOUND))
     added = sorted(set(unseen) - _UNSEEN_BY_THE_SCAN)
     assert not added, (
-        f"these board sentences name blockers the scan cannot find: {added}. "
+        f"these sentences name blockers the scan cannot find: {added}. "
         "That means they are emitted in a shape nothing checks -- a name held in "
         "a variable, appended into a structure, or returned bare. Emit the name "
         "through a helper with a `blocker` argument or as a `blocker` key so the "
@@ -347,7 +432,7 @@ def test_the_unseen_list_does_not_outlive_what_it_describes() -> None:
     )
 
 
-def test_the_unseen_list_names_only_real_board_sentences() -> None:
+def test_the_unseen_list_names_only_real_sentences() -> None:
     """A deleted blocker must not leave an entry behind to excuse a future one."""
-    ghosts = sorted(_UNSEEN_BY_THE_SCAN - set(screen_board._BLOCKERS))
-    assert not ghosts, f"_UNSEEN_BY_THE_SCAN names blockers the board no longer has: {ghosts}"
+    ghosts = sorted(_UNSEEN_BY_THE_SCAN - _ALL_SENTENCES)
+    assert not ghosts, f"_UNSEEN_BY_THE_SCAN names blockers no surface has a sentence for: {ghosts}"

@@ -340,12 +340,53 @@ def _af3_sentence(found: Sequence[BinderSequence]) -> str:
     )
 
 
+#: What a reader is told when a design could not be exported, keyed by the
+#: blocker the sequence helpers record.
+#:
+#: These are fragments, not sentences: they are shown after a sample name, as
+#: "(design_007: its structure file could not be read)", so each one has to read
+#: on from the colon. The board's sentences stand alone instead, which is why
+#: this is its own table rather than an import of ``screen_board._BLOCKERS``:
+#: the results page is a separate surface with its own voice, and the one name
+#: the two share -- ``structure_unreadable`` -- wants a different wording here.
+#:
+#: Three of these come from ``refold_export.design_fasta`` and ``binder_fasta``,
+#: which hand a blocker back as a bare ``return "name"`` from a function named
+#: for neither convention. The vocabulary scan in
+#: ``test_disease_board_vocabulary`` cannot see that shape, so it cannot demand
+#: a word for them; they are listed there as unseen so a fourth cannot arrive
+#: quietly, and they are spelled out here because a reader hitting one still
+#: deserves a sentence.
+_BLOCKER_TEXT = {
+    "structure_not_registered": "this run never registered a structure for it",
+    "structure_unreadable": "its structure file could not be read",
+    "no_chain_of_interest": "no chain of interest is recorded, so the binder cannot be told from the target",
+    "no_polymer_sequence": "its structure holds no polymer sequence",
+    "too_many_chains": "it has more chains than one request can carry",
+    "over_residue_limit": "it is longer than the request's residue limit",
+    "no_af2_entry": "the AlphaFold database has no entry for it",
+    "not_superposed": "the two structures were never superposed, so there is nothing to draw",
+}
+
+
+def _said(blocker: str) -> str:
+    """The reader's words for one blocker.
+
+    An unknown name falls back to itself with its underscores removed, which is
+    what the board does: a missing word should read as prose with a gap in it,
+    not as ``no_polymer_sequence`` with the punctuation of source code.
+    """
+    if not blocker:
+        return "unknown"
+    return _BLOCKER_TEXT.get(blocker, blocker.replace("_", " "))
+
+
 def _why(found: Sequence[BinderSequence]) -> str:
     """Name the blockers, so a refusal says which designs and what stopped them."""
     blocked = [item for item in found if not item.found]
     if not blocked:
         return ""
-    named = ", ".join(f"{item.sample}: {item.blocker or 'unknown'}" for item in blocked[:4])
+    named = ", ".join(f"{item.sample}: {_said(item.blocker)}" for item in blocked[:4])
     more = f" and {len(blocked) - 4} more" if len(blocked) > 4 else ""
     return f"({named}{more})"
 
@@ -496,7 +537,7 @@ def _why_combined(found: Sequence[CombinedSequence]) -> str:
     blocked = [item for item in found if not item.found]
     if not blocked:
         return ""
-    named = ", ".join(f"{item.sample}: {item.blocker or 'unknown'}" for item in blocked[:4])
+    named = ", ".join(f"{item.sample}: {_said(item.blocker)}" for item in blocked[:4])
     return f"({named})"
 
 
