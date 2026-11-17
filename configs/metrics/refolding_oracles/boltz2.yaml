@@ -1,0 +1,32 @@
+# Boltz-2 refolding oracle configurations.
+#
+# Boltz (https://github.com/jwohlwend/boltz) is MIT-licensed (verified from the
+# repo LICENSE on 2026-11-16). Boltz-2 adds a binding-affinity head; this oracle
+# uses only its structure prediction for refolding. The affinity head reports
+# log10(IC50 in micromolar), a different quantity in different units from the
+# nanomolar screening panels, so it is deliberately NOT folded into these refold
+# confidences (see boltz_oracle.parse_affinity). Boltz folds from sequence, so
+# there is no `template_query`.
+
+oracle:
+  _target_: rfproteina.metrics.oracles.boltz_oracle.Boltz2Oracle
+  oracle_name: boltz2
+  aggregation: [median]
+  frac_under_thresholds:
+    min_ipae_coi: [1, 1.5, 2]
+  required_tags_any:
+    - boltz2_refolding
+    - unconditional_refolding
+    - motif_scaffold_refolding
+    - internal_coordinate_motif_scaffold_refolding
+    - ame_no_ligand_refolding
+
+oracle_ppi:
+  _target_: rfproteina.metrics.oracles.boltz_oracle.Boltz2Oracle
+  oracle_name: boltz2_ppi
+  aggregation: [median]
+  frac_under_thresholds:
+    min_ipae_coi: [1, 1.5, 2]
+  required_tags_any:
+    - ppi_refolding
+    - antibody

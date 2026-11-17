@@ -357,6 +357,33 @@ def test_a_new_block_of_the_wrong_type_is_named_rather_than_returned(tmp_path: P
     assert {"cuts", "refold"} <= set(verdict["malformed"])
 
 
+def test_the_version_four_reports_arrive_without_the_design_slice_or_the_molecule(tmp_path: Path) -> None:
+    """The four reports reach a client, less two keys only screen.json should hold.
+
+    ``repeat_sequence`` is a slice of the designed construct, and an RNA slice passed
+    the sequence rule untouched; ``smiles`` is the screened molecule, which the same
+    rule mangled. A tree walk holds the bulky reports back the way it holds refold.
+    """
+    from rfproteina.disease import mcp_api, mcp_layers
+
+    record = _version_three_record()
+    record["designed_interface_quality"] = {"interface_quality_blocker": "coordinates_absent"}
+    record["mhc_class_i"] = {"n_windows": 68, "predictor_available": False}
+    record["synthesis"] = {"longest_repeat": 26, "repeat_sequence": "AUGGCUACGUUAGCCAUGGCUACGUU"}
+    record["ligand_alerts"] = {"smiles": "CCCCCCCCCCCCCCCC(=O)O", "heavy_atoms": 18}
+    _screened(tmp_path, record)
+    answer = mcp_api.read_verdict({"directory": str(tmp_path)})
+    verdict = answer["runs"][0]["verdict"]
+    assert verdict["designed_interface_quality"] == {"interface_quality_blocker": "coordinates_absent"}
+    assert verdict["mhc_class_i"] == {"n_windows": 68, "predictor_available": False}
+    assert verdict["synthesis"] == {"longest_repeat": 26}, "the length stays; the slice of the design does not"
+    assert verdict["ligand_alerts"] == {"heavy_atoms": 18}, "the molecule stays in screen.json"
+    schema = {str(tool["name"]): tool.get("outputSchema") for tool in _server()._TOOLS}["read_verdict"]
+    jsonschema.validate(answer, schema)
+    assert {"designed_interface_quality", "synthesis", "ligand_alerts"} <= mcp_layers._SCREEN_OMITTED
+    assert "mhc_class_i" in mcp_layers.screen_fields()
+
+
 def _alternatives(pattern: str) -> set[str]:
     """The top-level branches of an alternation. No branch here contains a bar."""
     return {part for part in pattern.split("|") if part}

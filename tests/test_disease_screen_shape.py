@@ -34,7 +34,7 @@ from tests.helpers.disease import (
 )
 
 #: Raised whenever either set below changes. See the module docstring.
-_EXPECTED_VERSION = 3
+_EXPECTED_VERSION = 4
 
 _REQUIRED = (
     "bar",
@@ -43,6 +43,7 @@ _REQUIRED = (
     "code",
     "cuts",
     "designed_interface",
+    "designed_interface_quality",
     "hits",
     "inputs",
     "metrics_file",
@@ -63,11 +64,14 @@ _OPTIONAL = (
     "chemical_liability",
     "design_diversity",
     "job_mismatch",
+    "ligand_alerts",
     "metrics_blocker",
+    "mhc_class_i",
     "modality_screen",
     "nucleic_liability",
     "replaced",
     "sequence_liability",
+    "synthesis",
     "target_accession",
     "target_liability",
     "toxicology",

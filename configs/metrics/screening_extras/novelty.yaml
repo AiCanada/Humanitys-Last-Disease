@@ -1,0 +1,34 @@
+# Structural novelty screen (Foldseek). Worker B.
+#
+# PROVENANCE / REFERENCE ONLY. This file is not in any Hydra `defaults:` list and
+# is not auto-loaded by the pipeline. It records the screen's thresholds, their
+# sources, and the free databases it can use, so a reviewer and worker A's
+# screen.py integration have one authoritative place to read them. The code of
+# record is src/rfproteina/disease/novelty.py.
+
+screen: novelty
+module: rfproteina.disease.novelty
+axis: structural_novelty
+tool:
+  name: foldseek
+  licence: GPL-3.0
+  install: "conda install -c bioconda foldseek  OR static binary from foldseek.com (free)"
+  on_path_only: true  # used only when `foldseek` is already on PATH; nothing is installed by code
+
+thresholds:
+  same_fold_tmscore:
+    value: 0.5
+    status: cited
+    source: "Xu & Zhang, Bioinformatics 26(7):889-895 (2010): same-fold TM-score > 0.5"
+    meaning: "at or above this, a known structure of this fold exists (design is not novel)"
+  evalue_max:
+    value: 0.001
+    status: suggested
+    source: "program default pending calibration; Foldseek's own default E-value is 10"
+
+databases:  # CC-BY-4.0; operator-fetched with `foldseek databases ...`; nothing downloaded by code
+  pdb: "pdb100.tar.gz 2.2 GB"
+  alphafold_swissprot: "afdb_swissprot.tar.gz 1.5 GB"
+  alphafold_proteome: "afdb_proteome.tar.gz 1.7 GB"
+  alphafold_uniprot50: "afdb50.tar.gz 114.1 GB  # large; state before fetching"
+  sizes_read: "foldseek.steineggerlab.workers.dev on 2026-11-16 (download size, not extracted)"

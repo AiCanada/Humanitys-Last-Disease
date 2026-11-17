@@ -1,0 +1,223 @@
+_description: 'Antibody developability, humanness and immunogenicity screening configuration. This file
+  is data, not a hydra metric target: nothing in configs/metrics/all_metrics.yaml references it, and loading
+  it instantiates nothing. It exists so the motifs, thresholds and licences a reviewer has to check are
+  readable without reading the code. The modules under src/rfproteina/disease are the source of truth;
+  tests/test_disease_screening_config.py fails if this file drifts from them.'
+written: 2026-11-16
+numbering:
+  method: anarcii
+  licence: BSD-3-Clause
+  scheme: imgt
+  cdr_spans_imgt:
+    cdr1:
+    - 27
+    - 38
+    cdr2:
+    - 56
+    - 65
+    cdr3:
+    - 105
+    - 117
+  framework_spans_imgt:
+    fr1:
+    - 1
+    - 26
+    fr2:
+    - 39
+    - 55
+    fr3:
+    - 66
+    - 104
+    fr4:
+    - 118
+    - 128
+  canonical_cysteines:
+  - 23
+  - 104
+  source: Lefranc et al., IMGT unique numbering for immunoglobulin and T cell receptor variable domains
+    and Ig superfamily V-like domains, Dev Comp Immunol 27:55-77 (2003)
+  provenance: cited
+liability_motifs:
+- name: deamidation
+  kind: dipeptide
+  motifs:
+  - NG
+  - NS
+  - NN
+  - NT
+  - NH
+  hierarchy: NG > NS > NT (decreasing lability, as stated by the same paper)
+  source: Lu et al., 'Deamidation and isomerization liability analysis of 131 clinical-stage antibodies',
+    mAbs 11(1):45-57 (2019), doi:10.1080/19420862.2018.1548233
+  provenance: cited
+  rationale: Asn deamidation runs through a succinimide intermediate whose formation depends on the n+1
+    residue. NG was the most frequently modified motif across 131 clinical-stage antibodies, with CDRH2
+    and CDRL1 the most affected regions.
+- name: isomerisation
+  kind: dipeptide
+  motifs:
+  - DG
+  - DS
+  - DD
+  - DT
+  - DH
+  hierarchy: DG > DS > DD or DT (decreasing lability, as stated by the same paper)
+  source: Lu et al., 'Deamidation and isomerization liability analysis of 131 clinical-stage antibodies',
+    mAbs 11(1):45-57 (2019), doi:10.1080/19420862.2018.1548233
+  provenance: cited
+  rationale: Asp isomerisation to isoAsp runs through the same succinimide chemistry. DG dominated the
+    observed isomerisation events, concentrated in CDRH3.
+- name: oxidation
+  kind: residue
+  motifs:
+  - M
+  - W
+  hierarchy: null
+  source: Xu et al., 'Structure, heterogeneity and developability assessment of therapeutic antibodies',
+    mAbs 11(2):239-264 (2019), doi:10.1080/19420862.2018.1553476; and 'In silico prediction of post-translational
+    modifications in therapeutic antibodies', mAbs 14(1) (2022), PMC8791605
+  provenance: cited
+  rationale: Met and Trp are the residues oxidation reaches first, and CDR loops are where they are exposed.
+    Sequence-based assessment flags every Met and Trp in the variable domains; the reviews are explicit
+    that this over-calls, because solvent exposure is the dominant predictor and this module computes
+    none.
+- name: unpaired_cysteine
+  kind: cysteine
+  motifs:
+  - C
+  hierarchy: null
+  source: Xu et al., 'Structure, heterogeneity and developability assessment of therapeutic antibodies',
+    mAbs 11(2):239-264 (2019), doi:10.1080/19420862.2018.1553476
+  provenance: cited
+  rationale: A cysteine outside the conserved IMGT 23/104 pair has no partner in the domain. A free CDR
+    cysteine is readily modified by free cysteine in culture medium and has been shown to reduce antigen
+    binding; the review's advice is to eliminate such candidates.
+- name: n_glycosylation_sequon
+  kind: sequon
+  motifs:
+  - N-X-S
+  - N-X-T
+  hierarchy: null
+  source: Xu et al., 'Structure, heterogeneity and developability assessment of therapeutic antibodies',
+    mAbs 11(2):239-264 (2019), doi:10.1080/19420862.2018.1553476, which describes N-linked glycosylation
+    at the Asn-Xaa-Ser/Thr sequon in variable domains
+  provenance: cited
+  rationale: N-linked glycosylation is directed by the Asn-Xaa-Ser/Thr sequon, with Xaa anything but proline.
+    A sequon in a CDR risks heterogeneous occupancy and a glycan over the binding site.
+pass_criteria:
+  note: None. No publication gives a number of CDR motifs above which an antibody fails, and the cited
+    work reports that only a minority of canonical motifs modify under stress. Any cut added here would
+    be a suggestion and must say so.
+caveat: Motifs are sequence patterns, not exposure-weighted risks. No solvent accessibility is computed
+  here, and the cited work reports that only a minority of canonical motifs actually modify under stress.
+humanness:
+  primary:
+    method: oasis_identity_10pct_subjects
+    subject_threshold_percent: 10
+    peptide_length: 9
+    source: 'Prihoda et al., ''BioPhi: A platform for antibody design, humanization, and humanness evaluation
+      based on natural antibody repertoires and deep learning'', mAbs 14(1):2020203 (2022); peptide set
+      from the promb package (MIT), derived from the OASis v1 database (CC-BY-4.0, Zenodo 5164685)'
+    pass_cut: null
+  antibody_likeness:
+    method: ablang2_pseudo_log_likelihood
+    source: Olsen, Moal and Deane, 'Addressing the antibody germline bias and its effect on language models
+      for improved antibody design', Bioinformatics (2024); model ablang2 0.2.1, BSD-3-Clause
+    is_not_humanness_because: AbLang-2 is trained on the Observed Antibody Space, which is about 88 per
+      cent human and 11 per cent mouse. A high pseudo-log-likelihood means the sequence looks like a natural
+      antibody, not that it looks human.
+    pass_cut: null
+  options:
+  - name: OASis identity (promb packaged 10% subject peptide set)
+    licence: promb MIT; peptide set derived from OASis v1, CC-BY-4.0
+    licence_verified: PyPI metadata for promb 1.0.2 and Zenodo record 5164685, read 2026-11-16
+    weights: none; a 40 MB peptide table ships inside the wheel
+    installed_here: true
+    note: 'Humanness in the strict sense: the reference is human donor repertoires.'
+  - name: OASis full database via BioPhi
+    licence: BioPhi MIT; OASis database CC-BY-4.0
+    licence_verified: GitHub Merck/BioPhi LICENSE and Zenodo record 5164685, read 2026-11-16
+    weights: 6.5 GB download, about 21.5 GB on disk; conda-only install, needs HMMER
+    installed_here: false
+    note: Only this route can move the subject threshold off 10 per cent.
+  - name: AbLang-2 pseudo-log-likelihood
+    licence: BSD-3-Clause
+    licence_verified: PyPI metadata for ablang2 0.2.1, read 2026-11-16
+    weights: fetched by the package on first use, tens of MB
+    installed_here: true
+    note: Antibody-likeness, not humanness. See ABLANG2_NOT_HUMANNESS.
+  - name: IgFold
+    licence: academic use only
+    licence_verified: not wired in; excluded on licence grounds by this program's rule
+    weights: n/a
+    installed_here: false
+    note: Excluded. ImmuneBuilder (BSD-3) is the structure-prediction replacement, and is not humanness.
+mhc_class_i:
+  predictor: mhcflurry 2.3.x (Apache-2.0), installed in its own virtual environment
+  command_environment_variable: MHCFLURRY_PREDICT
+  affinity_unit: nM
+  percentile_scale: percent_0_100
+  thresholds: 'unchanged: liability.py already carries IEDB rank <= 1 or IC50 <= 500 nM'
+  reference_accessions:
+  - P02768
+  - P01857
+  - P0CG47
+mhc_class_ii:
+  available: false
+  reason: no_permissively_licensed_class_ii_predictor
+  panel:
+  - DRB1*03:01
+  - DRB1*07:01
+  - DRB1*15:01
+  - DRB3*01:01
+  - DRB3*02:02
+  - DRB4*01:01
+  - DRB5*01:01
+  median_rank_max: 20.0
+  width_suggested: 15
+  options:
+  - name: NetMHCIIpan 4.3 (DTU Health Tech)
+    licence: academic-use download; commercial use by separate arrangement
+    licence_quote: the service page states the software is on a 'download page for academic users; other
+      users are requested to contact Health Tech Software Package Manager at health-software@dtu.dk'
+    licence_read_on: 2026-11-16, https://services.healthtech.dtu.dk/services/NetMHCIIpan-4.3/
+    commercial_use: not granted
+    rank_scale: NetMHCIIpan EL and BA percentile ranks, bands 1 per cent strong and 5 per cent weak
+    note: Not the consensus scale the ADA threshold of 20 belongs to. Even with a licence, its rank cannot
+      be compared against that threshold without recalibration.
+  - name: MixMHC2pred 2.0 (Ludwig Institute for Cancer Research)
+    licence: academic non-commercial
+    licence_quote: the repository LICENSE opens 'SOFTWARE LICENSE AGREEMENT FOR ACADEMIC NON-COMMERCIAL
+      RESEARCH PURPOSES ONLY'
+    licence_read_on: 2026-11-16, https://github.com/GfellerLab/MixMHC2pred/blob/master/LICENSE
+    commercial_use: expressly excluded
+    rank_scale: its own percentile rank
+    note: Excluded on licence grounds.
+  - name: MHCnuggets 2.4.1 (Johns Hopkins University)
+    licence: JHU Academic Software License; non-commercial only
+    licence_quote: the repository LICENSE grants 'a non-exclusive, nontransferable license ... for academic,
+      non-profit, or government-sponsored research purposes. Use of the Software under this License is
+      restricted to non-commercial purposes.'
+    licence_read_on: 2026-11-16, https://github.com/KarchinLab/mhcnuggets/blob/master/LICENSE
+    commercial_use: requires a separately executed written agreement
+    rank_scale: predicted IC50 in nM; no consensus rank
+    note: 'Worth flagging: the PyPI metadata for mhcnuggets says ''Apache License'', which contradicts
+      the LICENSE file in the repository. The repository file is the one that governs, and it is non-commercial.
+      A licence read off PyPI alone would have wired this in by mistake.'
+  - name: IEDB class II consensus tools
+    licence: mixed; the suite bundles NetMHCIIpan, which carries the DTU terms above
+    licence_quote: 'not quoted here: the bundle components carry different terms and were not all read'
+    licence_read_on: not read in this work
+    commercial_use: unverified
+    rank_scale: IEDB consensus percentile rank -- the scale the ADA threshold of 20 is defined on
+    note: This is the only route whose rank scale matches the threshold already in liability.py. If the
+      ADA axis is to reach a verdict, this is the one whose terms are worth reading properly.
+  - name: epytope 4.0.1 (BSD-3-Clause) / mhctools 4.9.5
+    licence: the framework is permissive
+    licence_quote: PyPI metadata gives epytope BSD-3-Clause and mhctools Apache-2.0 with bundled data
+      licences
+    licence_read_on: 2026-11-16, PyPI JSON metadata
+    commercial_use: granted for the framework itself
+    rank_scale: whatever the wrapped predictor writes
+    note: A permissive wrapper is not a permissive predictor. These call the tools above, so the licence
+      that binds is still the predictor's. Installing one of these would not solve the problem.

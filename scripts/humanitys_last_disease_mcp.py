@@ -587,6 +587,40 @@ _VERDICT_SCHEMA: dict[str, object] = {
                 "1 is one molecule clearing every axis eight times."
             ),
         },
+        "designed_interface_quality": {
+            "type": "object",
+            "description": (
+                "The first design's buried area, interface residues, polar satisfaction and "
+                "Lawrence-Colman Sc, with the reference_thresholds they are read against, or "
+                "interface_quality_blocker saying why they are missing. A report recorded beside the "
+                "verdict: it does not move the call."
+            ),
+        },
+        "ligand_alerts": {
+            "type": "object",
+            "description": (
+                "RDKit structure alerts for a ligand SMILES supplied beside the run, or "
+                "ligand_alerts_blocker. Recorded, not judged: a catalogue hit is a flag for review, "
+                "and the states under verdicts are this report's own, not axis states, and are not "
+                "counted in hits. The SMILES itself stays in screen.json."
+            ),
+        },
+        "mhc_class_i": {
+            "type": "object",
+            "description": (
+                "The first design's class I peptide-window count, and whether a predictor is "
+                "available, for a protein or peptide run. This report never feeds the verdict."
+            ),
+        },
+        "synthesis": {
+            "type": "object",
+            "description": (
+                "Construct-synthesis feasibility for the first design of a nucleic run, or "
+                "synthesis_blocker. Recorded, not judged: every synthesis bar is a suggested default, "
+                "and the states under verdicts are not axis states and are not counted in hits. The "
+                "repeated subsequence itself stays in screen.json; longest_repeat gives its length."
+            ),
+        },
         "replaced": {
             "type": "object",
             "description": (

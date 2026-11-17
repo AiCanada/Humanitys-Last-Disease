@@ -1,0 +1,30 @@
+# Chai-1 refolding oracle configurations.
+#
+# Chai-1 (https://github.com/chaidiscovery/chai-lab) is Apache-2.0 for BOTH code
+# and model weights (verified from the repo LICENSE and README on 2026-11-16),
+# commercial use included -- the least licence-encumbered AF3-class oracle here.
+# Unlike AF3/OF3 these fold from sequence (no structural template), so there is
+# no `template_query`. Select this file to refold with Chai-1 instead of AF3.
+
+oracle:
+  _target_: rfproteina.metrics.oracles.chai_oracle.Chai1Oracle
+  oracle_name: chai1
+  aggregation: [median]
+  frac_under_thresholds:
+    min_ipae_coi: [1, 1.5, 2]
+  required_tags_any:
+    - chai1_refolding
+    - unconditional_refolding
+    - motif_scaffold_refolding
+    - internal_coordinate_motif_scaffold_refolding
+    - ame_no_ligand_refolding
+
+oracle_ppi:
+  _target_: rfproteina.metrics.oracles.chai_oracle.Chai1Oracle
+  oracle_name: chai1_ppi
+  aggregation: [median]
+  frac_under_thresholds:
+    min_ipae_coi: [1, 1.5, 2]
+  required_tags_any:
+    - ppi_refolding
+    - antibody

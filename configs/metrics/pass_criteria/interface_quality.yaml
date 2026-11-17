@@ -1,0 +1,46 @@
+# Interface-quality screening thresholds (Worker A).
+#
+# Declared here in the pass_criteria tree for review; the runtime source of
+# truth is rfproteina.disease.interface_quality.REFERENCE_THRESHOLDS, and
+# tests/test_disease_interface_quality_config.py asserts the two agree so they
+# cannot drift. This file is NOT read by refold.read_criteria (which reads only
+# all_pass_criteria.yaml) or by the Hydra oracle-evaluation pipeline: these
+# terms are computed in screen.py from geometry, not written into the metrics
+# table, and they are recorded beside the verdict without moving the call.
+#
+# Every threshold names its provenance: a BindCraft default, a cited paper, or
+# a value calibrated on this program's own 23 generated designs. 'min: null'
+# means no cut is adopted (reported only).
+
+buried_unsatisfied_polar_atoms:
+  max: 4
+  source: 'BindCraft Average_n_InterfaceUnsatHbonds = 4, read 2026-11-16. DEFINITION DIFFERS, see the
+    module docstring; this is a chemistry-typed heavy-atom proxy without hydrogens. Measured median buried_unsatisfied_polar_atoms
+    = 2 over 23 disease_runs designs (Worker A calibration): the measured distribution sits under the
+    BindCraft bar, so <= 4 is adopted as a calibrated-compatible soft cut.'
+dsasa_total_a2:
+  min: null
+  source: No cut adopted. BindCraft's Average_dSASA default of 1 is a fraction of the maximum, not an
+    area, so it cannot be carried across to this absolute value. Measured median dsasa_total_a2 = 2393
+    A^2 (range 1353-4356) over 23 disease_runs designs (Worker A calibration), recorded for reference
+    only.
+interface_polar_contacts:
+  min: 3
+  source: 'BindCraft Average_n_InterfaceHbonds = 3, read 2026-11-16. DEFINITION DIFFERS: BindCraft counts
+    Rosetta hydrogen bonds on a protonated model; this counts heavy-atom N/O pairs within 3.5 A, which
+    overcounts relative to a Rosetta hbond. Measured median interface_polar_contacts = 18 over 23 disease_runs
+    designs (Worker A calibration), so the >= 3 bar is slack here and kept only as a floor.'
+interface_residues_binder:
+  min: 7
+  source: 'BindCraft settings_filters/default_filters.json, Average_n_InterfaceResidues, read 2026-11-16.
+    Project default, not a published value. Compatible with this program''s designs: measured median interface_residues_binder
+    = 27 (range 16-47) over 23 disease_runs designs (Worker A calibration), so every accepted design clears
+    the >= 7 bar; it is kept as a floor only.'
+shape_complementarity:
+  min: null
+  source: 'Lawrence & Colman 1993 Sc. BindCraft''s default ShapeComplementarity bar is 0.55 and LC report
+    ~0.64-0.76 for natural interfaces, both on the Connolly molecular surface with re-entrant patches.
+    SCALE DIFFERS: this Sc is on a contact dot surface without re-entrant patches and runs systematically
+    lower. Measured median shape_complementarity = 0.166 (range 0.069-0.254) over 23 disease_runs designs
+    (Worker A calibration). Because the measured scale does not match BindCraft''s, NO CUT is adopted:
+    0.55 would fail every accepted design. Triage on the measured distribution, not on 0.55.'

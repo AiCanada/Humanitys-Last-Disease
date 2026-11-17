@@ -365,7 +365,6 @@ def test_every_action_belongs_to_a_blocker() -> None:
 #: scan sees it and this list gets shorter rather than longer.
 _UNSEEN_BY_THE_SCAN = frozenset(
     {
-        "designs_absent",
         "designs_compressed",
         "metrics_columns_repeated",
         "metrics_not_configured",

@@ -1600,3 +1600,16 @@ rather than relying on the warning.
 | `thresholds_not_resolved` | a criterion borrows its bounds in a form this reader does not resolve | its own `<name>.pass` column still stands |
 | `network_not_permitted` | no lookup was asked for | pass `--lookup-targets` |
 | `lookup_unavailable` | a service did not answer | retry |
+| `empty_command` | a screening tool was asked to run with no command | no input causes this; report it as a defect in the screen |
+| `interface_quality_failed` | the interface quality measurement did not complete for this design | check the design and the target are both in the generated file |
+| `module_unavailable` | the module this check runs could not be imported | reinstall this project's environment; the module ships in-tree, so what is missing is a dependency of it |
+| `synthesis_failed` | the construct synthesis screen returned no reading for this sequence | check the designed chain is a plain DNA or RNA sequence |
+| `no_commec_verdict` | the biosecurity screen ran and its flag table names no recommendation for this design | re-run the screen so every record gets a row, or screen this design on its own |
+| `no_numbered_chains` | no chain was IMGT-numbered, so there are no antibody regions to scan | give `--heavy`, `--light`, or both, and check ANARCII accepted them |
+| `oracle_unreadable` | the developability oracle's table could not be read | check the encoding and delimiter |
+| `oracle_too_large` | the oracle's table is larger than this screen will read | keep the file within 1 MiB |
+| `oracle_columns_absent` | the table defines none of the columns this oracle reports, so it is not that oracle's output | supply the oracle's own CSV, with its property columns named in the header |
+| `oracle_truncated` | the oracle's table holds more rows than this screen will judge | keep one row per design; the limit is 64 rows |
+| `oracle_not_reported` | the oracle's table holds no row carrying a usable score | check the property columns carry numbers |
+| `no_scorable_peptides` | the domain yields no 9-mer of standard residues, so no human peptide was looked up | supply a variable domain of at least nine standard residues |
+| `no_paired_chains_supplied` | antibody-likeness is scored over a heavy and light pair, and none was supplied | pass `--likeness` with both `--heavy` and `--light` |

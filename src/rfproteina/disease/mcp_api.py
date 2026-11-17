@@ -47,8 +47,8 @@ _PROSE_SEQUENCE = re.compile(r"(?i:[acdefghiklmnpqrstvwy]{20,})")
 #: ``screen_version`` and ``code`` say which record this is and which code
 #: applied the cuts. A stored verdict is of unknown age without them.
 #:
-#: The last eight are keys the current writer records and this view filtered
-#: out: five of them arrived with the screen's own version 2 and ``refold`` is
+#: ``bar_axes`` through ``design_diversity`` are keys the current writer records
+#: and this view filtered out: five of them arrived with the screen's own version 2 and ``refold`` is
 #: the whole of version 3, so the view returned a version-1 verdict out of a
 #: version-3 record and said ``screen_version: 3`` while doing it.
 #:
@@ -75,6 +75,12 @@ _PROSE_SEQUENCE = re.compile(r"(?i:[acdefghiklmnpqrstvwy]{20,})")
 #: return, ``inputs`` is a per-file listing whose moved entries already arrive
 #: under ``replaced``, and ``chemical_liability`` and ``modality_screen`` are
 #: counts with no state that enter no call.
+#:
+#: ``designed_interface_quality``, ``ligand_alerts``, ``mhc_class_i`` and
+#: ``synthesis`` arrived with version 4. Each is a report that enters no call,
+#: which by the rule above would keep it out; they are returned by decision, so
+#: a client reads them without asking for the whole record. Two keys inside them
+#: stay in screen.json, see ``_HELD_BACK``.
 _VERDICT_FIELDS = (
     "call",
     "bar",
@@ -97,7 +103,21 @@ _VERDICT_FIELDS = (
     "refold",
     "solubility",
     "design_diversity",
+    "designed_interface_quality",
+    "ligand_alerts",
+    "mhc_class_i",
+    "synthesis",
 )
+#: Keys a returned block leaves in screen.json. ``repeat_sequence`` is a verbatim
+#: slice of the designed construct, and ``_redact`` removes a DNA slice but not an
+#: RNA one, whose U is outside its alphabet; ``longest_repeat`` beside it carries
+#: the length a reader acts on. ``smiles`` is the screened molecule, and the same
+#: sequence rule reads a long carbon chain as a peptide, so a fatty acid came back
+#: as ``[sequence omitted](=O)O``.
+_HELD_BACK: dict[str, frozenset[str]] = {
+    "synthesis": frozenset({"repeat_sequence"}),
+    "ligand_alerts": frozenset({"smiles"}),
+}
 #: ``source`` says whether a state was measured or declared by a person in
 #: ``axis_evidence.json``. A declared state keeps what the measurement said
 #: under ``measured_state`` and ``measured_blocker``, and what it was declared
@@ -974,7 +994,11 @@ def _verdict(payload: Mapping[str, object], *, include_record: bool) -> dict[str
         if expected is not None and not expected(payload[name]):
             malformed.append(name)
             continue
-        view[name] = _redact(payload[name])
+        value = payload[name]
+        held = _HELD_BACK.get(name)
+        if held:
+            value = {key: item for key, item in value.items() if key not in held}
+        view[name] = _redact(value)
     replaced = _replaced(payload.get("replaced"), malformed)
     if replaced is not None:
         view["replaced"] = replaced
@@ -1195,6 +1219,10 @@ _VERDICT_TYPES: dict[str, Callable[[object], bool]] = {
     "refold": _is_object,
     "solubility": _is_object,
     "design_diversity": _is_object,
+    "designed_interface_quality": _is_object,
+    "ligand_alerts": _is_object,
+    "mhc_class_i": _is_object,
+    "synthesis": _is_object,
 }
 
 

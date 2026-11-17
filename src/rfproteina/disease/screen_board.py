@@ -20,6 +20,7 @@ from html import escape
 from rfproteina.disease.chemical import MOTIF_NAMES
 from rfproteina.disease.coevolution import COEVOLUTION_FILE_LIMIT, COEVOLUTION_ROW_LIMIT, COEVOLUTION_SENTENCES
 from rfproteina.disease.combinations import HIT_NM, PANEL_NM_SOURCE_DEFAULT, panel_cut, panel_cut_source
+from rfproteina.disease.developability import ORACLE_FILE_LIMIT, ORACLE_ROW_LIMIT
 from rfproteina.disease.liability import (
     _DENSITY_METHOD,
     _DR_MEDIAN_MAX,
@@ -229,6 +230,24 @@ _BLOCKERS = {
     "chain_shorter_than_seed": "The design is shorter than one 15-base seed.",
     "design_windows_unscannable": "Every seed window of this design spans an ambiguity code, so nothing was searched.",
     "cpg_free_not_evidence": "The design carries no CpG at all. That is not a clear for the other innate sensors.",
+    # The screening-extras checks: interface quality, construct synthesis, ligand
+    # alerts, biosecurity, novelty, off-target, antibody developability and
+    # humanness. See docs/screening-implementation-handoff.md.
+    "empty_command": "A screening tool was asked to run with no command, so nothing was measured.",
+    "interface_quality_failed": "The interface quality measurement did not complete for this design.",
+    "module_unavailable": "The module this check runs could not be imported, so the check did not run.",
+    "synthesis_failed": "The construct synthesis screen did not return a reading for this sequence.",
+    "no_commec_verdict": "The biosecurity screen ran and its flag table names no recommendation for this design.",
+    "no_numbered_chains": "No chain was IMGT-numbered, so there are no antibody regions to scan.",
+    "oracle_unreadable": "The developability oracle's table could not be read.",
+    "oracle_too_large": "The developability oracle's table is larger than this screen will read.",
+    "oracle_columns_absent": (
+        "The table defines none of the columns this oracle reports, so it is not that oracle's output."
+    ),
+    "oracle_truncated": "The developability oracle's table holds more rows than this screen will judge.",
+    "oracle_not_reported": "The developability oracle's table holds no row carrying a usable score.",
+    "no_scorable_peptides": "The domain yields no 9-mer of standard residues, so no human peptide was looked up.",
+    "no_paired_chains_supplied": "Antibody-likeness is scored over a heavy and light pair, and none was supplied.",
 }
 #: What to do about a blocker. The wording follows the "What to do" column of
 #: docs/reference/screen-inputs.md rather than new prose, so the panel and that
@@ -356,6 +375,22 @@ _ACTIONS = {
     "chain_shorter_than_seed": f"A seed match cannot be claimed below {SEED_WIDTH} bases.",
     "design_windows_unscannable": "Resolve the degenerate positions, or accept that this design cannot be searched.",
     "cpg_free_not_evidence": "Curate the call into axis_evidence.json.",
+    # The screening-extras checks, in the same order as _BLOCKERS above.
+    "empty_command": "No input causes this. Report it as a defect in the screen.",
+    "interface_quality_failed": "Check the design and the target are both in the generated file.",
+    "module_unavailable": (
+        "Reinstall this project's environment. The module ships in-tree, so what is missing is a dependency of it."
+    ),
+    "synthesis_failed": "Check the designed chain is a plain DNA or RNA sequence.",
+    "no_commec_verdict": "Re-run the screen so every record gets a row, or screen this design on its own.",
+    "no_numbered_chains": "Give --heavy, --light, or both, and check ANARCII accepted them.",
+    "oracle_unreadable": "Check the encoding and the delimiter.",
+    "oracle_too_large": f"Keep the file within {ORACLE_FILE_LIMIT // (1024 * 1024)} MiB.",
+    "oracle_columns_absent": "Supply the oracle's own CSV, with its property columns named in the header.",
+    "oracle_truncated": f"Keep one row per design. The limit is {ORACLE_ROW_LIMIT} rows.",
+    "oracle_not_reported": "Check the property columns carry numbers.",
+    "no_scorable_peptides": "Supply a variable domain of at least nine standard residues.",
+    "no_paired_chains_supplied": "Pass --likeness with both --heavy and --light.",
 }
 #: Where one axis needs a narrower answer than the blocker alone can give --
 #: which table, or which of the three --plasma cuts.

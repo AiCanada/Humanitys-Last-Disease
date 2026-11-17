@@ -91,12 +91,18 @@ _JOB_FIELDS = ("class_name", "binder_kind", "target_id", "generation_started")
 #: again here, because a third hand-written list over one record is how the
 #: first two came to disagree.
 #:
-#: ``refold`` is the one block held back, and only from this tool: it is 4 KB of
-#: the 5.4 KB a full verdict costs on a real screen, and this tool walks a whole
-#: tree. A summary of it travels instead -- how many criteria were declared, how
-#: many were evaluated, and the blocker when none were -- and ``read_verdict``
+#: ``refold`` is held back, and only from this tool: it is 4 KB of the 5.4 KB a
+#: version-3 verdict costs on a real screen, and this tool walks a whole tree. A
+#: summary of it travels instead -- how many criteria were declared, how many
+#: were evaluated, and the blocker when none were -- and ``read_verdict``
 #: returns the criteria table in full for one run.
-_SCREEN_OMITTED = frozenset({"refold"})
+#:
+#: Three of version 4's reports are held back for the same reason, with no
+#: summary: ``designed_interface_quality`` is about 3 KB on every screen, three
+#: quarters of it the same reference table, and ``synthesis`` and
+#: ``ligand_alerts`` are about 2 KB each. ``read_verdict`` returns all three.
+#: ``mhc_class_i`` is a quarter of a kilobyte and travels here too.
+_SCREEN_OMITTED = frozenset({"refold", "designed_interface_quality", "synthesis", "ligand_alerts"})
 #: The fields of that summary, in the order ``refold_report`` writes them.
 _REFOLD_SUMMARY = ("declared", "evaluated", "criteria_file", "refold_blocker")
 #: One design's measurements, and the three reasons a measurement is missing.

@@ -73,20 +73,37 @@ oracle_apo:
 # each off-target loaded from disk, one refold apiece. Emits
 # `oracle_off_target.{save_id}.*` keys, scoreable against the on-target refold
 # from the plain `oracle` above.
-# Uncomment and point `off_target_paths` at your own structures.
-# The transform flags every substituted atom `is_loaded_target`, so the template
-# query below gives AF3 the off-target's known structure (protein chains only)
-# oracle_off_target:
-#   _target_: rfproteina.metrics.oracles.af3_oracle.AF3Oracle
-#   oracle_name: af3_off_target
-#   template_query: "is_loaded_target & is_protein"
-#   aggregation: [median]
-#   frac_under_thresholds:
-#     min_ipae_coi: [1, 1.5, 2]
-#   pre_oracle_transform:
-#     _target_: rfproteina.metrics.oracles.pre_oracle_transform.OffTargetSubstitutionTransform
-#     off_target_paths:
-#       her2: /path/to/her2.cif
-#       egfr: /path/to/egfr.cif
-#   required_tags_any:
-#     - off_target_refolding
+
+# Specificity assay, wired to the paralog axis. Keeps the designed chain and swaps
+# its binding partner for each off-target, one refold apiece, scoreable against the
+# on-target refold from the plain `oracle` above. Emits `oracle_off_target.{save_id}.*`.
+# The transform flags every substituted atom `is_loaded_target`, so the template query
+# gives AF3 the off-target's known structure (protein chains only). Opt-in via the
+# `off_target_refolding` tag; it changes no existing verdict unless that tag is set.
+oracle_off_target:
+  _target_: rfproteina.metrics.oracles.af3_oracle.AF3Oracle
+  oracle_name: af3_off_target
+  template_query: "is_loaded_target & is_protein"
+  aggregation: [median]
+  frac_under_thresholds:
+    min_ipae_coi: [1, 1.5, 2]
+  pre_oracle_transform:
+    _target_: rfproteina.metrics.oracles.paralog_off_target.ParalogOffTargetSubstitutionTransform
+    # The off-targets are the paralogs the disease screen paralog axis finds. Point
+    # this at a target-liability record JSON whose `paralogs` field lists the off-target
+    # gene symbols/accessions; each is resolved to a reviewed human UniProt accession
+    # (UniProt REST, no key) and its AFDB structure (CC-BY-4.0) is fetched on first use
+    # and cached. Nothing downloads until this oracle actually runs.
+    #   paralog_record_path: /path/to/<target>/axis_target_liability.json
+    # Or name the off-target accessions directly. The two below are the canonical HER2
+    # specificity example (ERBB2 vs its close paralog EGFR); replace them with the
+    # accessions your paralog axis reports for your target.
+    paralog_accessions:
+      - P04626  # ERBB2 / HER2
+      - P00533  # EGFR (close paralog, the cross-reactivity question)
+    cache_dir: .afdb_cache
+    afdb_version: 4
+    max_targets: 8
+    # require_all: false  # skip off-targets that cannot be fetched rather than failing the run
+  required_tags_any:
+    - off_target_refolding

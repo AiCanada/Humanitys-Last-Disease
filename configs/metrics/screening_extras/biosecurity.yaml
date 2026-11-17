@@ -1,0 +1,36 @@
+# Biosecurity screen (Commec, the IBBIS Common Mechanism). Worker B.
+#
+# PROVENANCE / REFERENCE ONLY. Not in any Hydra `defaults:` list; not auto-loaded.
+# Code of record: src/rfproteina/disease/biosecurity.py.
+
+screen: biosecurity
+module: rfproteina.disease.biosecurity
+axis: biosecurity
+tool:
+  name: commec
+  licence: MIT  # software and biorisk/benign databases both MIT; ibbis-bio/common-mechanism
+  install: "pip install commec"
+  on_path_only: true
+
+databases:
+  biorisk_benign_controllists:
+    fetch: "commec setup -d <dir>"
+    size: "IBBIS states the full Commec download is under 10 GB"
+    licence: MIT
+  taxonomy:
+    needs: "NCBI nr (BLASTX/DIAMOND) and core_nt (BLASTN)"
+    size: "large; operator-provided"
+    required_only: "without --skip-tx"
+  external_tools: "hmmer, diamond or blast, cmscan"
+
+input: "nucleotide FASTA (DNA/RNA); back-translate protein designs before screening"
+
+recommendation_mapping:  # conservative on purpose; see RECOMMENDATION_STATE in the module
+  Pass: clear
+  Flag: hit
+  Warn: hit   # lower-confidence concern treated as a hit for a safety gate
+  Error: untested
+  unknown: untested  # a changed vocabulary surfaces as not-screened, never a silent pass
+
+alternative:
+  securedna: "securedna.org; free hosted screening via issued keys; sends a hashed form off-machine, so not local-only"

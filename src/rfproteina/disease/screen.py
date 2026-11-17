@@ -167,7 +167,7 @@ _STRAND = "_entity_poly.pdbx_strand_id"
 #: Raising it is not optional bookkeeping. ``tests/test_disease_screen_shape.py``
 #: pins both key sets beside this number, so a key cannot be added without the
 #: version moving with it.
-SCREEN_VERSION = 3
+SCREEN_VERSION = 4
 #: Keys every screen carries, whatever the kind and whatever was supplied.
 SCREEN_REQUIRED_KEYS = frozenset(
     {
@@ -177,6 +177,7 @@ SCREEN_REQUIRED_KEYS = frozenset(
         "code",
         "cuts",
         "designed_interface",
+        "designed_interface_quality",
         "hits",
         "inputs",
         "metrics_file",
@@ -209,6 +210,9 @@ SCREEN_OPTIONAL_KEYS = frozenset(
         "sequence_liability",
         "target_accession",
         "target_liability",
+        "ligand_alerts",
+        "mhc_class_i",
+        "synthesis",
         "toxicology",
     }
 )
@@ -519,6 +523,7 @@ def screen_generation(
     )
     ppi_pass = _flag_column(rows, _PPI_COLUMN)
     sequence, interface = _first_sample_fields(samples)
+    interface_quality = _first_interface_quality(samples)
     if not samples:
         # The one no-measurement path that named no reason. A run whose
         # designs were written compressed, or never written at all, recorded
@@ -529,6 +534,7 @@ def screen_generation(
         reason = _designs_blocker(output_dir)
         sequence = _with_reason(sequence, reason, "sequence_blocker")
         interface = _with_reason(interface, reason, "interface_blocker")
+        interface_quality = _with_reason(interface_quality, reason, "interface_quality_blocker")
     chemical = _first_chemical(samples)
     modality = _first_modality(samples)
     record: dict[str, object] = {
@@ -566,6 +572,7 @@ def screen_generation(
         "pre_oracle_pass": _flag_column(rows, _PRE_ORACLE_COLUMN),
         "sequence_developability": sequence,
         "designed_interface": interface,
+        "designed_interface_quality": interface_quality,
         "samples": samples,
         "requested_class": "requested_clear",
     }
@@ -596,6 +603,15 @@ def screen_generation(
     # them. CamSol, Aggrescan3D, and Protein-Sol are not computed. The sequence
     # AGGRESCAN is on the modality report.
     record["solubility"] = read_solubility(output_dir)
+    synthesis = _synthesis_block(binder_kind, chains)
+    if synthesis is not None:
+        record["synthesis"] = synthesis
+    ligand_alerts = _ligand_alerts_block(output_dir)
+    if ligand_alerts is not None:
+        record["ligand_alerts"] = ligand_alerts
+    mhc_class_i = _mhc_class_i_block(binder_kind, chains)
+    if mhc_class_i is not None:
+        record["mhc_class_i"] = mhc_class_i
     if liability is not None:
         record["sequence_liability"] = liability
     if nucleic is not None:
@@ -2431,6 +2447,7 @@ def _sample_measurements(
         chain = sequence.pop(_CHAIN_KEY, None)
         chains.append((ids[index], chain if isinstance(chain, str) and chain else None))
         interface = _interface_block(path, interest, text=text, chain_reason=chain_reason)
+        interface_quality = _interface_quality_block(path, interest, text=text, chain_reason=chain_reason)
         item: dict[str, object] = {
             "example_id": ids[index],
             "contact_ms": interface["contact_ms"],
@@ -2458,6 +2475,7 @@ def _sample_measurements(
             # was not exactly one. A null identity is otherwise the same
             # record as a table that does not carry that column at all.
             item["row_blocker"] = row_reason
+        item["interface_quality"] = interface_quality
         samples.append(item)
     return samples, chains
 
@@ -2882,6 +2900,212 @@ def _interface_block(
         return _interface_numbers(loaded, label)
     except (OSError, ValueError, ImportError, RuntimeError, KeyError, TypeError, IndexError):
         return {**absent, "interface_blocker": "interface_failed"}
+
+
+#: Compact interface-quality fields carried per sample and at the top level. The
+#: reference thresholds are attached once at the top level, not repeated per
+#: sample, so a run with many designs does not store the same table many times.
+_IQ_FIELDS = (
+    "binder_chain",
+    "target_chains",
+    "dsasa_total_a2",
+    "dsasa_binder_a2",
+    "dsasa_target_a2",
+    "interface_residues_binder",
+    "interface_residues_target",
+    "interface_polar_contacts",
+    "interface_atom_contacts",
+    "buried_unsatisfied_polar_atoms",
+    "buried_unsatisfied_donors",
+    "buried_unsatisfied_acceptors",
+    "shape_complementarity",
+    "shape_complementarity_reason",
+    "shape_complementarity_binder_median",
+    "shape_complementarity_target_median",
+    "interface_dots_binder",
+    "interface_dots_target",
+    "method",
+    "sc_method",
+)
+_IQ_ABSENT: dict[str, object] = dict.fromkeys(_IQ_FIELDS, None)
+
+
+def _interface_quality_labels(interest: str) -> list[str]:
+    """The chain labels to try for the binder, in order: the interest, then its letter."""
+    labels = [interest]
+    letter = interest.split("_", 1)[0]
+    if letter != interest:
+        labels.append(letter)
+    return labels
+
+
+def _interface_quality_block(
+    path: Path,
+    interest: str | None,
+    *,
+    text: str | None,
+    chain_reason: str | None = None,
+) -> dict[str, object]:
+    """Buried area, interface residues, polar satisfaction and Lawrence-Colman Sc for one CIF.
+
+    This is a report, like ``designed_interface``: it is recorded beside the
+    verdict and does not move the call. The terms, their thresholds and their
+    provenance live in ``rfproteina.disease.interface_quality``; the thresholds
+    were calibrated on this program's own designs (see
+    ``docs/screening-implementation-handoff.md``, Worker A). A sequence-only
+    file, a missing chain or an unreadable structure leaves the block null with
+    ``interface_quality_blocker`` naming which, exactly as ``_interface_block``
+    does for the contact surface.
+    """
+    if interest is None:
+        return {**_IQ_ABSENT, "interface_quality_blocker": chain_reason or "chain_not_named"}
+    if text is None:
+        return {**_IQ_ABSENT, "interface_quality_blocker": "structure_unreadable"}
+    if "_atom_site." not in text:
+        return {**_IQ_ABSENT, "interface_quality_blocker": "coordinates_absent"}
+    try:
+        from rfproteina.disease.interface_quality import InterfaceUnreadableError, measure_interface
+    except ImportError:
+        return {**_IQ_ABSENT, "interface_quality_blocker": "module_unavailable"}
+    last_reason = f"binder_chain_absent:{interest}"
+    for label in _interface_quality_labels(interest):
+        try:
+            measured = measure_interface(path, label)
+        except InterfaceUnreadableError as error:
+            reason = str(error)
+            if reason.startswith("binder_chain_absent"):
+                last_reason = reason
+                continue
+            return {**_IQ_ABSENT, "interface_quality_blocker": reason}
+        except (OSError, ValueError, RuntimeError, KeyError, TypeError, IndexError):
+            return {**_IQ_ABSENT, "interface_quality_blocker": "interface_quality_failed"}
+        record = {field: getattr(measured, field) for field in _IQ_FIELDS}
+        record["target_chains"] = list(measured.target_chains)
+        return record
+    return {**_IQ_ABSENT, "interface_quality_blocker": last_reason}
+
+
+def _first_interface_quality(samples: list[dict[str, object]]) -> dict[str, object]:
+    """Top-level interface quality: the first CIF's block, with the thresholds attached once."""
+    block = dict(_IQ_ABSENT)
+    if samples:
+        found = samples[0].get("interface_quality")
+        if isinstance(found, dict):
+            block = dict(found)
+    try:
+        from rfproteina.disease.interface_quality import REFERENCE_THRESHOLDS
+
+        block["reference_thresholds"] = REFERENCE_THRESHOLDS
+    except ImportError:  # pragma: no cover - module is in-tree
+        block["reference_thresholds"] = None
+    return block
+
+
+def _first_designed_sequence(sequences: Sequence[tuple[str, str | None]]) -> str | None:
+    for _example_id, sequence in sequences:
+        if isinstance(sequence, str) and sequence:
+            return sequence
+    return None
+
+
+def _synthesis_block(binder_kind: str, sequences: Sequence[tuple[str, str | None]]) -> dict[str, object] | None:
+    """Construct-synthesis feasibility for a nucleic design, or None for any other kind.
+
+    Recorded, not judged: every synthesis bar is a suggested default (see
+    ``rfproteina.disease.synthesis``), so this reports and does not move the
+    call. Only a nucleic binder has a construct to score.
+    """
+    if _canonical_kind(binder_kind) != "nucleic":
+        return None
+    sequence = _first_designed_sequence(sequences)
+    if not sequence:
+        return None
+    try:
+        from rfproteina.disease.synthesis import SequenceUnreadableError, screen_sequence
+        from rfproteina.disease.synthesis import verdicts as synthesis_verdicts
+    except ImportError:  # pragma: no cover - module is in-tree
+        return {"synthesis_blocker": "module_unavailable"}
+    try:
+        report = screen_sequence(sequence)
+    except SequenceUnreadableError as error:
+        return {"synthesis_blocker": str(error)}
+    except (ValueError, TypeError, OverflowError):
+        return {"synthesis_blocker": "synthesis_failed"}
+    record = report.as_record()
+    record["verdicts"] = synthesis_verdicts(report)
+    return record
+
+
+def _ligand_alerts_block(output_dir: Path) -> dict[str, object] | None:
+    """RDKit structure alerts for a supplied ligand SMILES, or None when none was supplied.
+
+    The screen carries no SMILES of its own, so this reads an optional
+    ``ligand_smiles.txt`` dropped beside the run (first whitespace token of the
+    first line). Recorded, not judged: a catalogue hit is a flag for review, and
+    no probability is turned into a concentration (see
+    ``rfproteina.disease.ligand_alerts``).
+    """
+    path = output_dir / "ligand_smiles.txt"
+    try:
+        if not path.is_file():
+            return None
+        first = ""
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                first = line.strip().split()[0]
+                break
+    except (OSError, UnicodeError):
+        return None
+    if not first:
+        return None
+    try:
+        from rfproteina.disease.ligand_alerts import LigandUnreadableError, screen_smiles
+        from rfproteina.disease.ligand_alerts import verdicts as ligand_verdicts
+    except ImportError:  # pragma: no cover - module is in-tree
+        return {"ligand_alerts_blocker": "module_unavailable"}
+    try:
+        screened = screen_smiles(first)
+    except LigandUnreadableError as error:
+        return {"ligand_alerts_blocker": str(error)}
+    record = screened.as_record()
+    record["verdicts"] = ligand_verdicts(screened)
+    return record
+
+
+def _mhc_class_i_block(
+    binder_kind: str, sequences: Sequence[tuple[str, str | None]]
+) -> dict[str, object] | None:
+    """Class I peptide-window count and predictor availability for a protein or peptide design.
+
+    This never runs MHCflurry and never writes a table: it reports how many class
+    I windows the designed chain yields and whether ``mhcflurry-predict`` is on
+    PATH, so a reader can see the class I axis is reachable without changing the
+    verdict. To actually feed the ``mhc_i`` axis, generate the table with
+    ``rfproteina.disease.mhc_tables`` and drop it beside the run; that path is the
+    existing supplied-table mechanism and is deliberately left to the operator so
+    installing a predictor cannot silently move a stored call.
+    """
+    if _canonical_kind(binder_kind) not in _LIABILITY_KINDS:
+        return None
+    sequence = _first_designed_sequence(sequences)
+    if not sequence:
+        return None
+    try:
+        from rfproteina.disease.mhc_tables import predictor_available, windows
+    except ImportError:  # pragma: no cover - module is in-tree
+        return None
+    try:
+        window_list = windows(sequence)
+    except (ValueError, TypeError):
+        return None
+    return {
+        "n_windows": len(window_list),
+        "predictor_available": bool(predictor_available()),
+        "note": (
+            "class I windows cut from the designed chain; MHCflurry (Apache-2.0) predicts when installed. "
+            "This report never feeds the verdict; drop an mhc_i.tsv beside the run to populate the axis."
+        ),
+    }
 
 
 def _optional_metric(row: dict[str, str], column: str) -> float | None:

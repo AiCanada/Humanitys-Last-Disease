@@ -1,0 +1,39 @@
+# Alignment-based proteome off-target screen (MMseqs2). Worker B.
+#
+# PROVENANCE / REFERENCE ONLY. Not in any Hydra `defaults:` list; not auto-loaded.
+# Complements, and does NOT replace, the exact-9-mer `proteome_offtarget` axis in
+# liability.py. Code of record: src/rfproteina/disease/offtarget.py.
+
+screen: proteome_offtarget_alignment
+module: rfproteina.disease.offtarget
+axis: proteome_offtarget_alignment  # distinct from liability.py's proteome_offtarget
+tool:
+  name: mmseqs
+  licence: MIT  # relicensed to MIT 2024-11; soedinglab/MMseqs2
+  install: "conda install -c bioconda mmseqs2  OR static binary from mmseqs.com/latest (free)"
+  on_path_only: true
+
+target_database:
+  file: "UP000005640_9606.fasta.gz"
+  size_bytes: 7740211  # 7.38 MB; already present in the data folder's screening_tables
+  licence: CC-BY-4.0
+  note: "UniProt human reference proteome; read gzipped by MMseqs2; not downloaded by code"
+
+thresholds:  # none published for cross-reactivity; all are program defaults pending calibration
+  identity_min:
+    value: 0.5
+    status: suggested
+  coverage_min:
+    value: 0.5
+    status: suggested
+    note: "min of query and target coverage (the conservative figure)"
+  evalue_max:
+    value: 0.001
+    status: suggested
+
+on_target_handling:
+  ignore_targets: "pass the intended target's UniProt accession(s) so the self-match is not an off-target"
+
+structure_level:  # optional Foldseek path; database not on disk
+  database: "Alphafold/Proteome (afdb_proteome.tar.gz 1.7 GB, CC-BY-4.0)"
+  status: unavailable_until_fetched

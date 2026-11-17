@@ -1,0 +1,111 @@
+﻿# Reference config for the ligand pose-validation, interaction-profiling and
+# small-molecule safety screens added by worker D (2026-11-16).
+#
+# THIS FILE IS DOCUMENTATION AND A HANDOFF, NOT A LOADED HYDRA METRIC.
+# It is deliberately NOT listed in configs/metrics/all_metrics.yaml defaults and
+# carries no `_target_`, so nothing instantiates it. Worker A owns wiring these
+# into screen.py; this records the axes, directions, thresholds and the source of
+# every threshold so that wiring does not have to re-derive them.
+#
+# Every threshold below is labelled one of:
+#   cited        -- a named publication or project file is the source
+#   program      -- this program's own convention, with no publication behind it
+#   suggested    -- a starting point pending calibration, no published pass mark
+#   no_cut       -- reported only, never gated (no defensible bar exists yet)
+
+pose_validation:
+  module: rfproteina.disease.pose_validation
+  entrypoint: validate_pose
+  axes:
+    posebusters_failures:
+      direction: max
+      threshold: 0
+      label: program
+      source: >-
+        Any failed PoseBusters check (Buttenschoen, Morris, Deane, Chem. Sci.
+        2024) is a hit. PoseBusters defines each check; it publishes no overall
+        pass count. "mol" mode checks the ligand alone; "dock" mode adds the
+        protein (minimum distance, volume overlap).
+    protein_clashes:
+      direction: max
+      threshold: 0
+      label: suggested
+      source: >-
+        Zero heavy-atom pairs overlapping beyond a 0.4 A tolerance, using Bondi
+        1964 van der Waals radii. No published pass mark; calibrate before
+        gating.
+    internal_strain_kcal_mol:
+      direction: none
+      threshold: null
+      label: no_cut
+      source: >-
+        MMFF94 pose-minus-relaxed energy. PoseCheck (Harris et al. 2023) reports
+        this but publishes no pass mark, so it is reported, not gated.
+
+interactions:
+  module: rfproteina.disease.interactions
+  entrypoints: [native_fingerprint, prolif_fingerprint, compare_to_reference, dockq]
+  interaction_cutoffs_angstrom:   # ProLIF documented defaults, read 2026-11-16
+    hydrophobic: 4.5
+    hbond: 3.5
+    pi_stacking: 5.5
+    salt_bridge: 4.5
+    halogen: 3.5
+    label: cited
+    source: >-
+      ProLIF (Bouysset & Fiorucci, J. Cheminformatics 2021) default interaction
+      distances, applied to HEAVY atoms. Native counts are geometric proxies,
+      not confirmed interactions; a designed model carries no hydrogens.
+  interaction_counts:
+    direction: none
+    threshold: null
+    label: no_cut
+    source: >-
+      No published pass mark for how many of each interaction a good binder
+      needs. Reported for calibration.
+  fnat:
+    direction: min
+    threshold: null            # caller-supplied only; no program-wide Fnat cut
+    label: no_cut
+    source: >-
+      Fraction of the reference complex's interface residue-residue heavy-atom
+      contacts (within 5.0 A, CAPRI convention) reproduced by the model. This is
+      Fnat only, NOT a DockQ score (no iRMSD/LRMSD superposition). Full DockQ is
+      available via dockq() when the DockQ package is installed.
+
+ligand_safety:
+  module: rfproteina.disease.ligand_safety
+  entrypoints: [fetch_measured_nm, to_toxicology_rows, bayesherg_probability, admet_ai_predictions]
+  panel_cut_nm:
+    value: 10000.0
+    label: program
+    source: >-
+      10 micromolar, this program's screening convention for every panel axis.
+      Mirrors rfproteina.disease.combinations.PANEL_NM / PANEL_NM_SOURCE
+      (program_convention_10uM). NOT a published threshold. Restated here only so
+      a reader of this file sees it; the authority lives in combinations.py.
+  measured_route:
+    units: nM
+    label: cited
+    source: >-
+      ChEMBL REST API (free, no key). Measured IC50/Ki/Kd activities in nM,
+      aggregated as the median, with the ChEMBL activity ids recorded. Bounded
+      readings (> or <) are excluded. These feed toxicology.tsv directly.
+  predicted_route:
+    units: probability
+    label: cited
+    source: >-
+      BayeshERG (Kim & Nam, MIT) and ADMET-AI (Swanson et al., MIT) return
+      PROBABILITIES, stored only under *_prob keys with unit "probability".
+      Never written into an *_nm column; assert_no_probability_in_nm enforces it.
+  chembl_targets:   # verified against the ChEMBL target API on 2026-11-16 (Homo sapiens, single protein)
+    herg: CHEMBL240       # KCNH2
+    nav1_5: CHEMBL1980    # SCN5A / Nav1.5
+    cyp3a4: CHEMBL340
+    cyp2d6: CHEMBL289
+    cyp2c9: CHEMBL3397
+    cyp1a2: CHEMBL3356
+    cyp2c19: CHEMBL3622
+    pgp: CHEMBL4302       # ABCB1
+    bcrp: CHEMBL5393      # ABCG2
+    bsep: CHEMBL6020      # ABCB11
