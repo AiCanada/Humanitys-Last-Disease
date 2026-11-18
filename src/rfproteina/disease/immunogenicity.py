@@ -1,4 +1,4 @@
-﻿"""MHC class II, as far as a free-and-open program can honestly take it.
+"""MHC class II, as far as a free-and-open program can honestly take it.
 
 There is no permissively licensed class II binding predictor. That is the
 finding, and this module is written around it rather than against it. Every
@@ -81,7 +81,9 @@ class ClassIIOption:
 
 
 #: Every class II route found, with its licence quoted from the distributor on
-#: the date given. None of these is installed or called by this repository.
+#: the date given. None is installed or called automatically; the last is
+#: fitted here from open measurements rather than downloaded, and still has to
+#: be registered by a caller before the axis reports it as available.
 CLASS_II_OPTIONS: tuple[ClassIIOption, ...] = (
     ClassIIOption(
         name="NetMHCIIpan 4.3 (DTU Health Tech)",
@@ -149,6 +151,41 @@ CLASS_II_OPTIONS: tuple[ClassIIOption, ...] = (
         note=(
             "A permissive wrapper is not a permissive predictor. These call the tools above, so the licence that "
             "binds is still the predictor's. Installing one of these would not solve the problem."
+        ),
+    ),
+    ClassIIOption(
+        name="TEPITOPE (BenPorebski/tepitope)",
+        licence="The Unlicense",
+        licence_quote="the repository LICENSE is the Unlicense public-domain dedication",
+        licence_read_on="2026-11-17, https://github.com/BenPorebski/tepitope/blob/master/LICENSE",
+        commercial_use="granted",
+        rank_scale="TEPITOPE percent-threshold bin from 1 to 10, not an IEDB consensus percentile rank",
+        note=(
+            "Permissive HLA-DR binding matrices. The class II axis can read the bin. The ADA axis cannot: "
+            "Paul et al. 2015 applies only to an IEDB consensus rank, and several DR-panel alleles have no matrix."
+        ),
+    ),
+    ClassIIOption(
+        name="IEDB-trained PSSM (rfproteina.disease.class_ii)",
+        licence="CC BY 4.0 on the training data; the fitted model is this repository's own",
+        licence_quote=(
+            "IEDB declares the licence in the JSON-LD metadata of its own export page rather than in prose: "
+            '"http://purl.org/dc/terms/license": "https://creativecommons.org/licenses/by/4.0/"'
+        ),
+        licence_read_on=(
+            "2026-11-17, https://www.iedb.org/database_export_v3.php (JSON-LD dcterms:license; the prose page "
+            "at https://www.iedb.org/terms returns 404, so the machine-readable declaration is the statement found)"
+        ),
+        commercial_use="granted, with attribution: CC BY 4.0 permits commercial use of the data",
+        rank_scale="its own percentile rank against its own background, NOT an IEDB consensus percentile rank",
+        note=(
+            "The one route here that is not licence-blocked, because it is fitted rather than downloaded: the "
+            "tools above are restricted but the measurements they learned from are not. Trained on 14,739 "
+            "(allele, peptide) pairs from IEDB, it covers all seven panel alleles -- including the DRB3, DRB4 and "
+            "DRB5 alleles TEPITOPE has no matrix for -- at a mean held-out AUC of 0.735, split on peptide. That is "
+            "matrix-method accuracy, below the roughly 0.80-0.86 a licensed neural predictor reaches, and it is "
+            "measured rather than asserted: class_ii.validate recomputes it. The class II axis can read its rank; "
+            "the ADA axis cannot, for the same reason as every other row here. Nothing registers it automatically."
         ),
     ),
 )
