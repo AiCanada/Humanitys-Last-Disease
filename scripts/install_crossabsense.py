@@ -14,13 +14,12 @@ from __future__ import annotations
 
 import argparse
 import os
-import subprocess
 from pathlib import Path
 
 from rfproteina.disease.crossabsense import (
     CAP_BYTES,
-    ESMC_300M_BYTES,
     ESMC_6B_BYTES,
+    ESMC_300M_BYTES,
     ORACLE_FINAL_BYTES,
     PROTT5_BYTES,
     download_permitted,
@@ -72,7 +71,13 @@ def _fetch(root: Path) -> None:
     print("downloading ProtT5 XL (one weight file)")
     snapshot_download(
         repo_id="Rostlab/prot_t5_xl_uniref50",
-        allow_patterns=["pytorch_model.bin", "config.json", "spiece.model", "special_tokens_map.json", "tokenizer_config.json"],
+        allow_patterns=[
+            "pytorch_model.bin",
+            "config.json",
+            "spiece.model",
+            "special_tokens_map.json",
+            "tokenizer_config.json",
+        ],
     )
     print("downloading ESM-C 6B safetensors")
     snapshot_download(repo_id="biohub/esmc-6b-2024-12")

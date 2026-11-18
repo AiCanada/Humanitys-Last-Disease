@@ -141,7 +141,11 @@ def main(argv: list[str] | None = None) -> int:
 
     matrix_files = _matrices(args.matrices)
     if not matrix_files:
-        print("No matrix CSV files found. Pass --matrices or run from a directory that contains matrices/.", file=sys.stderr)
+        print(
+            "No matrix CSV files found. Pass --matrices or run from a directory "
+            "that contains matrices/.",
+            file=sys.stderr,
+        )
         return 1
 
     results: set[tuple[float, int, int, str, str]] = set()

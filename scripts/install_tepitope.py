@@ -60,7 +60,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"count     {count}")
         return 0 if count else 1
     print(f"fetching {_ARCHIVE}")
-    with urllib.request.urlopen(_ARCHIVE, timeout=120) as response:  # noqa: S310 — this URL is the constant above
+    # The URL is _ARCHIVE, the constant above, never caller-supplied.
+    with urllib.request.urlopen(_ARCHIVE, timeout=120) as response:
         payload = response.read()
     destination.mkdir(parents=True, exist_ok=True)
     written = 0

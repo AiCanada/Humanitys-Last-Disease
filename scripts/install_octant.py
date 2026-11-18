@@ -2,7 +2,7 @@
 """Download the Octant CYP release once and store CYP3A4 as nanomolar.
 
 The table is the CC BY 4.0 OpenADMET release, 2.27 MB, five TSVs. Only
-``inhibition.tsv`` carries ``CYP3A4_pIC50``. That column is −log10(IC50 in
+``inhibition.tsv`` carries ``CYP3A4_pIC50``. That column is -log10(IC50 in
 molar); the subset written beside the download has already been converted
 with ``10 ** (9 - pIC50)``. CYP2J2 stays in ``reactivity.tsv`` and is not a
 panel row.

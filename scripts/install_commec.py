@@ -78,7 +78,8 @@ def _venv_is_current(venv: Path) -> bool:
         python = venv / "Scripts" / "python.exe"
     if not python.is_file():
         return False
-    probe = subprocess.run([str(python), "-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 13) else 1)"], check=False)
+    check = "import sys; raise SystemExit(0 if sys.version_info >= (3, 13) else 1)"
+    probe = subprocess.run([str(python), "-c", check], check=False)
     return probe.returncode == 0
 
 
@@ -112,7 +113,8 @@ def _ensure_zstd(root: Path) -> str:
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="zstd_") as scratch:
         archive = Path(scratch) / "zstd.tar.gz"
-        urllib.request.urlretrieve(_ZSTD_URL, archive)  # noqa: S310 — the URL is the constant above
+        # The URL is _ZSTD_URL, the constant above, so no argument can redirect it.
+        urllib.request.urlretrieve(_ZSTD_URL, archive)
         with tarfile.open(archive, "r:gz") as packed:
             packed.extractall(scratch, filter="data")
         source = next(Path(scratch).glob("zstd-*"))
