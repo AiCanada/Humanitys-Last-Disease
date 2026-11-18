@@ -759,8 +759,16 @@ def prepare_class_i_table(
         # it the first screen's mhc_i.tsv suppresses the reference scan for
         # good, and the axis reports reference_not_configured forever even
         # though every input it needs is present.
-        if binder_kind == "protein" and not (directory / f"mhc_i{_REFERENCE_STEM}").is_file():
-            _attach_reference(record, directory, timeout_s=timeout_s)
+        if binder_kind == "protein":
+            reference = directory / f"mhc_i{_REFERENCE_STEM}"
+            if reference.is_file():
+                # Say so rather than returning silently. A record that omits the
+                # reference reads the same whether one is beside the run or not,
+                # and the axis behaves very differently in those two cases.
+                record["reference"] = str(reference)
+                record["reference_reused"] = True
+            else:
+                _attach_reference(record, directory, timeout_s=timeout_s)
         return record
     try:
         alleles, source = configured_alleles(directory)
@@ -801,7 +809,19 @@ def prepare_class_i_table(
         "path": str(path),
     }
     if binder_kind == "protein":
-        _attach_reference(record, directory, timeout_s=timeout_s, alleles=alleles)
+        # Skip the scan when the reference table is already beside this run.
+        # The tolerated proteins do not change between designs, but the table
+        # is written per run directory because that is where the axis reads it,
+        # so an unguarded call rescanned all three proteins on every pass. A
+        # single screen_directory call on a one-design fixture was measured
+        # starting mhcflurry-predict eight times; the design scan accounts for
+        # one of those and the rest were this. The early-return path above
+        # already guards the same way.
+        if (directory / f"mhc_i{_REFERENCE_STEM}").is_file():
+            record["reference"] = str(directory / f"mhc_i{_REFERENCE_STEM}")
+            record["reference_reused"] = True
+        else:
+            _attach_reference(record, directory, timeout_s=timeout_s, alleles=alleles)
     return record
 
 
