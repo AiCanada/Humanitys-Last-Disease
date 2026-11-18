@@ -1,0 +1,41 @@
+# CrossAbSense: antibody developability oracles.
+#
+# The source below is vendored into this repository rather than cloned, so the
+# upstream .git directory was removed. Everything needed to verify the vendored
+# tree against upstream, or to re-clone it, is recorded here.
+
+[tool]
+name = "CrossAbSense"
+role = "Developability oracles: HIC, polyreactivity (CHO lysate), AC-SINS, Tm2 and expression titer."
+adapter = "src/rfproteina/disease/crossabsense.py"
+installer = "scripts/install_crossabsense.py"
+
+[upstream]
+repository = "https://github.com/SimonCrouzet/CrossAbSense.git"
+model_card = "https://huggingface.co/SimonCrouzet/CrossAbSense"
+# The commit this tree was taken from. `git clone <repository> && git checkout
+# <commit>` reproduces it exactly.
+commit = "ccc23ebcb0c53e2f4a843d1e520736e91fd04dbf"
+commit_date = "2026-07-15T09:47:14+02:00"
+branch = "main"
+# The clone carried no local modifications when it was vendored, so the tree
+# here is upstream's, unaltered apart from the removed .git directory.
+local_modifications = 0
+
+[licence]
+spdx = "Apache-2.0"
+covers = "code and the v0.9 weights"
+verified_from = "the LICENSE file in this directory, and the model card"
+verified_on = "2026-11-18"
+
+[contents]
+# What is vendored, and what deliberately is not.
+vendored = "src, scripts, tests, config, LICENSE, MODEL_CARD.md, README.md, requirements.txt, setup.sh"
+# logs/, outputs/, results/ and models/ hold only .gitkeep upstream; they are
+# kept so the layout the scripts expect still exists, and stay empty here.
+empty_by_design = "logs, outputs, results, models"
+# The weights are not here. They are large, they are not source, and
+# crossabsense.py sets download_permitted false so nothing fetches them
+# implicitly. An operator puts them under DATA_PATH/crossabsense/models.
+weights_location = "DATA_PATH/crossabsense/models"
+weights_tracked = false

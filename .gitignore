@@ -367,7 +367,16 @@ screening subpackage/**
 !screening subpackage/*/NOTICE
 !screening subpackage/*/install_*.py
 !screening subpackage/*/README.md
+# CrossAbSense is the one relocated tree that is readable source rather than a
+# compiled binary or an installed environment: 66 Python files, about 1 MB, no
+# weights. Its upstream .git was removed so git records the files themselves
+# instead of a gitlink pointing at a clone nobody else has, and
+# crossabsense/manifest.toml records the upstream commit it was taken from so
+# the tree can still be checked against upstream or re-cloned.
+!screening subpackage/crossabsense/CrossAbSense/**
 # Re-exclude the payload even where a negation above might otherwise catch it.
+# These three are installed environments and compiled x86-64 binaries: not
+# readable source, platform-specific, and rebuilt by the tracked installers.
 screening subpackage/*/venv/
-screening subpackage/*/CrossAbSense/
 screening subpackage/*/ThermoMPNN/
+screening subpackage/crossabsense/CrossAbSense/**/.git/
