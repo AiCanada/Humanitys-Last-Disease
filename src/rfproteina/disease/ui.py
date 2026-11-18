@@ -2381,7 +2381,7 @@ def render_options(
 </label>
 </div>
 <div class="row">
-<label class="field">Upload Individual Custom Disease to Cure - Atomic level Shape .PDB .CIF files
+<label class="field">Upload Individual Custom Disease to Investigate - Atomic level Shape .PDB .CIF files
 <input type="file" name="target_structure" accept=".pdb,.cif,.PDB,.CIF">
 {uploaded}</label>
 <div class="ticks">

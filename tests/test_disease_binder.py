@@ -3639,7 +3639,7 @@ def test_searching_keeps_what_was_typed_and_what_was_ticked(tmp_path, monkeypatc
 def test_the_landing_page_takes_a_custom_target_upload():
     page = render_options(OptionForm())
     assert 'enctype="multipart/form-data"' in page, "a file needs multipart"
-    assert "Upload Individual Custom Disease to Cure - Atomic level Shape .PDB .CIF files" in page
+    assert "Upload Individual Custom Disease to Investigate - Atomic level Shape .PDB .CIF files" in page
     assert 'type="file" name="target_structure"' in page
     assert 'accept=".pdb,.cif,.PDB,.CIF"' in page
     # Below the disease name, as asked.
