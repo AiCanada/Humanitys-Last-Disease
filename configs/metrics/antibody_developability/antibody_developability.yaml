@@ -155,6 +155,18 @@ humanness:
 mhc_class_i:
   predictor: mhcflurry 2.3.x (Apache-2.0), installed in its own virtual environment
   command_environment_variable: MHCFLURRY_PREDICT
+  downloads_directory_environment_variable: MHCFLURRY_DOWNLOADS_DIR
+  alleles_environment_variable: MHC_I_ALLELES
+  alleles:
+  - HLA-A*01:01
+  - HLA-A*02:01
+  - HLA-A*03:01
+  - HLA-A*24:02
+  - HLA-B*07:02
+  - HLA-B*44:02
+  - HLA-B*58:01
+  models_bundle: models_class1_presentation
+  models_release: 2.3.0
   affinity_unit: nM
   percentile_scale: percent_0_100
   thresholds: 'unchanged: liability.py already carries IEDB rank <= 1 or IC50 <= 500 nM'
@@ -221,3 +233,84 @@ mhc_class_ii:
     rank_scale: whatever the wrapped predictor writes
     note: A permissive wrapper is not a permissive predictor. These call the tools above, so the licence
       that binds is still the predictor's. Installing one of these would not solve the problem.
+  - name: TEPITOPE (BenPorebski/tepitope)
+    licence: The Unlicense
+    licence_quote: the repository LICENSE is the Unlicense public-domain dedication
+    licence_read_on: 2026-11-17, https://github.com/BenPorebski/tepitope/blob/master/LICENSE
+    commercial_use: granted
+    rank_scale: TEPITOPE percent-threshold bin from 1 to 10, not an IEDB consensus percentile rank
+    note: Permissive HLA-DR binding matrices. The class II axis can read the bin. The ADA axis cannot.
+      Paul et al. 2015 applies only to an IEDB consensus rank, and several DR-panel alleles have no matrix.
+  - name: IEDB-trained PSSM (rfproteina.disease.class_ii)
+    licence: CC BY 4.0 on the training data; the fitted model is this repository's own
+    licence_quote: 'IEDB declares the licence in the JSON-LD metadata of its own export page rather than
+      in prose: "http://purl.org/dc/terms/license": "https://creativecommons.org/licenses/by/4.0/"'
+    licence_read_on: '2026-11-17, https://www.iedb.org/database_export_v3.php (JSON-LD dcterms:license;
+      the prose page at https://www.iedb.org/terms returns 404, so the machine-readable declaration is
+      the statement found)'
+    commercial_use: 'granted, with attribution: CC BY 4.0 permits commercial use of the data'
+    rank_scale: its own percentile rank against its own background, NOT an IEDB consensus percentile rank
+    note: 'The one route here that is not licence-blocked, because it is fitted rather than downloaded:
+      the tools above are restricted but the measurements they learned from are not. Trained on 14,739
+      (allele, peptide) pairs from IEDB, it covers all seven panel alleles -- including the DRB3, DRB4
+      and DRB5 alleles TEPITOPE has no matrix for -- at a mean held-out AUC of 0.735, split on peptide.
+      That is matrix-method accuracy, below the roughly 0.80-0.86 a licensed neural predictor reaches,
+      and it is measured rather than asserted: class_ii.validate recomputes it. The class II axis can
+      read its rank; the ADA axis cannot, for the same reason as every other row here. Nothing registers
+      it automatically.'
+viscosity:
+  available: true
+  method: deepviscosity_ann_ensemble_torch_v1
+  predictor: DeepViscosity, an ensemble of 102 feed-forward networks over DeepSP's 30 spatial descriptors
+  ensemble_size: 102
+  licence: MIT
+  licence_quote: the repository LICENSE is the MIT licence, opening 'MIT License' then 'Copyright (c) 2025
+    Lailabcode'
+  licence_read_on: 2026-11-18, https://github.com/Lailabcode/DeepViscosity/blob/main/LICENSE and the GitHub
+    licence endpoint, which reports spdx_id MIT
+  commercial_use: granted
+  weights_licence_note: The LICENSE covers 'this software and associated documentation files' and names no
+    artefact separately. No notice anywhere in the repository gives the trained weights different terms,
+    and none states that they are covered either; the MIT grant is the only statement found.
+  classes:
+    low: <= 20 cP
+    high: '> 20 cP'
+  class_boundary_cp: 20.0
+  concentration_mg_per_ml: 150.0
+  formulation: 20 mM histidine/histidine-HCl, pH 6.0
+  decision_probability: 0.5
+  decision_rule: mean probability over the 102 models, at or above 0.5 is the high class
+  training_antibodies: 229
+  training_balance: 162 low and 67 high, measured at AstraZeneca and not published
+  reported_accuracy:
+    training: 80.7
+    leave_one_group_out_validation: 88.2
+    test_lai_16: 87.5
+    test_apgar_38: 89.5
+  source: 'Kalejaye et al., ''Accelerating high-concentration monoclonal antibody development with large-scale
+    viscosity data and ensemble deep learning'', mAbs 17(1) (2025), doi:10.1080/19420862.2025.2483944'
+  provenance: cited
+  port: Evaluated in torch rather than TensorFlow, as DeepSP is. The port reproduces the probabilities upstream's
+    own predictor notebook published for all 16 antibodies of its test set to a worst difference of 4.6e-07,
+    and the whole chain from raw sequence flips none of their classes; tests/test_disease_deepviscosity.py
+    keeps both comparisons.
+  scaler: Upstream ships an sklearn StandardScaler as a joblib pickle. scripts/install_deepviscosity.py verifies
+    a pinned SHA-256, reads it through an unpickler whose allowlist reaches no callable an attacker could
+    choose, and writes plain JSON, so the library never unpickles and needs neither joblib nor scikit-learn
+    to predict.
+  pass_cut: null
+  pass_cut_reason: The 20 cP boundary is the classifier's own definition of its two classes, not a mark this
+    project has decided an antibody fails. A high call is information for a formulator; no publication says
+    a design is unusable because a sequence model placed it above 20 cP at one concentration in one buffer.
+  caveats:
+  - A class at 150 mg/mL in 20 mM histidine-HCl, pH 6.0. Another concentration or buffer is an extrapolation,
+    and the authors' own 38-antibody test set, measured in histidine/sucrose at pH 5.8, was called high viscosity
+    throughout.
+  - Fv sequence only, so isotype and subclass effects (IgA, IgM, IgG1 against IgG2 or IgG4) are not represented.
+  - Trained on sequence-diverse antibodies, so closely related variants of one lineage are its weakest case.
+  - 229 training antibodies, 162 low and 67 high, so the classes are imbalanced.
+  - A class and a probability, never a viscosity in centipoise. assert_no_predicted_centipoise enforces that.
+  - Nine of upstream's own sixteen test antibodies fall closer to the 0.5 boundary than their ensemble's own
+    spread, so the record carries near_boundary beside the class rather than a class alone.
+  requires: DeepSP's three models, which generate the descriptors. They are not duplicated into this tool's
+    directory; scripts/install_deepsp.py installs them.

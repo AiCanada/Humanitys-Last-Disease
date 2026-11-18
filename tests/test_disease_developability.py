@@ -1,4 +1,4 @@
-﻿"""Numbering parse, IMGT regions, and the liability motif scan.
+"""Numbering parse, IMGT regions, and the liability motif scan.
 
 No model is loaded here: ANARCII takes about 28 seconds to start on CPU, so
 every test feeds the parser ANARCII's own output shape instead. The real
@@ -136,16 +136,24 @@ def test_a_csv_that_is_not_deepsp_output_is_refused(tmp_path) -> None:
 
 
 def test_a_deepsp_csv_is_read_with_its_provenance(tmp_path) -> None:
+    """DeepSP suffixes every descriptor with a region, so the whole-Fv ones are read.
+
+    This wrote ``SAP_pos,SCM_pos,SCM_neg`` until 2026-11-18. DeepSP emits no
+    column by any of those names -- its own are ``SAP_pos_Fv`` and the rest --
+    so the fixture matched a contract the tool never produced, and real output
+    was refused as ``oracle_columns_absent``.
+    """
     path = tmp_path / "deepsp.csv"
-    path.write_text("name,SAP_pos,SCM_pos,SCM_neg\nab1,120.5,-300.0,250.0\n", encoding="utf-8")
+    path.write_text("Name,SAP_pos_Fv,SCM_pos_Fv,SCM_neg_Fv\nab1,120.5,-300.0,250.0\n", encoding="utf-8")
     record = read_deepsp_table(path)
     assert record["method"] == "deepsp"
-    assert record["rows"][0]["scores"]["SAP_pos"] == 120.5
+    assert record["rows"][0]["scores"]["SAP_pos_Fv"] == 120.5
+    assert record["rows"][0]["name"] == "ab1", "DeepSP writes a capital Name"
     assert record["pass_cut"] is None
     assert "MIT" in str(record["source"])
 
 
 def test_an_unparsable_cell_is_refused_rather_than_dropped(tmp_path) -> None:
     path = tmp_path / "deepsp.csv"
-    path.write_text("name,SAP_pos\nab1,high\n", encoding="utf-8")
+    path.write_text("name,SAP_pos_Fv\nab1,high\n", encoding="utf-8")
     assert read_deepsp_table(path)["oracle_blocker"] == "cell_unparsed"

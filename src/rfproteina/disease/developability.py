@@ -30,12 +30,14 @@ predictor for Met and Trp oxidation; a sequence scan over-calls. That is said
 in the record itself, in ``caveat``, so a reader downstream cannot lose it.
 
 Two external developability oracles are supported as *readers*, not as
-installs: DeepSP and CrossAbSense. Neither is run here. CrossAbSense's
-published weights sit behind a frozen ESM-Cambrian 6B encoder, which is not a
-CPU screening step, and DeepSP ships Keras models this environment has no
-TensorFlow for. Both write a CSV of per-sequence numbers, and the readers below
-take that CSV and attach the method, the assay and the provenance to each
-value, refusing any row that does not name them.
+installs: DeepSP and CrossAbSense. Neither is run here. CrossAbSense's five
+v0.9 heads also need ESM-C 6B, ESM-C 300M and ProtT5. Measured on 2026-11-17
+that download is 39.38 GB, past the 25 GB cap, so
+:mod:`rfproteina.disease.crossabsense` refuses it and nothing is fetched.
+DeepSP ships Keras models this environment has no TensorFlow for. Both tools
+write a CSV of per-sequence numbers, and the readers below take that CSV and
+attach the method, the assay and the provenance to each value, refusing any
+row that does not name them.
 """
 
 from __future__ import annotations
@@ -408,9 +410,7 @@ def developability_report(chains: Sequence[NumberedChain], *, cdr_only: bool = F
                 "cdr1": chain.regions.get("cdr1", ""),
                 "cdr2": chain.regions.get("cdr2", ""),
                 "cdr3": chain.regions.get("cdr3", ""),
-                "cdr_lengths": {
-                    name: len(chain.regions.get(name, "")) for name in ("cdr1", "cdr2", "cdr3")
-                },
+                "cdr_lengths": {name: len(chain.regions.get(name, "")) for name in ("cdr1", "cdr2", "cdr3")},
             }
         )
     counts: dict[str, int] = {}
@@ -438,11 +438,31 @@ def developability_report(chains: Sequence[NumberedChain], *, cdr_only: bool = F
 # External oracles, read rather than run.
 # --------------------------------------------------------------------------
 
-#: DeepSP's three predicted structural-aggregation descriptors. DeepSP is a
+#: DeepSP's predicted structural-aggregation descriptors. DeepSP is a
 #: sequence-based surrogate for the structure-derived spatial aggregation
-#: propensity and spatial charge map, published MIT by Lai et al. The columns
-#: are the ones its own predictor writes.
-DEEPSP_COLUMNS = ("SAP_pos", "SCM_pos", "SCM_neg")
+#: propensity and spatial charge map, published MIT by Lai et al.
+#:
+#: Three families over ten regions, which is **thirty** columns and not three.
+#: This read ``("SAP_pos", "SCM_pos", "SCM_neg")`` until 2026-11-18, and DeepSP
+#: writes no column by any of those names: every one of its own is suffixed with
+#: a region, down to ``SAP_pos_Fv``. Real DeepSP output therefore matched
+#: nothing and :func:`read_oracle_table` refused it as
+#: ``oracle_columns_absent`` -- the reader named a tool whose output it could
+#: not read. The names here are now its ``features`` list, in its order.
+DEEPSP_FAMILIES: tuple[str, ...] = ("SAP_pos", "SCM_neg", "SCM_pos")
+DEEPSP_REGIONS: tuple[str, ...] = (
+    "CDRH1",
+    "CDRH2",
+    "CDRH3",
+    "CDRL1",
+    "CDRL2",
+    "CDRL3",
+    "CDR",
+    "Hv",
+    "Lv",
+    "Fv",
+)
+DEEPSP_COLUMNS = tuple(f"{family}_{region}" for family in DEEPSP_FAMILIES for region in DEEPSP_REGIONS)
 DEEPSP_SOURCE = "DeepSP (MIT), https://github.com/Lailabcode/DeepSP"
 #: CrossAbSense's five published oracles, as named on its model card, with the
 #: assay each one predicts. Apache-2.0 for both code and the v0.9 weights.
@@ -500,7 +520,12 @@ def read_oracle_table(path: Path, *, method: str, source: str, properties: Seque
                 unparsed.append(name)
         if not scores:
             continue
-        rows.append({"name": clean.get("name") or clean.get("id") or f"row{len(rows) + 1}", "scores": scores})
+        # Case-insensitively, because DeepSP writes ``Name`` and CrossAbSense
+        # writes ``name``. Keyed on the lower-cased header, a row kept its own
+        # identity from one oracle and became "row1" from the other.
+        folded = {key.casefold(): value for key, value in clean.items()}
+        label = folded.get("name") or folded.get("id") or f"row{len(rows) + 1}"
+        rows.append({"name": label, "scores": scores})
     if unparsed:
         return {"oracle_blocker": "cell_unparsed", "method": method, "unparsed_columns": sorted(set(unparsed))}
     if not rows:
