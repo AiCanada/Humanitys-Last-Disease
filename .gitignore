@@ -379,4 +379,9 @@ screening subpackage/**
 # readable source, platform-specific, and rebuilt by the tracked installers.
 screening subpackage/*/venv/
 screening subpackage/*/ThermoMPNN/
+# The CrossAbSense negation above re-includes everything under that tree, so a
+# re-clone that brings a .git directory back with it would be trackable. This
+# puts it back out of reach. Removing this line opens that hole silently,
+# because the tree is vendored today and has no .git to catch it.
 screening subpackage/crossabsense/CrossAbSense/**/.git/
+
