@@ -19,9 +19,10 @@ one in ``combinations.py``; it is not copied here.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,6 +30,137 @@ from pathlib import Path
 HIT = "hit"
 CLEAR = "clear"
 UNTESTED = "untested"
+
+#: Overrides :func:`screening_code_root` outright, for a machine that keeps the
+#: third-party code somewhere else entirely.
+SCREENING_CODE_ENV = "SCREENING_CODE_ROOT"
+
+#: The repository folder that holds third-party screening *code*. The name has
+#: a space in it and is therefore not importable; that is deliberate, because
+#: nothing here is imported as a Python package -- these are upstream sources
+#: and compiled binaries, resolved by path.
+SCREENING_CODE_DIRNAME = "screening subpackage"
+
+#: Marker files that identify the checkout root, in priority order.
+_ROOT_MARKERS = (".project-root", "pyproject.toml")
+
+
+def checkout_root() -> Path | None:
+    """The repository root, found by walking up for ``.project-root``.
+
+    Deliberately NOT ``Path(__file__).resolve().parents[N]``. A fixed parent
+    count is silently wrong the moment a module's depth changes -- it resolves
+    to some other directory rather than raising -- and six screens in this
+    package previously carried that bug. An upward search for a marker file is
+    correct at any depth.
+
+    Returns ``None`` when no marker is found, so a caller falls back rather
+    than inventing a path.
+    """
+    here = Path(__file__).resolve()
+    for folder in (here, *here.parents):
+        for marker in _ROOT_MARKERS:
+            if (folder / marker).exists():
+                return folder
+    return None
+
+
+def screening_code_root() -> Path | None:
+    """Where third-party screening *code* lives, or ``None`` if nowhere known.
+
+    ``SCREENING_CODE_ROOT`` wins, then ``<checkout>/screening subpackage``.
+    The directory is returned only when it exists, so an un-migrated machine
+    gets ``None`` and :func:`tool_code_dir` falls back to ``DATA_PATH``.
+    """
+    named = os.environ.get(SCREENING_CODE_ENV, "").strip()
+    if named:
+        candidate = Path(named)
+        return candidate if candidate.is_dir() else None
+    root = checkout_root()
+    if root is None:
+        return None
+    candidate = root / SCREENING_CODE_DIRNAME
+    return candidate if candidate.is_dir() else None
+
+
+def data_root() -> Path | None:
+    """``DATA_PATH`` as a path, or ``None`` when it is unset or empty.
+
+    Weights, example inputs, reference tables and databases stay here. Only
+    code moved into the checkout, so a tool is resolved from two roots and
+    this is the data one.
+    """
+    root = os.environ.get("DATA_PATH", "").strip()
+    return Path(root) if root else None
+
+
+def data_dir(*parts: str) -> Path:
+    """``DATA_PATH`` (else ``<checkout>/data``), with ``parts`` joined on.
+
+    Always returns a path, unlike :func:`data_root`, because every caller needs
+    somewhere to look even when nothing is configured; whether anything is
+    actually there is a separate question each one answers for itself.
+
+    The fallback comes from :func:`checkout_root` -- an upward search for
+    ``.project-root`` -- and not from a fixed ``parents[N]`` count. For a module
+    sitting directly in ``src/rfproteina/disease/`` the two agree exactly, so
+    this changes no present behaviour. What it removes is a latent silent
+    failure: a fixed parent count resolves to some other directory, with no
+    error raised, the moment a module's depth changes.
+    """
+    root = data_root()
+    if root is None:
+        checkout = checkout_root()
+        root = checkout / "data" if checkout is not None else Path("data")
+    return root.joinpath(*parts)
+
+
+def _roots() -> tuple[Path, ...]:
+    """The roots to search for a tool, in precedence order.
+
+    ``DATA_PATH`` comes first and the relocated code second, for two reasons.
+    ``DATA_PATH`` is set explicitly by an operator, and explicit configuration
+    beating an implicit checkout-relative guess is the precedence every other
+    resolver in this package already uses. It also keeps tests honest: a test
+    that points ``DATA_PATH`` at a temporary directory must see that directory,
+    not whatever happens to be installed in the developer's own checkout.
+    """
+    return tuple(root for root in (data_root(), screening_code_root()) if root is not None)
+
+
+def tool_code_dir(tool: str) -> Path | None:
+    """The directory holding ``tool``'s third-party code, or ``None``.
+
+    Answers "where is it", never "where should it be": a directory is returned
+    only when it exists. Keeping both roots in play means a machine whose code
+    has not been relocated still resolves its tools, so the relocation can
+    happen in either order with no window in which nothing works.
+
+    Use :func:`tool_code_path` instead when a specific file is wanted. A
+    relocation leaves the old directory behind, empty, and an empty directory
+    satisfies this function while containing nothing.
+    """
+    for base in _roots():
+        candidate = base / tool
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def tool_code_path(tool: str, *relatives: str) -> Path | None:
+    """The first of ``relatives`` that exists under any root, else ``None``.
+
+    Each root is searched for every candidate before moving on, so a root that
+    merely has the tool's directory does not shadow a root that has the actual
+    file. That distinction matters after a relocation, which leaves an empty
+    directory at the old location.
+    """
+    for base in _roots():
+        for relative in relatives:
+            candidate = base / tool / relative
+            if candidate.exists():
+                return candidate
+    return None
 
 #: The twenty standard residues. How a non-standard residue is handled is each
 #: screen's call; the set lives here so the screens agree on what "standard" is.
@@ -68,6 +200,7 @@ def run_tool(
     timeout_s: float = 1800.0,
     cwd: Path | None = None,
     stdin_text: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> ToolResult:
     """Run a fixed-shape argument list and capture its output.
 
@@ -90,6 +223,7 @@ def run_tool(
             text=True,
             timeout=timeout_s,
             cwd=str(cwd) if cwd is not None else None,
+            env=dict(env) if env is not None else None,
             check=False,
         )
     except subprocess.TimeoutExpired:
