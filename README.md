@@ -152,6 +152,7 @@ Program Architecture:
   <a href="#run-the-model">Quick start</a> ·
   <a href="#more-workflows">Workflows</a> ·
   <a href="#tutorials">Tutorials</a> ·
+  <a href="#screening-tools-licences-and-citations">Screening licences</a> ·
   <a href="#citation">Citation</a> ·
   <a href="https://rfd4-proteina.org/latest/">Documentation</a>
 </p>
@@ -340,6 +341,153 @@ Training datasets are separate from model downloads: see the
 - [PPI specificity tutorial](https://github.com/RosettaCommons/RFD4-Proteina/blob/main/docs/examples/ppi_specificity_tutorial.ipynb): protein-binder design and specificity checks.
 - [Antibody campaign examples](https://github.com/RosettaCommons/RFD4-Proteina/blob/main/examples/antibody_design/README.md): cropped PMVK/MZB1 VHH inputs, hotspot sampling, high-early recycling, and partial refinement.
 - [Agent skills](https://github.com/RosettaCommons/RFD4-Proteina/blob/main/skills/README.md): task-specific guides for setup, generation, search, and evaluation.
+
+## Screening tools: licences and citations
+
+The screens that run after generation wrap third-party tools, models and reference data.
+None of it is vendored here. Each tool is fetched by a script in `scripts/` into its own
+directory under `DATA_PATH`; DockQ, MHCflurry, Commec, ThermoMPNN and CrossAbSense each
+get their own virtual environment there, because their pinned dependencies conflict with
+this project's. A screen that cannot find its tool records `untested` with a blocker
+naming what is missing — it never substitutes a guess.
+
+Every licence below was read from the tool's own distribution: a shipped `LICENSE` file, a
+`License-Expression` field, or an OSI classifier in the installed package metadata. Where a
+project's PyPI metadata and its repository `LICENSE` disagree, the repository file governs
+and the disagreement is recorded. Per-screen method, thresholds and threshold provenance
+are in [`docs/screening-implementation-handoff.md`](docs/screening-implementation-handoff.md),
+install routes in [`docs/installation.rst`](docs/installation.rst), and the machine-readable
+records — including the date each licence was read and the quote it was read from — in
+`configs/metrics/`.
+
+### Tools installed and exercised
+
+| Tool | Version | Licence | Role in the screens |
+| --- | --- | --- | --- |
+| [ANARCII](https://github.com/oxpig/ANARCII) | 2.0.8 | BSD-3-Clause | IMGT numbering, which every antibody screen rests on |
+| [DeepSP](https://github.com/Lailabcode/DeepSP) | published weights | MIT | 30 sequence-derived spatial aggregation and charge descriptors |
+| [DeepViscosity](https://github.com/Lailabcode/DeepViscosity) | 102-model ensemble | MIT | viscosity class at 150 mg/mL (≤ 20 cP or > 20 cP) |
+| [CrossAbSense](https://huggingface.co/SimonCrouzet/CrossAbSense) | v0.9 | Apache-2.0 | HIC, polyreactivity, AC-SINS, Tm2 and titer oracles |
+| [promb](https://github.com/MSDLLCPapers/promb) | 1.0.2 | MIT | the OASis 9-mer peptide set behind the humanness score |
+| [AbLang-2](https://github.com/oxpig/AbLang2) | 0.2.1 | BSD-3-Clause | antibody pseudo-log-likelihood — naturalness, not humanness |
+| [MHCflurry](https://github.com/openvax/mhcflurry) | 2.3.30 | Apache-2.0 | MHC class I presentation; own venv at `DATA_PATH/mhcflurry` |
+| [DockQ](https://github.com/bjornwallner/DockQ) | 2.1.3 | MIT | interface quality against a reference; own venv at `DATA_PATH/dockq` |
+| [ProLIF](https://github.com/chemosim-lab/ProLIF) | 2.1.0 | Apache-2.0 | typed protein–ligand interaction fingerprints |
+| [RDKit](https://pypi.org/project/rdkit/) | 2025.9.6 | BSD-3-Clause | cheminformatics throughout the ligand screens |
+| [PoseBusters](https://github.com/maabuu/posebusters) | 0.6.5 | MIT | pose validity checks |
+| [ADMET-AI](https://github.com/swansonk14/admet_ai) | 2.0.1 | MIT | seven of the ten ligand-safety panel axes |
+| [Chemprop](https://pypi.org/project/chemprop/) | 2.3.1 | MIT | the D-MPNN inside ADMET-AI, and the scaffold-balanced splitter |
+| [ThermoMPNN](https://github.com/Kuhlman-Lab/ThermoMPNN) | repository clone | MIT | ΔΔG for point mutations |
+| [MMseqs2](https://github.com/soedinglab/MMseqs2) | commit `6b89b5c` | MIT | alignment-based proteome off-target search |
+| [Commec](https://github.com/ibbis-bio/common-mechanism) | 2.1.0 | MIT | biosecurity screening; own venv at `DATA_PATH/commec` |
+| [biotite](https://pypi.org/project/biotite/) | 1.6.0 | BSD-3-Clause | structure parsing in the interface and pose screens |
+
+The `deepsp`, `deepviscosity` and `ligand-regressor` extras add `h5py` 3.16.0, `joblib`
+1.6.0 and `scikit-learn` 1.9.1, all BSD-3-Clause.
+
+**PoseBusters is a worked example of why the repository file governs.** Its PyPI classifier
+is `License :: OSI Approved :: BSD License`, but the `LICENSE` shipped inside the installed
+0.6.5 wheel is the MIT licence, "Copyright (c) 2025 Martin Buttenschoen". MIT is recorded
+above because that is the file that travels with the code.
+
+**One copyleft dependency arrives indirectly.** ProLIF is Apache-2.0, but it requires
+MDAnalysis, which is **LGPL-3.0-or-later** (`MDAnalysis` 2.11.0, from its own classifier),
+so installing the `prolif` extra puts an LGPL library in the environment. The interaction
+screen keeps a native fallback and does not require ProLIF.
+
+**MMseqs2 was relicensed from GPL-3.0 to MIT in November 2024.** The installed build
+postdates that change; an older MMseqs2 would not carry the MIT terms recorded here.
+
+Of the refolding oracles configured under `configs/metrics/refolding_oracles/`, two are
+permissive end to end and record their own terms in the config header: Boltz is MIT, and
+Chai-1 is Apache-2.0 for **both code and model weights**, commercial use included — the
+least licence-encumbered AF3-class oracle available. Both were read from their repositories
+on 2026-11-16.
+
+### Reference data
+
+| Dataset | Licence | Used for |
+| --- | --- | --- |
+| [IEDB](https://www.iedb.org/) class II DR panel export | CC BY 4.0 | training the class II binding predictor fitted in this repository |
+| [TEPITOPE matrices](https://github.com/BenPorebski/tepitope) | The Unlicense | class II DR pocket-profile scoring |
+| [Octant CYP inhibition and reactivity release](https://huggingface.co/datasets/openadmet/Octant_CYP_inhibition_reactivity_blog_release) | CC BY 4.0 | measured CYP readings for the ligand panel |
+| OASis v1 ([Zenodo 5164685](https://doi.org/10.5281/zenodo.5164685)) | CC BY 4.0 | the human 9-mer peptide set, reached through `promb`'s packaged subset |
+| UniProt human proteome `UP000005640_9606` | CC BY 4.0 | the off-target search target |
+| UniProt sequences `P02768`, `P01857`, `P0CG47` | CC BY 4.0 | serum albumin, the IgG1 constant region and ubiquitin-B: the tolerated-protein baseline the MHC class I and class II axes measure a design's peptide density against |
+| Commec biorisk and benign databases | MIT | biosecurity screening |
+| [BindingDB](https://www.bindingdb.org/) | BindingDB terms | training data for the three panel axes ADMET-AI has no endpoint for |
+| ChEMBL-derived panel readings | CC BY-SA 3.0 | measured ligand-panel activities |
+
+IEDB declares CC BY 4.0 as `dcterms:license` in the JSON-LD metadata of its export page
+rather than in prose. That is the source relied on, read 2026-11-17, and the quote is kept
+on disk beside the downloaded table. BindingDB and ChEMBL rows carry their licence with
+them, so a record built from either names its per-row reference rather than leaning on
+this note.
+
+### Documented but not installed
+
+| Tool | Licence | Why it is not installed |
+| --- | --- | --- |
+| [Foldseek](https://github.com/steineggerlab/foldseek) | GPL-3.0 | the structural novelty screen is written against it, but the binary and its databases (1.5 GB for Swiss-Prot up to 114 GB for AlphaFold/UniProt50) are operator-fetched |
+| [BioPhi](https://github.com/Merck/BioPhi) | MIT | conda-only and a 21.5 GB database; the OASis score is reached through `promb` instead |
+| [BayeshERG](https://github.com/GIST-CSBL/BayeshERG) | **not verified** | not installed, and its licence has not been read at source — it must be before the hERG route is used |
+
+### Excluded on licence grounds
+
+These were evaluated and deliberately left out. Each licence was read from the project's own
+file; the date and the quote are recorded in
+`configs/metrics/antibody_developability/antibody_developability.yaml`.
+
+| Tool | Licence | Note |
+| --- | --- | --- |
+| NetMHCIIpan 4.3 | academic-use download; commercial use by separate arrangement | this is the consensus scale the ADA breadth threshold of 20 is actually defined on, so that threshold is not applied to a substitute predictor |
+| MixMHC2pred | academic non-commercial | — |
+| MHCnuggets | JHU Academic Software License, non-commercial | its PyPI metadata says "Apache License", contradicting the repository `LICENSE`. The repository file governs. A licence read off PyPI alone would have wired this in by mistake |
+| IgFold | academic use only | ImmuneBuilder (BSD-3-Clause) is the structure-prediction replacement |
+| DeepSCM | CC BY-NC | DeepViscosity covers the same endpoint without the restriction |
+
+A permissive wrapper is not a permissive predictor: `epytope` (BSD-3-Clause) and `mhctools`
+(Apache-2.0) are permissive frameworks that call the tools above, so the bundled predictor's
+terms still apply and they are not a route around this list. For the same reason the
+numbering tool here is ANARCII (BSD-3-Clause) and not the older ANARCI from the same group,
+which is GPL-3.0.
+
+### Cite these when a screen is reported
+
+Cite the tools whose screens you report. Author lists, journals and DOIs below were
+verified against PubMed on 2026-11-18, except ANARCII's, which is a preprint and is quoted
+from the citation block in the installed package's own metadata.
+
+- **DeepSP** — Kalejaye LA, Wu I-E, Terry T, Lai P-K. *DeepSP: Deep learning-based spatial properties to predict monoclonal antibody stability.* Comput Struct Biotechnol J 23:2220–2229 (2024). [10.1016/j.csbj.2024.05.029](https://doi.org/10.1016/j.csbj.2024.05.029)
+- **DeepViscosity** — Kalejaye LA, Chu J-M, Wu I-E, et al., Lai P-K. *Accelerating high-concentration monoclonal antibody development with large-scale viscosity data and ensemble deep learning.* mAbs 17(1):2483944 (2025). [10.1080/19420862.2025.2483944](https://doi.org/10.1080/19420862.2025.2483944)
+- **ANARCII** — Greenshields-Watson A, Agarwal P, Robinson SA, et al., Deane CM. *ANARCII: A generalised language model for antigen receptor numbering.* bioRxiv 2025.04.16.648720. [10.1101/2025.04.16.648720](https://doi.org/10.1101/2025.04.16.648720)
+- **AbLang-2** — Olsen TH, Moal IH, Deane CM. *Addressing the antibody germline bias and its effect on language models for improved antibody design.* Bioinformatics 40(11) (2024). [10.1093/bioinformatics/btae618](https://doi.org/10.1093/bioinformatics/btae618)
+- **BioPhi and OASis** — Prihoda D, Maamary J, Waight A, et al., Bitton DA. *BioPhi: A platform for antibody design, humanization, and humanness evaluation based on natural antibody repertoires and deep learning.* mAbs 14(1):2020203 (2022). [10.1080/19420862.2021.2020203](https://doi.org/10.1080/19420862.2021.2020203)
+- **MHCflurry 2.0** — O'Donnell TJ, Rubinsteyn A, Laserson U. *MHCflurry 2.0: Improved pan-allele prediction of MHC class I-presented peptides by incorporating antigen processing.* Cell Syst 11(1):42–48.e7 (2020). [10.1016/j.cels.2020.06.010](https://doi.org/10.1016/j.cels.2020.06.010)
+- **IEDB** — Vita R, Mahajan S, Overton JA, et al., Peters B. *The Immune Epitope Database (IEDB): 2018 update.* Nucleic Acids Res 47(D1):D339–D343 (2019). [10.1093/nar/gky1006](https://doi.org/10.1093/nar/gky1006)
+- **TEPITOPE** — Sturniolo T, Bono E, Ding J, et al., Hammer J. *Generation of tissue-specific and promiscuous HLA ligand databases using DNA microarrays and virtual HLA class II matrices.* Nat Biotechnol 17(6):555–561 (1999). [10.1038/9858](https://doi.org/10.1038/9858)
+- **DockQ v2** — Mirabello C, Wallner B. *DockQ v2: improved automatic quality measure for protein multimers, nucleic acids, and small molecules.* Bioinformatics 40(10) (2024). [10.1093/bioinformatics/btae586](https://doi.org/10.1093/bioinformatics/btae586)
+- **ProLIF** — Bouysset C, Fiorucci S. *ProLIF: a library to encode molecular interactions as fingerprints.* J Cheminform 13(1):72 (2021). [10.1186/s13321-021-00548-6](https://doi.org/10.1186/s13321-021-00548-6)
+- **PoseBusters** — Buttenschoen M, Morris GM, Deane CM. *PoseBusters: AI-based docking methods fail to generate physically valid poses or generalise to novel sequences.* Chem Sci 15(9):3130–3139 (2024). [10.1039/d3sc04185a](https://doi.org/10.1039/d3sc04185a)
+- **ADMET-AI** — Swanson K, Walther P, Leitz J, et al., Zou J. *ADMET-AI: a machine learning ADMET platform for evaluation of large-scale chemical libraries.* Bioinformatics 40(7) (2024). [10.1093/bioinformatics/btae416](https://doi.org/10.1093/bioinformatics/btae416)
+- **Chemprop** — Heid E, Greenman KP, Chung Y, et al., McGill CJ. *Chemprop: A machine learning package for chemical property prediction.* J Chem Inf Model 64(1):9–17 (2024). [10.1021/acs.jcim.3c01250](https://doi.org/10.1021/acs.jcim.3c01250)
+- **ThermoMPNN** — Dieckhaus H, Brocidiacono M, Randolph NZ, Kuhlman B. *Transfer learning to leverage larger datasets for improved prediction of protein stability changes.* Proc Natl Acad Sci USA 121(6):e2314853121 (2024). [10.1073/pnas.2314853121](https://doi.org/10.1073/pnas.2314853121)
+- **MMseqs2** — Steinegger M, Söding J. *MMseqs2 enables sensitive protein sequence searching for the analysis of massive data sets.* Nat Biotechnol 35(11):1026–1028 (2017). [10.1038/nbt.3988](https://doi.org/10.1038/nbt.3988)
+- **Foldseek** — van Kempen M, Kim SS, Tumescheit C, et al., Steinegger M. *Fast and accurate protein structure search with Foldseek.* Nat Biotechnol 42(2):243–246 (2024). [10.1038/s41587-023-01773-0](https://doi.org/10.1038/s41587-023-01773-0)
+- **BayeshERG** — Kim H, Park M, Lee I, Nam H. *BayeshERG: a robust, reliable and interpretable deep learning model for predicting hERG channel blockers.* Brief Bioinform 23(4) (2022). [10.1093/bib/bbac211](https://doi.org/10.1093/bib/bbac211)
+
+Commec and the Octant CYP release have no paper recorded here; cite the repository and the
+dataset card linked above.
+
+Published thresholds carry their own citations, and are reported as their authors defined
+them: the same-fold TM-score cut of 0.5 (Xu & Zhang, Bioinformatics 26(7):889–895, 2010),
+the DR-panel ADA breadth rule (Paul et al., J Immunol Methods 422:28–34, 2015,
+[10.1016/j.jim.2015.03.022](https://doi.org/10.1016/j.jim.2015.03.022)), the class I 9-mer
+immunogenicity score (Calis et al., PLoS Comput Biol 2013,
+[10.1371/journal.pcbi.1003266](https://doi.org/10.1371/journal.pcbi.1003266)), shape
+complementarity (Lawrence & Colman 1993), the instability index (Guruprasad et al. 1990),
+and Lipinski's rule of five (1997). Thresholds this program chose for itself are labelled
+`suggested` in both the code and the configs, and are never presented as published values.
 
 ## Citation
 
