@@ -322,6 +322,12 @@ target-version = "py310"
 exclude = [
     "docs/examples/*.py",  # Jupytext notebook sources
     "*.ipynb",  # notebooks are not linted or formatted
+    # Vendored upstream source, kept byte-identical to the commit each tool's
+    # manifest.toml pins -- that is what makes the tree checkable against
+    # upstream. `make format` runs `ruff format` and `ruff check --fix` over the
+    # whole checkout, so without this it would rewrite these files to this
+    # project's style and silently break that property.
+    "screening subpackage/**",
     ".bzr",
     ".direnv",
     ".eggs",

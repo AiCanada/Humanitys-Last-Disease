@@ -346,8 +346,8 @@ data_path/
 #   * the five installed virtual environments are ~5.2 GB and each has 10-35
 #     files hard-coding this machine's absolute paths, including a home
 #     directory (/home/<name>/...), which must never reach a public repository;
-#   * CrossAbSense and ThermoMPNN are upstream clones carrying their own .git,
-#     which git would otherwise record as bare gitlinks pointing nowhere;
+#   * weights are large and are not source, so they stay under DATA_PATH, where
+#     the installers put them;
 #   * all of it is reproducible from the installers, which ARE tracked.
 #
 # Ignore broadly and re-include the small files on purpose: a missed negation
@@ -367,21 +367,46 @@ screening subpackage/**
 !screening subpackage/*/NOTICE
 !screening subpackage/*/install_*.py
 !screening subpackage/*/README.md
-# CrossAbSense is the one relocated tree that is readable source rather than a
-# compiled binary or an installed environment: 66 Python files, about 1 MB, no
-# weights. Its upstream .git was removed so git records the files themselves
-# instead of a gitlink pointing at a clone nobody else has, and
-# crossabsense/manifest.toml records the upstream commit it was taken from so
-# the tree can still be checked against upstream or re-cloned.
+# CrossAbSense is a relocated tree of readable source rather than a compiled
+# binary or an installed environment: 66 Python files, about 1 MB, no weights.
+# Its upstream .git was removed so git records the files themselves instead of a
+# gitlink pointing at a clone nobody else has, and crossabsense/manifest.toml
+# records the upstream commit it was taken from so the tree can still be checked
+# against upstream or re-cloned.
 !screening subpackage/crossabsense/CrossAbSense/**
+# ThermoMPNN's source is vendored the same way: 16 Python files, two notebooks,
+# and the configs and lockfile its installer needs, with no .git and no weights.
+# thermompnn/manifest.toml records the upstream commit and why each excluded
+# path was left out. Its checkpoints stay under DATA_PATH/thermompnn.
+!screening subpackage/thermompnn/ThermoMPNN/**
 # Re-exclude the payload even where a negation above might otherwise catch it.
-# These three are installed environments and compiled x86-64 binaries: not
-# readable source, platform-specific, and rebuilt by the tracked installers.
+# Installed environments are not readable source, are platform-specific, and
+# are rebuilt by the tracked installers.
 screening subpackage/*/venv/
-screening subpackage/*/ThermoMPNN/
-# The CrossAbSense negation above re-includes everything under that tree, so a
-# re-clone that brings a .git directory back with it would be trackable. This
-# puts it back out of reach. Removing this line opens that hole silently,
-# because the tree is vendored today and has no .git to catch it.
-screening subpackage/crossabsense/CrossAbSense/**/.git/
+# The negations above override the top-level **.pt and **.ckpt rules inside
+# the vendored trees. Weights belong under DATA_PATH, so put them back out of
+# reach here in case one is copied into a vendored tree.
+screening subpackage/**/*.pt
+screening subpackage/**/*.pth
+screening subpackage/**/*.ckpt
+screening subpackage/**/*.safetensors
+# A `**` negation re-includes EVERYTHING beneath it, so anything that should
+# stay out of a vendored tree has to be re-excluded here, after the negation,
+# or it silently stops applying. That is the same hazard AGENTS.md names for
+# disease_runs/ when it says to keep it ignored outright and add no negation.
+#
+# The weight patterns above are one instance. A nested .git is the other: each
+# vendored tree was a clone, and a re-clone that brings .git back would be
+# trackable, recorded as a bare gitlink pointing at a repository nobody else
+# has. Written once for every tool rather than per tool, so a tool vendored
+# tomorrow is covered without anyone remembering this line exists. It is
+# deliberately hard to notice this is load-bearing: the trees are vendored
+# today and have no .git in them to fail against.
+screening subpackage/**/.git/
+# Bytecode is the third, and the one that actually fired: the vendored source is
+# imported by the tool's own interpreter, which writes __pycache__ beside it, so
+# a single scan left nine .pyc files staged for a public repository. These are
+# build output of someone else's source, compiled for one Python version.
+screening subpackage/**/__pycache__/
+screening subpackage/**/*.py[cod]
 

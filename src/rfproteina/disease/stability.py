@@ -26,12 +26,20 @@ Sign convention (verified, not assumed)
 with ``idxmin()`` of ``ddG_pred``. So in ThermoMPNN's output **a more negative
 ddG_pred is more stabilising**. That is the only interpretation this module
 relies on. If a future ThermoMPNN release flips the sign, every threshold below
-inverts; a reviewer must check the installed version's convention before gating.
+inverts; a reviewer must check the vendored version's convention before gating.
+
+Where the pieces live
+---------------------
+ThermoMPNN's source is vendored, unmodified, in
+``screening subpackage/thermompnn/ThermoMPNN`` at the upstream commit its
+``manifest.toml`` records. Its weights stay under ``DATA_PATH/thermompnn/ThermoMPNN``
+in upstream's layout, and its virtual environment is ``DATA_PATH/thermompnn/venv``.
+``scripts/install_thermompnn.py`` fetches the weights and builds the environment.
 
 Honesty about what is NOT done here
 -----------------------------------
 * No weights are vendored and nothing is downloaded by importing this module.
-  ThermoMPNN and its checkpoint must already be installed (see
+  The weights and the environment must already be installed (see
   :func:`predictor_available`); otherwise the screen raises a clear, actionable
   error rather than inventing numbers.
 * Every threshold in :data:`STABILITY_BARS` is a *suggested default pending
@@ -52,12 +60,17 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from rfproteina.disease.screening_tools import data_dir
+from rfproteina.disease.screening_tools import checkout_root, data_dir, screening_code_root
 
 METHOD = "thermompnn_point_stability_v1"
 #: A checkpoint path. It wins over the copy installed under ``DATA_PATH``.
 THERMOMPNN_CHECKPOINT_ENV = "THERMOMPNN_CHECKPOINT"
+#: The vendored source tree. It wins over both locations :func:`code_root` tries.
+THERMOMPNN_CODE_ENV = "THERMOMPNN_CODE_ROOT"
 CHECKPOINT_NAME = "thermoMPNN_default.pt"
+#: The ProteinMPNN weights the model is built around before the ddG checkpoint's
+#: state is loaded. A second file, in a second directory, under the weights root.
+PROTEINMPNN_WEIGHTS = ("vanilla_model_weights", "v_48_020.pt")
 
 #: ddG (kcal/mol) at or below which a single mutation counts as "strongly
 #: stabilising", i.e. evidence the designed residue is a stability liability.
@@ -131,29 +144,75 @@ class StabilityReport:
         return asdict(self)
 
 
-def _install_root() -> Path:
-    """``DATA_PATH/thermompnn/ThermoMPNN``, else the same path under the checkout.
+def code_root() -> Path | None:
+    """The ThermoMPNN source tree, or None when no candidate holds its code.
 
-    The clone stays under ``DATA_PATH`` rather than moving into the checkout
-    with the other third-party code, because its sources and its checkpoints
-    are interleaved in one tree. The checkout fallback searches upward for
-    ``.project-root`` instead of counting parents, so it survives a depth
-    change rather than resolving silently to the wrong directory.
+    Code and weights are resolved separately, from two roots, because they live
+    in two places: the source is vendored in the repository, where it is
+    readable and reviewable, and the weights stay under ``DATA_PATH``, which is
+    where large binaries belong and where the installer puts them.
+
+    ``THERMOMPNN_CODE_ROOT`` wins, then ``screening subpackage/thermompnn/
+    ThermoMPNN``, then ``DATA_PATH/thermompnn/ThermoMPNN`` -- the layout before
+    the source was vendored, kept so a machine whose checkout predates it still
+    runs. A candidate counts only when it actually holds the entry point, so an
+    empty leftover directory does not shadow a working tree.
+    """
+    named = os.environ.get(THERMOMPNN_CODE_ENV, "").strip()
+    candidates: list[Path] = []
+    if named:
+        candidates.append(Path(named))
+    else:
+        code = screening_code_root()
+        if code is None and (checkout := checkout_root()) is not None:
+            # screening_code_root() returns None when the directory is absent;
+            # name it anyway so the error says where the source was looked for.
+            code = checkout / "screening subpackage"
+        if code is not None:
+            candidates.append(code / "thermompnn" / "ThermoMPNN")
+        candidates.append(data_dir("thermompnn", "ThermoMPNN"))
+    for candidate in candidates:
+        if (candidate / "analysis" / "custom_inference.py").is_file():
+            return candidate
+    return None
+
+
+def weights_root() -> Path:
+    """``DATA_PATH/thermompnn/ThermoMPNN``: the directory the two weight files sit under.
+
+    Upstream's own layout, kept exactly, because upstream's loader resolves
+    ``vanilla_model_weights/`` relative to a single configured root.
     """
     return data_dir("thermompnn", "ThermoMPNN")
 
 
 def checkpoint_path() -> Path | None:
-    """The ThermoMPNN weight file, or None when it is not on disk."""
+    """The ThermoMPNN ddG weight file, or None when it is not on disk."""
     named = os.environ.get(THERMOMPNN_CHECKPOINT_ENV, "").strip()
     if named and Path(named).is_file():
         return Path(named)
-    candidate = _install_root() / "models" / CHECKPOINT_NAME
+    candidate = weights_root() / "models" / CHECKPOINT_NAME
     return candidate if candidate.is_file() else None
 
 
+def proteinmpnn_weights_path() -> Path | None:
+    """The ProteinMPNN weight file the model is built around, or None.
+
+    Checked separately from the ddG checkpoint because it is loaded by a
+    different code path, from a different directory, and its absence fails
+    *inside* the model constructor rather than at the checkpoint load.
+    """
+    candidate = weights_root().joinpath(*PROTEINMPNN_WEIGHTS)
+    return candidate if candidate.is_file() else None
+
+
+def _runner_script() -> Path:
+    """This package's bridge between the vendored source and the weights root."""
+    return Path(__file__).resolve().with_name("thermompnn_runner.py")
+
+
 def _inference_python() -> Path | None:
-    root = _install_root().parent
+    root = weights_root().parent
     for relative in ("venv/bin/python", "venv/Scripts/python.exe"):
         candidate = root / relative
         if candidate.is_file():
@@ -162,16 +221,15 @@ def _inference_python() -> Path | None:
 
 
 def predictor_available() -> bool:
-    """True when the checkpoint is on disk and a runner can load it.
+    """True when both weight files are on disk and a runner can load them.
 
     The runner is the virtual environment ``scripts/install_thermompnn.py``
-    creates, or an importable ThermoMPNN package. The check does not load
-    the weights.
+    creates, driving the vendored source through :mod:`thermompnn_runner`, or
+    an importable ThermoMPNN package. The check does not load the weights.
     """
-    if checkpoint_path() is None:
+    if checkpoint_path() is None or proteinmpnn_weights_path() is None:
         return False
-    script = _install_root() / "analysis" / "custom_inference.py"
-    if script.is_file() and _inference_python() is not None:
+    if code_root() is not None and _inference_python() is not None and _runner_script().is_file():
         return True
     return any(importlib.util.find_spec(name) is not None for name in ("thermompnn", "ThermoMPNN"))
 
@@ -275,34 +333,52 @@ def run_site_saturation(
     return [_normalize(row) for row in _run_thermompnn(path, chain)]
 
 
-def _run_thermompnn(path: Path, chain: str | None) -> Sequence[Mapping[str, object]]:
-    """Run ``analysis/custom_inference.py`` against :func:`checkpoint_path`.
+def _run_thermompnn(path: Path, chain: str | None, *, timeout_s: float = 3600.0) -> Sequence[Mapping[str, object]]:
+    """Run the vendored ``analysis/custom_inference.py`` against the installed weights.
 
-    That script is ThermoMPNN's own PDB site-saturation entry point. It writes
-    a CSV with ``ddG_pred``, ``position``, ``wildtype`` and ``mutation``.
+    Driven through :mod:`thermompnn_runner`, which points upstream's loader at
+    :func:`weights_root` before calling it: the source tree holds no weights, so
+    upstream's own "weights sit beside the code" assumption has to be redirected
+    once, in one place. The inference is still upstream's, and it writes the
+    same CSV, with ``ddG_pred``, ``position``, ``wildtype`` and ``mutation``.
+
+    ``-I`` keeps this package's directory off the subprocess's ``sys.path``,
+    where ``datasets``, ``cache`` and ``model_utils`` would otherwise be
+    importable names belonging to two different projects.
     """
     checkpoint = checkpoint_path()
-    script = _install_root() / "analysis" / "custom_inference.py"
+    code = code_root()
     python = _inference_python()
-    if checkpoint is None or not script.is_file() or python is None:
+    runner = _runner_script()
+    if checkpoint is None or code is None or python is None or not runner.is_file():
         raise ThermoMPNNUnavailableError(
-            "ThermoMPNN's checkpoint or custom_inference.py is not installed. "
+            "ThermoMPNN's weights, vendored source or virtual environment are not installed. "
             "Run scripts/install_thermompnn.py. No ddG was invented."
         )
     with tempfile.TemporaryDirectory(prefix="thermompnn_") as scratch:
         command = [
             str(python),
-            str(script),
+            "-I",
+            str(runner),
+            "--code",
+            str(code),
+            "--weights",
+            str(weights_root()),
+            "--checkpoint",
+            str(checkpoint),
             "--pdb",
             str(path),
             "--chain",
             chain or "",
-            "--model_path",
-            str(checkpoint),
-            "--out_dir",
+            "--out-dir",
             scratch,
         ]
-        finished = subprocess.run(command, capture_output=True, text=True, check=False)
+        try:
+            finished = subprocess.run(command, capture_output=True, text=True, timeout=timeout_s, check=False)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            # A site-saturation scan of a long chain is minutes of CPU, so an
+            # unbounded wait was a hang rather than a slow answer.
+            raise ThermoMPNNUnavailableError(f"thermompnn_failed:{type(error).__name__}") from error
         if finished.returncode != 0:
             detail = (finished.stderr or finished.stdout).strip().splitlines()
             tail = detail[-1] if detail else "no output"

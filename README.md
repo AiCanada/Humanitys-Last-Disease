@@ -345,10 +345,12 @@ Training datasets are separate from model downloads: see the
 ## Screening tools: licences and citations
 
 The screens that run after generation wrap third-party tools, models and reference data.
-None of it is vendored here. Each tool is fetched by a script in `scripts/` into its own
-directory under `DATA_PATH`; DockQ, MHCflurry, Commec, ThermoMPNN and CrossAbSense each
-get their own virtual environment there, because their pinned dependencies conflict with
-this project's. A screen that cannot find its tool records `untested` with a blocker
+Each tool is fetched by a script in `scripts/` into its own directory under `DATA_PATH`;
+DockQ, MHCflurry, Commec, ThermoMPNN and CrossAbSense each get their own virtual
+environment there, because their pinned dependencies conflict with this project's. Two
+tools' sources are vendored rather than fetched — CrossAbSense and ThermoMPNN, under
+[`screening subpackage/`](screening%20subpackage/README.md), each pinned to an upstream
+commit and byte-identical to it. No weights are vendored anywhere. A screen that cannot find its tool records `untested` with a blocker
 naming what is missing — it never substitutes a guess.
 
 Every licence below was read from the tool's own distribution: a shipped `LICENSE` file, a
@@ -377,7 +379,7 @@ records — including the date each licence was read and the quote it was read f
 | [PoseBusters](https://github.com/maabuu/posebusters) | 0.6.5 | MIT | pose validity checks |
 | [ADMET-AI](https://github.com/swansonk14/admet_ai) | 2.0.1 | MIT | seven of the ten ligand-safety panel axes |
 | [Chemprop](https://pypi.org/project/chemprop/) | 2.3.1 | MIT | the D-MPNN inside ADMET-AI, and the scaffold-balanced splitter |
-| [ThermoMPNN](https://github.com/Kuhlman-Lab/ThermoMPNN) | repository clone | MIT | ΔΔG for point mutations |
+| [ThermoMPNN](https://github.com/Kuhlman-Lab/ThermoMPNN) | commit `370f76e` | MIT | ΔΔG for point mutations |
 | [MMseqs2](https://github.com/soedinglab/MMseqs2) | commit `6b89b5c` | MIT | alignment-based proteome off-target search |
 | [Commec](https://github.com/ibbis-bio/common-mechanism) | 2.1.0 | MIT | biosecurity screening; own venv at `DATA_PATH/commec` |
 | [biotite](https://pypi.org/project/biotite/) | 1.6.0 | BSD-3-Clause | structure parsing in the interface and pose screens |

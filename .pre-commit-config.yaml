@@ -4,6 +4,11 @@ repos:
     hooks:
       - id: nbstripout
         files: \.ipynb$
+        # Vendored upstream notebooks keep their upstream bytes, outputs
+        # included, so each file still hashes to upstream's blob id. Stripping
+        # them would silently break that, which is the only thing that makes
+        # the tree checkable against the commit its manifest.toml pins.
+        exclude: ^screening subpackage/
         args: [--keep-id]
   - repo: local
     hooks:

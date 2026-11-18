@@ -1,0 +1,72 @@
+# ThermoMPNN: point-mutation stability (ddG).
+#
+# The source below is vendored into this repository rather than cloned, so the
+# upstream .git directory is absent. The weights stay under DATA_PATH. What is
+# here, what is not, and how to verify both against upstream is recorded below.
+# scripts/install_thermompnn.py reads [upstream] and [[weights]] from this file.
+
+[tool]
+name = "ThermoMPNN"
+role = "Site-saturation ddG scan of a finished design (the stability axis)."
+adapter = "src/rfproteina/disease/stability.py"
+installer = "scripts/install_thermompnn.py"
+
+[upstream]
+repository = "https://github.com/Kuhlman-Lab/ThermoMPNN.git"
+# The commit this tree was taken from. `git clone <repository> && git checkout
+# <commit>` reproduces it.
+commit = "370f76ec62bd929f7425e311d8df04a0d094990f"
+commit_date = "2026-09-09T13:50:57-04:00"
+branch = "main"
+# Every vendored file was written from upstream's blob at that commit, unaltered.
+# The files are CRLF upstream; .gitattributes marks this tree -text so git keeps
+# those bytes, and `git hash-object` on any file here equals upstream's blob id.
+local_modifications = 0
+
+[licence]
+spdx = "MIT"
+covers = "code and weights"
+verified_from = "the LICENSE file in ThermoMPNN/"
+verified_on = "2026-11-18"
+
+[contents]
+vendored = "the 16 .py files (root, analysis/, preprocessing/), the two preprocessing notebooks, config.yaml, local.yaml, environment.yaml, pyproject.toml, uv.lock, examples/inference.sh, examples/train.sh, LICENSE, README.md"
+# Left out, and why:
+#   models/, vanilla_model_weights/  weights; see [[weights]]
+#   data_all/                        training and test datasets, 94 MB of CSV
+#   dataset_splits/                  split pickles and cluster tables (data)
+#   examples/2OCJ.pdb, examples/ThermoMPNN_inference_2OCJ.csv  example input and output
+#   images/                          the README's figures
+#   .idea/                           upstream's IDE settings
+#   .gitignore                       its `analysis/custom*` line would hide the
+#                                    vendored analysis/custom_inference.py
+not_vendored = "models, vanilla_model_weights, data_all, dataset_splits, examples/2OCJ.pdb, examples/ThermoMPNN_inference_2OCJ.csv, images, .idea, .gitignore"
+# local.yaml, analysis/SSM.py, analysis/thermompnn_benchmarking.py and the two
+# example shell scripts carry the upstream authors' own cluster paths, kept
+# because these files are vendored unaltered. None is read on the inference
+# path: local.yaml is loaded, but platform.thermompnn_dir is overwritten with
+# the weights root by thermompnn_runner.py, platform.cache_dir is used only by
+# the training dataset loaders, and data_loc names datasets that are not
+# vendored. The example shell scripts are not executed at all.
+
+# The weights inference loads, kept under DATA_PATH in upstream's layout. The
+# installer downloads each from upstream at the commit above and checks it
+# against these values. upstream_blob is git's blob id for the same bytes.
+[[weights]]
+path = "models/thermoMPNN_default.pt"
+bytes = 38894003
+sha256 = "af449118ccfb4e34971d802321907ed82a8a035ae80f055bf8fc56009a4a838a"
+upstream_blob = "f9e4bb308f9eb917a6cfc75bd3073c1977c66cc6"
+
+[[weights]]
+# ProteinMPNN, built into the model before the checkpoint's state is loaded.
+path = "vanilla_model_weights/v_48_020.pt"
+bytes = 6681301
+sha256 = "c9cb4a671d79604111231f8dbfc7c590e06f1197453b7a6854ac6661a642f5bd"
+upstream_blob = "66f81553eea491dfc1307582c679ef029511937b"
+
+[location]
+code = "screening subpackage/thermompnn/ThermoMPNN"
+weights = "DATA_PATH/thermompnn/ThermoMPNN"
+venv = "DATA_PATH/thermompnn/venv"
+weights_tracked = false

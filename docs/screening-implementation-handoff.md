@@ -1601,10 +1601,21 @@ ambiguous licence is moot here.
 * **Thresholds.** `fraction_positions_improvable` max 0.25 is a **suggested
   default pending calibration** — ThermoMPNN publishes no design-level pass mark
   and none is invented. The other bars are informational (no gate).
-* **Not done.** No verified public entry point into the installed ThermoMPNN's
-  SSM runner was wired; `run_site_saturation` accepts an injected `predict_fn`
-  and otherwise raises a clear, actionable error. ThermoMPNN is **not** installed
-  in the venv; `predictor_available()` returns `False` today, verified.
+* **Wired and run (2026-11-18).** `run_site_saturation` drives upstream's own
+  `analysis/custom_inference.py` through `thermompnn_runner.py` and parses the
+  CSV it writes; the injected `predict_fn` seam remains for tests and
+  alternative back-ends. Verified end to end on upstream's `examples/2OCJ.pdb`:
+  194 positions, 3,686 mutations, `most_stabilizing_ddg` -1.849,
+  `most_destabilizing_ddg` 4.7591, `fraction_positions_improvable` 0.0206, all
+  three bars `clear`. `predictor_available()` returns `True` on this machine.
+* **Split layout.** The source is vendored at
+  `screening subpackage/thermompnn/ThermoMPNN` and the weights stay at
+  `DATA_PATH/thermompnn/ThermoMPNN`. Upstream resolves `vanilla_model_weights/`
+  relative to one config key, `platform.thermompnn_dir`; the runner rewrites that
+  key to the weights root and otherwise calls upstream's code unaltered, so the
+  vendored files stay byte-identical to the pinned commit. Both weight files are
+  checked before a scan, because the ProteinMPNN one is loaded inside the model
+  constructor and its absence would surface there rather than at the checkpoint.
 
 ### E.5.2 MM-GBSA rescoring + FEP scaffold (`rescoring.py`)
 * **Method.** Single-structure implicit-solvent decomposition
@@ -1743,9 +1754,10 @@ The `af3.yaml`, `chai1.yaml` and `boltz2.yaml` configs each parse under
    atom order.** AF3Oracle's `_normalize_af3_output`/`_build_atom_index_mapping`
    are not reproduced. Downstream structure-comparison metrics may misalign. This
    is the single biggest gap in the oracle adapters.
-2. **ThermoMPNN's real SSM call is not wired** — only the injection seam and the
-   output schema are. A reviewer should confirm the installed version's columns
-   and sign before enabling it.
+2. **ThermoMPNN's thresholds are uncalibrated**, though the SSM call itself is
+   now wired and verified (E.5.1). The columns and sign were confirmed against
+   the vendored commit; what remains unjustified is the 0.25
+   `fraction_positions_improvable` bar, which no upstream result supports.
 3. **The MM-GBSA is single-structure**, not ensemble-averaged, and has no entropy
    term. Good for ranking, not for absolute affinity.
 4. **The off-target gene-symbol → accession resolution depends on UniProt REST

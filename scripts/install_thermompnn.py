@@ -1,29 +1,66 @@
 #!/usr/bin/env python3
-"""Install ThermoMPNN and its default checkpoint under ``DATA_PATH/thermompnn``.
+"""Install ThermoMPNN's weights and virtual environment under ``DATA_PATH``.
 
-The weights are ``models/thermoMPNN_default.pt`` in the MIT repository
-https://github.com/Kuhlman-Lab/ThermoMPNN. A shallow clone brings that file
-and the ProteinMPNN weights the model loads beside it. The Python packages go
-in a separate virtual environment. The clone's own lockfile selects Python
-3.10 and the CPU build of torch 2.5.1. A newer torch defaults ``torch.load``
-to ``weights_only=True`` and refuses these checkpoints.
+The source is not cloned. It is vendored in this repository, at
+``screening subpackage/thermompnn/ThermoMPNN``, so the code that runs is code a
+reviewer can read in the same diff as everything else. What this script installs
+is the part that is deliberately *not* in the repository: the two weight files
+the model loads, and the virtual environment that can run them.
+
+Both weight files are downloaded from the upstream commit
+``screening subpackage/thermompnn/manifest.toml`` pins, and each is checked
+against the sha256 recorded there before it is kept. A file that does not match
+is deleted rather than used, because a stability number from unidentified
+weights is worse than no number at all.
+
+The environment is built from the vendored ``pyproject.toml`` and ``uv.lock``.
+That lockfile selects Python 3.10 and the CPU build of torch 2.5.1; a newer
+torch defaults ``torch.load`` to ``weights_only=True`` and refuses these
+checkpoints.
 
     python scripts/install_thermompnn.py
     python scripts/install_thermompnn.py --have
 
-``stability.py`` reads ``DATA_PATH/thermompnn/ThermoMPNN/models/thermoMPNN_default.pt``.
+``stability.py`` reads the source from the checkout and the weights from
+``DATA_PATH/thermompnn/ThermoMPNN``; ``thermompnn_runner.py`` is what joins them.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import shutil
 import subprocess
+import urllib.request
 from pathlib import Path
 
-_REPO = "https://github.com/Kuhlman-Lab/ThermoMPNN.git"
-_CHECKPOINT = "thermoMPNN_default.pt"
+import tomllib
+
+_RAW = "https://raw.githubusercontent.com/Kuhlman-Lab/ThermoMPNN"
+_CHECKPOINT = "models/thermoMPNN_default.pt"
+_CHUNK = 1 << 20
+_TIMEOUT_S = 300.0
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def _manifest_path() -> Path:
+    return _repo_root() / "screening subpackage" / "thermompnn" / "manifest.toml"
+
+
+def _manifest() -> dict:
+    path = _manifest_path()
+    if not path.is_file():
+        raise SystemExit(f"{path} is missing, so the upstream commit and checksums are unknown.")
+    with path.open("rb") as handle:
+        return tomllib.load(handle)
+
+
+def _code_root() -> Path:
+    return _repo_root() / "screening subpackage" / "thermompnn" / "ThermoMPNN"
 
 
 def _unquote(value: str) -> str:
@@ -36,7 +73,7 @@ def _unquote(value: str) -> str:
 def _ensure_data_path() -> None:
     if os.environ.get("DATA_PATH", "").strip():
         return
-    env_file = Path(__file__).resolve().parent.parent / ".env.local"
+    env_file = _repo_root() / ".env.local"
     if not env_file.is_file():
         raise SystemExit("DATA_PATH is unset and .env.local does not name one.")
     for raw in env_file.read_text(encoding="utf-8").splitlines():
@@ -54,18 +91,44 @@ def _root() -> Path:
     return Path(os.environ["DATA_PATH"]) / "thermompnn"
 
 
-def _have(repo: Path) -> int:
-    checkpoint = repo / "models" / _CHECKPOINT
-    vanilla = repo / "vanilla_model_weights" / "v_48_020.pt"
-    print(f"checkpoint  {checkpoint}")
-    print(f"status      {'present' if checkpoint.is_file() else 'absent'}")
-    if checkpoint.is_file():
-        print(f"bytes       {checkpoint.stat().st_size}")
-    print(f"proteinmpnn {'present' if vanilla.is_file() else 'absent'}")
-    return 0 if checkpoint.is_file() and vanilla.is_file() else 1
+def _digest(path: Path) -> str:
+    sha = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(_CHUNK):
+            sha.update(chunk)
+    return sha.hexdigest()
 
 
-def _venv_python(venv: Path) -> str:
+def _have(weights: Path, entries: list[dict]) -> int:
+    """Report each weight file and the environment, then stop."""
+    ok = True
+    for entry in entries:
+        target = weights / entry["path"]
+        present = target.is_file()
+        size = target.stat().st_size if present else 0
+        matches = present and size == entry["bytes"] and _digest(target) == entry["sha256"]
+        print(f"weight      {target}")
+        print(f"status      {'verified' if matches else 'present but unverified' if present else 'absent'}")
+        if present:
+            print(f"bytes       {size} (expected {entry['bytes']})")
+        ok = ok and matches
+    code = _code_root()
+    print(f"source      {code}")
+    print(f"status      {'present' if (code / 'analysis' / 'custom_inference.py').is_file() else 'absent'}")
+    python = _venv_python(_root() / "venv")
+    print(f"runner      {python if python else 'absent'}")
+    return 0 if ok and python is not None else 1
+
+
+def _venv_python(venv: Path) -> Path | None:
+    for relative in ("bin/python", "Scripts/python.exe"):
+        candidate = venv / relative
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _venv_version(venv: Path) -> str:
     """The interpreter version recorded in ``pyvenv.cfg``, or an empty string."""
     cfg = venv / "pyvenv.cfg"
     if not cfg.is_file():
@@ -80,67 +143,77 @@ def _venv_python(venv: Path) -> str:
     return found
 
 
-# The same model block ``analysis/custom_inference.py`` builds before it loads
-# the checkpoint. Kept here so the installer proves the weights unpickle.
-_LOAD_CHECK = r"""
-import os
-import sys
+def _fetch(commit: str, entry: dict, weights: Path) -> Path:
+    """Download one weight file and keep it only if it matches the manifest.
 
-root = os.environ["THERMOMPNN_REPO"]
-sys.path[:0] = [os.path.join(root, "analysis"), root]
-from omegaconf import OmegaConf
-from thermompnn_benchmarking import get_trained_model
+    Written to a neighbouring ``.part`` and renamed on success, so an
+    interrupted download cannot be mistaken for an installed file by the next
+    run, or by ``stability.predictor_available``.
+    """
+    target = weights / entry["path"]
+    if target.is_file() and target.stat().st_size == entry["bytes"] and _digest(target) == entry["sha256"]:
+        print(f"verified    {target}")
+        return target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.with_suffix(target.suffix + ".part")
+    url = f"{_RAW}/{commit}/{entry['path']}"
+    print(f"downloading {url}")
+    with urllib.request.urlopen(url, timeout=_TIMEOUT_S) as response, partial.open("wb") as handle:
+        shutil.copyfileobj(response, handle, _CHUNK)
+    size = partial.stat().st_size
+    digest = _digest(partial)
+    if size != entry["bytes"] or digest != entry["sha256"]:
+        partial.unlink()
+        raise SystemExit(
+            f"{entry['path']} does not match the manifest and was deleted.\n"
+            f"  expected {entry['bytes']} bytes, sha256 {entry['sha256']}\n"
+            f"  received {size} bytes, sha256 {digest}"
+        )
+    partial.replace(target)
+    print(f"verified    {target}  ({size} bytes)")
+    return target
 
-cfg = OmegaConf.load(os.path.join(root, "local.yaml"))
-config = {
-    "training": {
-        "num_workers": 8,
-        "learn_rate": 0.001,
-        "epochs": 100,
-        "lr_schedule": True,
-    },
-    "model": {
-        "hidden_dims": [64, 32],
-        "subtract_mut": True,
-        "num_final_layers": 2,
-        "freeze_weights": True,
-        "load_pretrained": True,
-        "lightattn": True,
-        "lr_schedule": True,
-    },
-}
-merged = OmegaConf.merge(cfg, OmegaConf.create(config))
-merged.platform.thermompnn_dir = root
-model = get_trained_model(
-    model_name=os.path.join(root, "models", "thermoMPNN_default.pt"),
-    config=merged,
-    override_custom=True,
-)
-print(f"loaded {type(model).__name__}")
-"""
+
+def _note_legacy_clone(weights: Path) -> None:
+    """Say so when the pre-vendoring clone is still there, and change nothing."""
+    if not (weights / ".git").exists():
+        return
+    print(
+        f"note        {weights} still holds the upstream clone this install replaced.\n"
+        "            Its code and .git are no longer used; the weight directories under it\n"
+        "            are. Nothing here was deleted -- removing the rest is your call."
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--have", action="store_true", help="report the checkpoint, then stop")
+    parser = argparse.ArgumentParser(description="Install ThermoMPNN's weights and environment.")
+    parser.add_argument("--have", action="store_true", help="report the weights and runner, then stop")
     args = parser.parse_args(argv)
     _ensure_data_path()
+    manifest = _manifest()
+    entries = manifest.get("weights", [])
+    if not entries:
+        raise SystemExit(f"{_manifest_path()} lists no [[weights]], so there is nothing to verify.")
     root = _root()
-    repo = root / "ThermoMPNN"
+    weights = root / "ThermoMPNN"
     if args.have:
-        return _have(repo)
-    root.mkdir(parents=True, exist_ok=True)
-    if not (repo / "models" / _CHECKPOINT).is_file():
-        if repo.exists():
-            shutil.rmtree(repo)
-        print(f"cloning {_REPO}")
-        subprocess.run(["git", "clone", "--depth", "1", _REPO, str(repo)], check=True)
-    checkpoint = repo / "models" / _CHECKPOINT
-    vanilla = repo / "vanilla_model_weights" / "v_48_020.pt"
-    if not checkpoint.is_file() or not vanilla.is_file():
-        raise SystemExit(f"Clone finished but {checkpoint.name} or v_48_020.pt is absent.")
+        return _have(weights, entries)
+
+    code = _code_root()
+    for relative in ("analysis/custom_inference.py", "pyproject.toml", "uv.lock", "local.yaml"):
+        if not (code / relative).is_file():
+            raise SystemExit(
+                f"The vendored source is incomplete: {code / relative} is missing. "
+                "It is tracked in this repository, so restore it with git rather than cloning."
+            )
+    commit = manifest["upstream"]["commit"]
+    weights.mkdir(parents=True, exist_ok=True)
+    _note_legacy_clone(weights)
+    for entry in entries:
+        _fetch(commit, entry, weights)
+
     venv = root / "venv"
-    recorded = _venv_python(venv)
+    recorded = _venv_version(venv)
     if venv.exists() and not recorded.startswith("3.10"):
         print(f"replacing virtual environment (found Python {recorded or 'unknown'})")
         shutil.rmtree(venv)
@@ -150,19 +223,37 @@ def main(argv: list[str] | None = None) -> int:
     print("installing the locked CPU stack (Python 3.10, torch 2.5.1)")
     subprocess.run(
         ["uv", "sync", "--frozen", "--extra", "cpu", "--python", "3.10"],
-        cwd=repo,
+        cwd=code,
         env=env,
         check=True,
     )
-    python = venv / "bin" / "python"
-    if not python.is_file():
-        python = venv / "Scripts" / "python.exe"
-    env["THERMOMPNN_REPO"] = str(repo)
+    python = _venv_python(venv)
+    if python is None:
+        raise SystemExit(f"uv finished but no interpreter is present under {venv}.")
+
+    # Proves the split layout end to end: the vendored code builds the model,
+    # and both weight files load from DATA_PATH. A wrong weights root fails
+    # here rather than on the first design that asks for a ddG.
+    runner = _repo_root() / "src" / "rfproteina" / "disease" / "thermompnn_runner.py"
     print("loading the checkpoint")
-    subprocess.run([str(python), "-c", _LOAD_CHECK], env=env, check=True)
-    print(f"ready  {checkpoint}  ({checkpoint.stat().st_size} bytes)")
-    print(f"ready  {vanilla}  ({vanilla.stat().st_size} bytes)")
-    print(f"ready  {python}")
+    subprocess.run(
+        [
+            str(python),
+            "-I",
+            str(runner),
+            "--code",
+            str(code),
+            "--weights",
+            str(weights),
+            "--checkpoint",
+            str(weights / _CHECKPOINT),
+            "--check-only",
+        ],
+        check=True,
+    )
+    print(f"ready       source  {code}")
+    print(f"ready       weights {weights}")
+    print(f"ready       runner  {python}")
     return 0
 
 
