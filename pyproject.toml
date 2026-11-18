@@ -79,6 +79,96 @@ docs = [
     "sphinx-reredirects>=1.0,<2",
     "sphinx-togglebutton>=0.3,<1",
 ]
+# The predicted route in rfproteina.disease.ligand_safety: ADMET-AI's classification endpoints, which answer seven of
+# the ten ligand-safety panel axes (Nav1.5, BCRP and BSEP have no endpoint). Optional because it pulls Chemprop; the
+# measured route, ChEMBL activities in nM, needs nothing beyond the base install. ADMET-AI ships its two Chemprop
+# ensembles inside the wheel (~13 MB), so there is no separate weight download. It also pulls RDKit, which
+# rfproteina.disease.ligand_alerts needs and no other dependency declares.
+ligand-safety = [
+    "admet-ai>=2.0.1,<3",
+]
+# DeepSP, the sequence-only surrogate for spatial aggregation propensity, run by
+# rfproteina.disease.deepsp. Only h5py: DeepSP ships Keras models, and rather than
+# add TensorFlow beside torch for three small Conv1D stacks the forward pass is
+# reimplemented in torch, so the one thing missing is a reader for the .h5 weights.
+# The port is checked against DeepSP's own published descriptors in
+# tests/test_disease_deepsp.py. The models themselves are a 17 MB download from the
+# DeepSP repository, not a package, and ANARCII (a base dependency) replaces the
+# ANARCI its own script shells out to.
+deepsp = [
+    "h5py>=3.11,<4",
+]
+# DeepViscosity, the ensemble that turns DeepSP's 30 descriptors into a
+# high-concentration viscosity class, run by rfproteina.disease.deepviscosity.
+# Same lab, same Keras 2.11, same choice: the dense stack is evaluated in torch
+# rather than adding TensorFlow, and the port reproduces the probabilities
+# upstream published for its own 16-antibody test set to 4.6e-07.
+#
+# h5py reads the 102 weight files. joblib is needed **only by the installer**:
+# upstream ships its input scaler as an sklearn pickle, and unpickling a
+# downloaded file runs whatever that file says, so scripts/install_deepviscosity.py
+# verifies a pinned SHA-256, reads it through an allowlisted unpickler that can
+# reach no callable of an attacker's choosing, and writes plain JSON. Predicting
+# needs neither joblib nor scikit-learn, and the library opens no pickle.
+#
+# DeepSP's own models are also required: they generate the descriptors, and they
+# are not duplicated here. Install the deepsp extra and run its installer too.
+deepviscosity = [
+    "h5py>=3.11,<4",
+    "joblib>=1.3,<2",
+]
+# DockQ is deliberately NOT an extra here, and must not become one.
+#
+# rfproteina.disease.interactions calls it for the full complex-quality score,
+# but every released DockQ (2.1.3 and up; 2.1.2 is yanked) requires numpy<2.0
+# while this project runs numpy 2.x. Adding it to an extra makes the resolver
+# satisfy that by DOWNGRADING numpy underneath torch, bionemo-ir and TMol. A
+# constrained dry run refuses it outright:
+#
+#   Because dockq>=2.1.3 depends on numpy<2.0 and numpy==2.2.6, we can
+#   conclude that dockq>=2.1.3 cannot be used.
+#
+# So it is installed into its own virtual environment instead, by
+# scripts/install_dockq.py, and found through DOCKQ_EXECUTABLE or
+# DATA_PATH/dockq -- the same isolation mhc_tables uses for mhcflurry. Running
+# it through its CLI also gets the automatic chain mapping v2 added, which the
+# in-process API does not do. Without it, Fnat is still computed natively.
+#
+# Revisit only once DockQ's numpy pin moves; until then, leaving this comment
+# here is the whole point.
+# ProLIF, the typed interaction-fingerprint engine rfproteina.disease.interactions
+# prefers over its own native fallback. The two are not the same measurement and
+# the method id says which produced a count: ProLIF protonates and types atoms,
+# so on one stacked pose it reports a single typed hydrophobic interaction where
+# the native heavy-atom proxy reports dozens of atom pairs. Nothing is gated on
+# either, so installing this changes reported numbers and no verdict.
+#
+# **Capped below 2.2 on purpose.** Every prolif 2.2.x requires gemmi>=0.7.5, and
+# bionemo-ir in all-cuda13 pins gemmi==0.6.5, so taking 2.2 would silently break
+# the inverse-folding runtime to gain an interaction fingerprint. 2.1.x declares
+# no gemmi dependency at all. Raise this cap only once bionemo-ir's pin moves.
+#
+# Note for callers: prolif_fingerprint opens the ligand with mda.Universe, and
+# MDAnalysis ships no SDF reader, so the ligand must be PDB, MOL2 or PDBQT even
+# though ProLIF itself can read SDF through its own supplier.
+prolif = [
+    "prolif>=2.1,<2.2",
+]
+# The nanomolar regressors in rfproteina.disease.ligand_regressor, for the
+# three panel axes ADMET-AI has no endpoint for: Nav1.5, BCRP and BSEP. The
+# default backend is a Morgan-fingerprint forest, which measured better than a
+# D-MPNN on all three axes at this data size (350 to 1,700 training molecules),
+# so scikit-learn rather than torch is what the default route needs.
+#
+# **Chemprop is still required to train**, even for the forest: the
+# scaffold-balanced splitter comes from chemprop.data, and a random split over
+# these congeneric series would flatter a fingerprint model badly. It arrives
+# with the ligand-safety extra (ADMET-AI vendors it), so install both to train;
+# prediction from a saved forest needs only this one.
+ligand-regressor = [
+    "scikit-learn>=1.3,<2",
+    "joblib>=1.3,<2",
+]
 # Everything beyond the base package, for one CUDA major. Install the one matching your driver even if you never compute
 # a metric: it carries the fused cuEquivariance kernels the model itself loads (see rfproteina/__init__.py) as well as
 # the TMol CUDA operators. It also adds the training and analysis tools (matplotlib, scikit-learn, boto3 for the S3
