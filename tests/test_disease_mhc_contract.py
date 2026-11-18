@@ -108,7 +108,14 @@ def test_the_runner_no_longer_depends_on_dev_stdin() -> None:
     assert "tempfile.TemporaryDirectory" in source
 
 
-def test_the_predictor_is_looked_up_rather_than_assumed(monkeypatch) -> None:
+def test_the_predictor_is_looked_up_rather_than_assumed(monkeypatch, tmp_path) -> None:
+    # Clearing PATH and the environment variable is not enough to make the
+    # predictor absent: predictor_command() also looks under install_root(),
+    # which is DATA_PATH/mhcflurry, and conftest loads .env.local with
+    # override=True so that points at a real installation. Without an empty
+    # DATA_PATH this asserts that MHCflurry is not installed on the machine
+    # running the suite, which is not what it is for.
+    monkeypatch.setenv("DATA_PATH", str(tmp_path / "absent"))
     monkeypatch.setattr(mhc_tables.shutil, "which", lambda _name: None)
     monkeypatch.delenv(mhc_tables.MHCFLURRY_COMMAND_ENV, raising=False)
     assert predictor_command() is None
@@ -116,7 +123,10 @@ def test_the_predictor_is_looked_up_rather_than_assumed(monkeypatch) -> None:
         run_mhcflurry([(1, "SIINFEKL")], ["HLA-A*02:01"])
 
 
-def test_a_stale_environment_variable_reads_as_absent_not_as_a_crash(monkeypatch) -> None:
+def test_a_stale_environment_variable_reads_as_absent_not_as_a_crash(monkeypatch, tmp_path) -> None:
+    # Same isolation as above: the stale variable must be the only route left,
+    # so the installed copy under DATA_PATH cannot answer in its place.
+    monkeypatch.setenv("DATA_PATH", str(tmp_path / "absent"))
     monkeypatch.setattr(mhc_tables.shutil, "which", lambda _name: None)
     monkeypatch.setenv(mhc_tables.MHCFLURRY_COMMAND_ENV, "/no/such/mhcflurry-predict")
     assert predictor_command() is None

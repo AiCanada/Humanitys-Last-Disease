@@ -815,6 +815,14 @@ def test_screen_directory_returns_the_verdict_without_a_shell(tmp_path, monkeypa
     monkeypatch.setattr(cure.subprocess, "run", refused)
     monkeypatch.setattr(cure.subprocess, "Popen", refused)
     monkeypatch.delenv("HUMAN_PROTEOME", raising=False)
+    # DATA_PATH has to point somewhere empty, or this asserts something about
+    # the developer's machine rather than about the code. conftest loads
+    # .env.local with override=True, so without this the screen resolves the
+    # installed MHCflurry and its allele list and runs a real class I scan,
+    # which shells out and trips the refusal above. The assertion is not
+    # relaxed by this: the screen still must not start a process, it is just
+    # no longer handed a tool to start one with.
+    monkeypatch.setenv("DATA_PATH", str(tmp_path / "absent"))
     monkeypatch.setenv("HUMANITYS_LAST_DISEASE_LOG", str(tmp_path / "mcp.log"))
     run = _finished_run(tmp_path)
     result = screen_directory({"directory": str(run), "log_file": str(tmp_path / "mcp.log")})
