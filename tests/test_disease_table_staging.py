@@ -72,6 +72,8 @@ def stock(directory: Path, *, disease: str = "Breast cancer", with_proteome: boo
     (directory / "mhc_ligand_full.tsv").write_text("x\n", encoding="utf-8")
     (directory / "tcell_full_v3.tsv").write_text("x\n", encoding="utf-8")
     (directory / "aggregated_ada_values.csv").write_text("x\n", encoding="utf-8")
+    (directory / "interactions.csv").write_text("x\n", encoding="utf-8")
+    (directory / "BindingDB_All.tsv").write_text("x\n", encoding="utf-8")
     if with_proteome:
         proteome(
             directory / "UP000005640_9606.fasta.gz",
