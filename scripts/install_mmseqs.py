@@ -26,6 +26,8 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
 _AVX2 = "https://mmseqs.com/latest/mmseqs-linux-avx2.tar.gz"
 _SSE41 = "https://mmseqs.com/latest/mmseqs-linux-sse41.tar.gz"
 
@@ -82,11 +84,27 @@ def _binary_inside(extracted: Path) -> Path:
 
 
 def _have(destination: Path) -> int:
-    print(f"binary  {destination}")
-    if not destination.is_file():
+    """Report the binary wherever the screen would actually find it.
+
+    MMseqs2 is a compiled binary and therefore third-party code, so it may have
+    been relocated into the checkout's screening folder while its install
+    destination stays under DATA_PATH. Reporting only the destination made
+    ``--have`` say absent about a tool the off-target screen resolves and runs,
+    so this asks the same resolver the screen asks.
+    """
+    from rfproteina.disease.offtarget import mmseqs_command
+
+    found = mmseqs_command()
+    if found is None:
+        print(f"binary  {destination}")
         print("status  absent")
         return 1
-    result = subprocess.run([str(destination), "version"], capture_output=True, text=True, check=False)
+    if str(destination) != found:
+        print(f"binary  {found}")
+        print(f"        (not at the install destination {destination}; resolved by the screen's own lookup)")
+    else:
+        print(f"binary  {found}")
+    result = subprocess.run([found, "version"], capture_output=True, text=True, check=False)
     print(result.stdout.strip() or result.stderr.strip())
     return 0 if result.returncode == 0 else 1
 
@@ -104,7 +122,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"fetching {url}")
     with tempfile.TemporaryDirectory(prefix="mmseqs_") as scratch:
         archive = Path(scratch) / "mmseqs.tar.gz"
-        urllib.request.urlretrieve(url, archive)  # noqa: S310 — the URL is one of the two constants above
+        # The URL is one of the two constants above, never caller-supplied.
+        urllib.request.urlretrieve(url, archive)
         with tarfile.open(archive, "r:gz") as packed:
             packed.extractall(scratch, filter="data")
         binary = _binary_inside(Path(scratch))
