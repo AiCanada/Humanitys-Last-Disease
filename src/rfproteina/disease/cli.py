@@ -1856,7 +1856,12 @@ def _screened_identity(run: Path, incoming: list[str]) -> tuple[str | None, str]
             continue
         try:
             payload = json.loads(source.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
+        # RecursionError is listed on purpose and is not covered by the others:
+        # deeply nested JSON exhausts the decoder's stack and raises it rather
+        # than JSONDecodeError, and it inherits from neither ValueError nor
+        # OSError. Without it a single malformed file beside a run aborted the
+        # whole screen, which is what the run log recorded on 2026-11-08.
+        except (OSError, UnicodeError, RecursionError, json.JSONDecodeError):
             continue
         if not isinstance(payload, dict):
             continue

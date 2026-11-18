@@ -12,9 +12,11 @@ from pathlib import Path
 
 import yaml
 
+from rfproteina.disease import deepviscosity as dv
 from rfproteina.disease import developability as dev
 from rfproteina.disease import humanness as hum
 from rfproteina.disease import immunogenicity as imm
+from rfproteina.disease import mhc_tables as mhc
 
 CONFIG = Path(__file__).resolve().parents[1] / "configs" / "metrics" / "antibody_developability" / (
     "antibody_developability.yaml"
@@ -53,6 +55,22 @@ def test_no_pass_cut_is_smuggled_into_the_config() -> None:
     assert document["pass_criteria"]["note"].startswith("None.")
     assert document["humanness"]["primary"]["pass_cut"] is None
     assert document["humanness"]["antibody_likeness"]["pass_cut"] is None
+    # The 20 cP figure is the classifier's class boundary, not a pass mark, so
+    # it lives beside a null pass_cut rather than standing in for one.
+    assert document["viscosity"]["pass_cut"] is None
+
+
+def test_the_viscosity_section_matches_the_module() -> None:
+    section = _config()["viscosity"]
+    assert section["method"] == dv.VISCOSITY_METHOD
+    assert section["ensemble_size"] == dv.ENSEMBLE_SIZE
+    assert section["class_boundary_cp"] == dv.CLASS_BOUNDARY_CP
+    assert section["concentration_mg_per_ml"] == dv.CONCENTRATION_MG_PER_ML
+    assert section["decision_probability"] == dv.DECISION_PROBABILITY
+    assert section["formulation"] == dv.FORMULATION
+    assert section["training_antibodies"] == dv.TRAINING_ANTIBODIES
+    assert section["licence"] == "MIT"
+    assert len(section["caveats"]) >= len(dv.CAVEATS)
 
 
 def test_the_class_ii_section_matches_the_registry_and_stays_unavailable() -> None:
@@ -75,4 +93,9 @@ def test_the_class_i_section_records_the_scale_and_the_unit() -> None:
     section = _config()["mhc_class_i"]
     assert section["affinity_unit"] == "nM"
     assert section["percentile_scale"] == "percent_0_100"
-    assert section["command_environment_variable"] == "MHCFLURRY_PREDICT"
+    assert section["command_environment_variable"] == mhc.MHCFLURRY_COMMAND_ENV
+    assert section["downloads_directory_environment_variable"] == mhc.MHCFLURRY_DOWNLOADS_ENV
+    assert section["alleles_environment_variable"] == mhc.ALLELES_ENV
+    assert section["alleles"] == list(mhc.CLASS_I_ALLELES)
+    assert section["models_bundle"] == mhc.MODELS_BUNDLE
+    assert section["models_release"] == mhc.MODELS_RELEASE

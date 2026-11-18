@@ -31,6 +31,7 @@ a cure claim.
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import gzip
 import hashlib
@@ -81,6 +82,12 @@ from rfproteina.disease.target_liability import (
     TargetLimits,
     measure_target_liability,
     uniprot_accession,
+)
+from rfproteina.disease.threshold_provenance import (
+    PROVENANCE_KEY,
+    describe_cuts,
+    describe_interface_thresholds,
+    provenance_of,
 )
 from rfproteina.disease.toxicology import measure_toxicology
 
@@ -437,7 +444,10 @@ def screen_generation(
     ``HUMAN_PROTEOME``. The job file beside ``output_dir`` recorded the kind and
     the target when the run was planned; a disagreement with the arguments here
     is recorded as ``job_mismatch`` rather than passed over. A ligand binder
-    also reads ``toxicology.tsv``. A hit or clear from that table is evidence
+    also reads ``toxicology.tsv``. When that file is absent and ``ligand_smiles.txt``
+    names a compound in the installed Octant CYP3A4 subset, the screen writes
+    the converted nanomolar reading first. An existing table is not replaced.
+    A hit or clear from that table is evidence
     unless ``axis_evidence.json`` already names the axis. A protein or peptide
     binder reads ``paralog_coevolution.tsv`` onto the paralog record. The
     paralog state stays the UniRef50 result. A peptide also measures
@@ -477,7 +487,7 @@ def screen_generation(
         chemical=kind in _LIABILITY_KINDS,
         kind=kind,
     )
-    liability = _apply_sequence_liability(
+    liability, class_i_scan = _apply_sequence_liability(
         output_dir,
         rows,
         samples,
@@ -572,7 +582,7 @@ def screen_generation(
         "pre_oracle_pass": _flag_column(rows, _PRE_ORACLE_COLUMN),
         "sequence_developability": sequence,
         "designed_interface": interface,
-        "designed_interface_quality": interface_quality,
+        "designed_interface_quality": _with_interface_thresholds(interface_quality),
         "samples": samples,
         "requested_class": "requested_clear",
     }
@@ -609,7 +619,7 @@ def screen_generation(
     ligand_alerts = _ligand_alerts_block(output_dir)
     if ligand_alerts is not None:
         record["ligand_alerts"] = ligand_alerts
-    mhc_class_i = _mhc_class_i_block(binder_kind, chains)
+    mhc_class_i = _mhc_class_i_block(binder_kind, chains, output_dir, class_i_scan)
     if mhc_class_i is not None:
         record["mhc_class_i"] = mhc_class_i
     if liability is not None:
@@ -1038,7 +1048,7 @@ def _applied_cuts(limits: TargetLimits | None, kind: str | None = None) -> dict[
     panel proteins at all, so it keeps the panel-wide fallback.
     """
     bar = limits if limits is not None else TargetLimits()
-    return {
+    cuts: dict[str, object] = {
         "gravy_max": _GRAVY_MAX,
         # Which of these two cuts is published and which is this program's own
         # is not something a reader can tell from the numbers, and the pass
@@ -1060,6 +1070,15 @@ def _applied_cuts(limits: TargetLimits | None, kind: str | None = None) -> dict[
         "plasma_hub_max": bar.hub_max,
         "plasma_fold_max": bar.fold_max,
     }
+    # Two of these twelve named a source; the other ten were bare numbers, and
+    # a reader cannot tell a published rule from a number this program chose by
+    # looking at 40 and 0.1. ``ada_median_rank_max`` is the case that matters:
+    # it IS the Paul 2015 value, and it is still refused on most machines
+    # because it is defined on a rank scale the installed predictor does not
+    # produce. Stored under one key rather than three dozen flattened ones, so
+    # a consumer holding an allowlist of record keys gains a single entry.
+    cuts[PROVENANCE_KEY] = describe_cuts(cuts)
+    return cuts
 
 
 def measured_contact_ms(screen: Mapping[str, object]) -> float | None:
@@ -1696,10 +1715,25 @@ def _apply_sequence_liability(
     decided made the record contradict itself.
     """
     if _canonical_kind(binder_kind) not in _LIABILITY_KINDS:
-        return None
+        return None, None
     # Read once by the caller when it measured them. _designed_sequences is
     # the fallback for a caller that has none.
     pairs = sequences if sequences is not None else _designed_sequences(output_dir, rows)
+    # A class I table is written here, before the axis is read, and only when
+    # the operator named alleles and the weights are on disk. An existing
+    # table is not replaced. A missing predictor leaves the axis untested.
+    from rfproteina.disease.mhc_tables import prepare_class_i_table
+
+    try:
+        class_i_scan = prepare_class_i_table(
+            output_dir, pairs, binder_kind=_canonical_kind(binder_kind)
+        )
+    except (OSError, ValueError) as error:
+        class_i_scan = {"state": "predictor_failed", "blocker": str(error)}
+    from rfproteina.disease.tepitope import prepare_class_ii_table
+
+    with contextlib.suppress(OSError, ValueError):
+        prepare_class_ii_table(output_dir, pairs, binder_kind=_canonical_kind(binder_kind))
     axes, by_example = measure_sequence_liability(
         pairs,
         directory=output_dir,
@@ -1718,7 +1752,7 @@ def _apply_sequence_liability(
         if not isinstance(record, dict):
             continue
         stamped[axis] = _stamp_source(axis, record, evidence)
-    return stamped
+    return stamped, class_i_scan
 
 
 def _stamp_source(axis: str, record: Mapping[str, object], evidence: _Evidence) -> dict[str, object]:
@@ -1859,6 +1893,14 @@ def _apply_toxicology(
     """
     if _canonical_kind(binder_kind) != "ligand":
         return None
+    smiles = _read_ligand_smiles(output_dir)
+    if smiles:
+        # The Octant subset is already nanomolar. A missing subset, an unknown
+        # ligand, or a table the operator already wrote leaves the file alone.
+        from rfproteina.disease.octant import prepare_toxicology_table
+
+        with contextlib.suppress(OSError):
+            prepare_toxicology_table(output_dir, smiles)
     found = measure_toxicology(output_dir)
     return {axis: _stamp_source(axis, found[axis], evidence) for axis in LIGAND_AXES}
 
@@ -3036,26 +3078,32 @@ def _synthesis_block(binder_kind: str, sequences: Sequence[tuple[str, str | None
     return record
 
 
-def _ligand_alerts_block(output_dir: Path) -> dict[str, object] | None:
-    """RDKit structure alerts for a supplied ligand SMILES, or None when none was supplied.
+def _read_ligand_smiles(output_dir: Path) -> str | None:
+    """The first token of ``ligand_smiles.txt``, or None when the run names none.
 
-    The screen carries no SMILES of its own, so this reads an optional
-    ``ligand_smiles.txt`` dropped beside the run (first whitespace token of the
-    first line). Recorded, not judged: a catalogue hit is a flag for review, and
-    no probability is turned into a concentration (see
-    ``rfproteina.disease.ligand_alerts``).
+    The screen carries no SMILES of its own. The same file feeds the structure
+    alerts and the Octant CYP3A4 lookup.
     """
     path = output_dir / "ligand_smiles.txt"
     try:
         if not path.is_file():
             return None
-        first = ""
         for line in path.read_text(encoding="utf-8").splitlines():
             if line.strip():
-                first = line.strip().split()[0]
-                break
+                return line.strip().split()[0]
     except (OSError, UnicodeError):
         return None
+    return None
+
+
+def _ligand_alerts_block(output_dir: Path) -> dict[str, object] | None:
+    """RDKit structure alerts for a supplied ligand SMILES, or None when none was supplied.
+
+    Recorded, not judged: a catalogue hit is a flag for review, and no
+    probability is turned into a concentration (see
+    ``rfproteina.disease.ligand_alerts``).
+    """
+    first = _read_ligand_smiles(output_dir)
     if not first:
         return None
     try:
@@ -3073,17 +3121,17 @@ def _ligand_alerts_block(output_dir: Path) -> dict[str, object] | None:
 
 
 def _mhc_class_i_block(
-    binder_kind: str, sequences: Sequence[tuple[str, str | None]]
+    binder_kind: str,
+    sequences: Sequence[tuple[str, str | None]],
+    directory: Path | None = None,
+    scan: Mapping[str, object] | None = None,
 ) -> dict[str, object] | None:
-    """Class I peptide-window count and predictor availability for a protein or peptide design.
+    """Class I window count and whether the MHCflurry scan can run.
 
-    This never runs MHCflurry and never writes a table: it reports how many class
-    I windows the designed chain yields and whether ``mhcflurry-predict`` is on
-    PATH, so a reader can see the class I axis is reachable without changing the
-    verdict. To actually feed the ``mhc_i`` axis, generate the table with
-    ``rfproteina.disease.mhc_tables`` and drop it beside the run; that path is the
-    existing supplied-table mechanism and is deliberately left to the operator so
-    installing a predictor cannot silently move a stored call.
+    The table itself is written by :func:`_apply_sequence_liability` before the
+    axis is read, and only when alleles, the predictor and the presentation
+    weights are all present. This block reports that state. It does not start
+    a second prediction.
     """
     if _canonical_kind(binder_kind) not in _LIABILITY_KINDS:
         return None
@@ -3091,21 +3139,36 @@ def _mhc_class_i_block(
     if not sequence:
         return None
     try:
-        from rfproteina.disease.mhc_tables import predictor_available, windows
+        from rfproteina.disease.mhc_tables import class_i_readiness, windows
     except ImportError:  # pragma: no cover - module is in-tree
         return None
     try:
         window_list = windows(sequence)
     except (ValueError, TypeError):
         return None
-    return {
+    readiness = class_i_readiness(directory)
+    record: dict[str, object] = {
         "n_windows": len(window_list),
-        "predictor_available": bool(predictor_available()),
+        "predictor_available": bool(readiness["predictor_available"]),
+        "weights_present": bool(readiness["weights_present"]),
+        "alleles_configured": bool(readiness["alleles_configured"]),
+        "table_present": bool(readiness["table_present"]),
         "note": (
-            "class I windows cut from the designed chain; MHCflurry (Apache-2.0) predicts when installed. "
-            "This report never feeds the verdict; drop an mhc_i.tsv beside the run to populate the axis."
+            "Class I windows from the designed chain. An mhc_i.tsv already beside the run is what the "
+            "axis reads. Otherwise one is written when alleles, MHCflurry, and the presentation weights "
+            "are all present."
         ),
     }
+    blocker = readiness.get("allele_blocker")
+    if blocker:
+        record["allele_blocker"] = blocker
+    if scan:
+        record["scan"] = scan.get("state")
+        if scan.get("blocker"):
+            record["scan_blocker"] = scan["blocker"]
+        if scan.get("reference"):
+            record["reference"] = scan["reference"]
+    return record
 
 
 def _optional_metric(row: dict[str, str], column: str) -> float | None:
@@ -3171,10 +3234,22 @@ def _cif_text(path: Path) -> str | None:
 def _load_generated_structure(path: Path) -> object | None:
     import numpy as np
     from atomworks.io.utils.io_utils import load_any
+    from biotite import DeserializationError
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        loaded = load_any(path)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            loaded = load_any(path)
+    # A file that cannot be parsed is an unreadable structure, which is what
+    # this function already reports as None a few lines below for coordinates
+    # it cannot use. Letting the exception escape instead aborted the entire
+    # screen on one bad file: the run log recorded exactly that on 2026-11-08,
+    # as "Failed to deserialize category 'atom_site'" out of a CIF whose
+    # columns had different lengths. DeserializationError is named explicitly
+    # because it derives straight from Exception, so none of the others cover
+    # it.
+    except (DeserializationError, OSError, ValueError, KeyError, IndexError):
+        return None
     coord = getattr(loaded, "coord", None)
     if coord is not None and getattr(coord, "ndim", 0) == 3:
         loaded = loaded[0]
@@ -3681,6 +3756,84 @@ def _samples_clause(screen: Mapping[str, object]) -> str | None:
     return clause
 
 
+def _with_interface_thresholds(quality: object) -> object:
+    """Attach the interface bars and what kind of bar each is.
+
+    The measured block carried the numbers and none of the bars, so a reader
+    seeing ``interface_polar_contacts: 9`` could not tell whether that cleared
+    anything, still less that the bar it cleared is BindCraft's default for a
+    quantity BindCraft counts differently. Three of these five are borrowed
+    defaults that are slack against this program's own measured distribution,
+    and two have no cut at all; both facts belong beside the measurement
+    rather than in a config a reader of the verdict never opens.
+
+    Non-dict input is returned unchanged: a screen with no interface measures
+    nothing and has nothing to qualify.
+    """
+    if not isinstance(quality, Mapping):
+        return quality
+    attached = dict(quality)
+    attached[PROVENANCE_KEY] = {
+        name: {**record, "bar": _interface_bar(name)}
+        for name, record in describe_interface_thresholds().items()
+    }
+    return attached
+
+
+def _interface_bar(name: str) -> object:
+    """The bar itself, from the runtime source of truth, or ``None`` when none is adopted.
+
+    Imported inside the function because ``interface_quality`` pulls numpy and
+    biotite, and every other use of it in this module is lazy for that reason.
+    A machine without them still gets the provenance; it just cannot quote the
+    number beside it.
+    """
+    try:
+        from rfproteina.disease.interface_quality import REFERENCE_THRESHOLDS
+    except ImportError:
+        return None
+    entry = REFERENCE_THRESHOLDS.get(name, {})
+    minimum, maximum = entry.get("min"), entry.get("max")
+    if minimum is not None:
+        return {"min": minimum}
+    if maximum is not None:
+        return {"max": maximum}
+    return None
+
+
+#: The two sequence bars, each with the measurement it judges.
+_SEQUENCE_BARS = (("gravy", "gravy_max"), ("instability_index", "instability_max"))
+
+
+def _failed_sequence_bars(sequence: Mapping[str, object], cuts: object) -> str:
+    """Which bars a failed ``sequence_pass`` failed, and what kind of bar each is.
+
+    ``sequence_pass false`` on its own does not say which of the two numbers
+    was out, and still less whether the bar that rejected the design is a
+    published rule or this program's own convention. On the screen that
+    prompted this, GRAVY 0.1304 exceeded a convention of 0.1 while the
+    instability index of 30.0 cleared the published bar of 40 comfortably: the
+    verdict was decided entirely by a number this program chose, and the line
+    read exactly like one decided by Guruprasad 1990.
+
+    Returns an empty string when the design passed, when the bars are not on
+    the record -- a screen stored before ``cuts`` carried them -- or when
+    nothing can be compared, because a sentence that cannot be supported is
+    worse than none.
+    """
+    if sequence.get("sequence_pass") is not False or not isinstance(cuts, Mapping):
+        return ""
+    failed: list[str] = []
+    for measured_key, cut_key in _SEQUENCE_BARS:
+        measured = sequence.get(measured_key)
+        bar = cuts.get(cut_key)
+        if not _is_number(measured) or not _is_number(bar):
+            continue
+        if float(measured) > float(bar):
+            failed.append(f"failed {cut_key} {bar}, {provenance_of(cut_key).kind}")
+    return "; ".join(failed)
+
+
 def _measured_line(entry_id: str, chain: str, screen: Mapping[str, object]) -> str | None:
     """The computed numbers. A screen with nothing measured keeps the single call line."""
     sequence = screen.get("sequence_developability")
@@ -3719,10 +3872,14 @@ def _measured_line(entry_id: str, chain: str, screen: Mapping[str, object]) -> s
         return None
     parts: list[str] = []
     if isinstance(sequence, dict) and sequence_pass != _ABSENT:
-        parts.append(
+        clause = (
             f"gravy {sequence['gravy']}, instability {sequence['instability_index']}, "
             f"sequence_pass {_word(sequence_pass)}"
         )
+        failed = _failed_sequence_bars(sequence, screen.get("cuts"))
+        if failed:
+            clause = f"{clause} ({failed})"
+        parts.append(clause)
     if chemical_clause is not None:
         parts.append(chemical_clause)
     if modality_clause is not None:
