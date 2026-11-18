@@ -270,6 +270,11 @@ tests/data/pdb/*
 # merely discouraged; the files themselves are untouched on disk.
 disease_runs/
 
+# The periodically updated "Global List of Medical Screening Tools" and the
+# fact-check notes beside it are a local working reference, not part of the
+# package. Kept out of the public repository until the user asks otherwise.
+/Global List of Medical Computational Screening Tools folder/
+
 # The working agreement for this checkout stays local. It names destinations,
 # says what is authorized to leave the machine, and is read by CLAUDE.md from
 # disk, so it has to exist here but does not belong in a public repository.
@@ -328,3 +333,39 @@ runs/
 
 # Local DATA_PATH created by the setup docs (checkpoints, test dataset)
 data_path/
+
+# --- Screening tools: third-party code relocated from DATA_PATH -------------
+# Third-party screening code now lives in "screening subpackage/<tool>/" so the
+# tooling sits beside the repository instead of in the data volume. Weights,
+# example inputs, reference tables and databases deliberately stay under
+# DATA_PATH and never appear here.
+#
+# The payload itself is NOT tracked, for three concrete reasons:
+#   * the five installed virtual environments are ~5.2 GB and each has 10-35
+#     files hard-coding this machine's absolute paths, including a home
+#     directory (/home/<name>/...), which must never reach a public repository;
+#   * CrossAbSense and ThermoMPNN are upstream clones carrying their own .git,
+#     which git would otherwise record as bare gitlinks pointing nowhere;
+#   * all of it is reproducible from the installers, which ARE tracked.
+#
+# Ignore broadly and re-include the small files on purpose: a missed negation
+# costs one untracked file, while a missed ignore costs gigabytes in a public
+# repository. Verify after any edit with:
+#   git check-ignore -v "screening subpackage/<tool>/venv/bin/python"
+screening subpackage/**
+# Let git descend so the negations below can match.
+!screening subpackage/**/
+# Tracked on purpose: the recipe, never the payload.
+!screening subpackage/README.md
+!screening subpackage/NOTICE
+!screening subpackage/.gitignore
+!screening subpackage/*/manifest.toml
+!screening subpackage/*/LICENSE
+!screening subpackage/*/LICENCE
+!screening subpackage/*/NOTICE
+!screening subpackage/*/install_*.py
+!screening subpackage/*/README.md
+# Re-exclude the payload even where a negation above might otherwise catch it.
+screening subpackage/*/venv/
+screening subpackage/*/CrossAbSense/
+screening subpackage/*/ThermoMPNN/
