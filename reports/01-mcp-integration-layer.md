@@ -8,10 +8,8 @@ clinical claim.
 ## Where the code lives
 
 Every path in this report is relative to the repository root of the RFD4-Proteina fork
-that carries the disease flow. **That code is not in this repository yet** — this repository
-currently holds the upstream tree. A reader looking for `src/rfproteina/disease/` here will
-not find it; the paths are given so each statement can be checked against the source when it
-is published.
+that carries the disease flow, which is this repository. The code is present here, so every
+statement below can be checked against the source it names.
 
 | Component | Path |
 |---|---|
@@ -21,6 +19,7 @@ is published.
 | Subprocess execution and cancellation | `src/rfproteina/disease/dispatch.py` |
 | Public-service rate policy | `src/rfproteina/disease/limits.py` |
 | Server registration | `.mcp.json` |
+| Server registration, per-tool timeouts | `.grok/config.toml` |
 
 ## What this layer is
 

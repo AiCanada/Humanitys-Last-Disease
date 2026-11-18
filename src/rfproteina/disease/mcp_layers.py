@@ -101,8 +101,37 @@ _JOB_FIELDS = ("class_name", "binder_kind", "target_id", "generation_started")
 #: summary: ``designed_interface_quality`` is about 3 KB on every screen, three
 #: quarters of it the same reference table, and ``synthesis`` and
 #: ``ligand_alerts`` are about 2 KB each. ``read_verdict`` returns all three.
-#: ``mhc_class_i`` is a quarter of a kilobyte and travels here too.
+#: ``mhc_class_i`` travels here too, and stays out of the set. Measured, it is
+#: about 350 bytes on a run that scanned cleanly -- a third of a kilobyte, not
+#: the quarter this comment claimed before anyone counted, because the ``note``
+#: alone is 196 characters -- and about 600 with a failed scan, where
+#: ``scan_blocker`` carries up to 200 characters of the predictor's own stderr.
+#: Against 2 KB each for ``synthesis`` and ``ligand_alerts``, 3 KB for
+#: ``designed_interface_quality`` and 4 KB for ``refold``, that is well inside
+#: the budget, and the state of the scan is what a reader of a tree most needs.
+#:
+#: ``scan_blocker`` is the one part of it that is not the program's own words:
+#: ``mhc_tables.py`` puts a subprocess's stderr there, and a stderr can name a
+#: path that ``scrub_for_upload`` does not cover, which only strips the home
+#: directory, ``USERPROFILE`` and the checkout root. It is bounded and it is
+#: scrubbed, so it travels, but it is a publication decision rather than a size
+#: one and it is recorded here as such.
 _SCREEN_OMITTED = frozenset({"refold", "designed_interface_quality", "synthesis", "ligand_alerts"})
+#: The same judgement at key granularity, for a block that has to travel whole
+#: except for one part of it. ``cuts`` cannot be omitted: the numbers a verdict
+#: was taken against are what the verdict means, and they differ between runs.
+#: ``cuts["provenance"]`` does not differ between runs -- it is the same twelve
+#: accounts of where this program's thresholds come from, measured at 2,908
+#: bytes on a protein screen, which is more than ``synthesis`` and
+#: ``ligand_alerts`` at about 2 KB each and close to ``designed_interface_quality``
+#: at 3 KB, and all three of those are dropped here outright. Repeating it once
+#: per run would make the prose the larger half of a tree-wide answer while
+#: saying nothing about any particular run. ``read_verdict`` returns it in full
+#: for one run, which is where a reader goes when a number is in question.
+#:
+#: ``designed_interface_quality`` carries a provenance record too, and needs no
+#: entry here because the whole block is already omitted above.
+_SCREEN_TRIMMED: dict[str, frozenset[str]] = {"cuts": frozenset({"provenance"})}
 #: The fields of that summary, in the order ``refold_report`` writes them.
 _REFOLD_SUMMARY = ("declared", "evaluated", "criteria_file", "refold_blocker")
 #: One design's measurements, and the three reasons a measurement is missing.
@@ -707,10 +736,35 @@ def _refold_summary(value: object) -> dict[str, object] | str:
     return summary or NOT_RECORDED
 
 
+def _trimmed(payload: Mapping[str, object]) -> dict[str, object]:
+    """``payload`` with every :data:`_SCREEN_TRIMMED` key dropped from its block.
+
+    A block whose stored value is not a mapping is left as found, for the same
+    reason :func:`_without_held_back` leaves one: this runs on the raw record,
+    where a hand-edited file can hold anything, and a size rule is not the
+    place to decide what a malformed block is.
+    """
+    record = dict(payload)
+    for name, trimmed in _SCREEN_TRIMMED.items():
+        block = record.get(name)
+        if isinstance(block, Mapping):
+            record[name] = {key: item for key, item in block.items() if key not in trimmed}
+    return record
+
+
 def _public_screen(folder: str, payload: Mapping[str, object]) -> dict[str, object]:
-    from rfproteina.disease.mcp_api import _curated_axes
+    from rfproteina.disease.mcp_api import _curated_axes, _without_held_back
     from rfproteina.disease.screen import SCREEN_OPTIONAL_KEYS
 
+    # ``_HELD_BACK`` has to be applied here as well as in ``_verdict``. ``_allow``
+    # copies a named block whole, so these tools walked straight past it: a tree
+    # of runs returned the repeated subsequence, the ligand SMILES and the
+    # reference table's absolute path that the single-run view strips, and the
+    # comment on ``_HELD_BACK`` promised a reader none of the three ever leave
+    # screen.json. One of them is held back precisely because it names this
+    # machine, and this is the tool that returns every run at once.
+    payload = _without_held_back(payload)
+    payload = _trimmed(payload)
     # The program's own declaration of which keys are absent-or-present, so a
     # run that legitimately has no ligand panel is not reported as one whose
     # panel went unrecorded.

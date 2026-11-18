@@ -421,6 +421,15 @@ _AXIS_SCHEMA: dict[str, object] = {
                 "type": "integer",
                 "description": "Windows scoring above the cut. The number behind a blocker of no_pass_cut.",
             },
+            "positive_examples": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "The designs those windows were found in. positive_windows says how many "
+                    "reached the cut; this says which design to go and read. Empty when the "
+                    "count is zero, because then there is nothing to point at."
+                ),
+            },
             "promiscuous_peptides": {
                 "type": "integer",
                 "description": "Peptides binding more than one allele of the panel.",
@@ -472,6 +481,80 @@ _AXIS_SCHEMA: dict[str, object] = {
                 "description": (
                     "Why there is no co-evolution note: not supplied, not classified, unparsed, or "
                     "rows that disagreed with each other."
+                ),
+            },
+        },
+    },
+}
+#: The account of each threshold a block was read against, nested inside that
+#: block. Two blocks carry one: ``cuts`` and ``designed_interface_quality``.
+#:
+#: Nothing is required. ``mcp_api._provenance`` checks each field and drops a
+#: malformed one while returning the rest of the entry, the way an axis record
+#: is checked, so an entry can legitimately arrive missing any field -- and a
+#: schema that demanded one would make a validating client throw away every run
+#: in the answer over one hand-edited caveat.
+#:
+#: The kind vocabulary is described here and declared in
+#: ``rfproteina.disease.threshold_provenance.KINDS``. It is not listed as an
+#: enum, because this file must not import the package to answer discovery, and
+#: a copied list would be the drift this record exists to prevent: that set grew
+#: by two kinds while this schema was being written. The check that matters runs
+#: where the import is already paid for, and names an unknown kind under
+#: ``malformed`` rather than passing it on as though it were one.
+_PROVENANCE_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "description": (
+        "One entry per threshold in this block, keyed by the thing it applies to: what kind of "
+        "number the bar is and where it came from. Read it before reading a pass. A cut this "
+        "program adopted as its own convention, or borrowed from another project's defaults, is "
+        "not a published one, and a clear against a borrowed default whose quantity that project "
+        "counts differently says less than it appears to."
+    ),
+    "additionalProperties": {
+        "type": "object",
+        "properties": {
+            "kind": {
+                "type": "string",
+                "description": (
+                    "published: a cut from a cited paper, or from the documented application of "
+                    "one. recommended: a tool's own recommended selection. convention: this "
+                    "program's strictness, with no literature value behind it. borrowed: another "
+                    "project's default, applied here to a quantity that project may count "
+                    "differently. reported_only: measured, with no cut adopted on purpose. "
+                    "caller_supplied: no default exists and the axis stays unset until an operator "
+                    "passes one. measurement_parameter: shapes what is measured rather than "
+                    "deciding a pass. unrecorded: no entry was found, which is a defect rather "
+                    "than a kind."
+                ),
+            },
+            "source": {
+                "type": "string",
+                "description": (
+                    "The stable slug naming this threshold's origin. Two of them are also written "
+                    "beside the cut itself, as gravy_max_source and instability_max_source."
+                ),
+            },
+            "citation": {
+                "type": "string",
+                "description": (
+                    "Present only on a published kind. Its absence on the others is the point "
+                    "rather than an omission waiting to be filled in."
+                ),
+            },
+            "caveat": {
+                "type": "string",
+                "description": (
+                    "What the number does not cover: a scale it does not transfer to, a definition "
+                    "that differs from the one it was fitted on, or a pass deliberately not adopted."
+                ),
+            },
+            "bar": {
+                "description": (
+                    "The threshold itself, as a min or a max object. Written on the interface "
+                    "record, where the measurement and the bar it is read against would otherwise "
+                    "sit in two different files. Null where no cut is adopted, which is an answer "
+                    "and not a gap."
                 ),
             },
         },
@@ -532,8 +615,11 @@ _VERDICT_SCHEMA: dict[str, object] = {
                 "Every number this verdict was taken against, as the screen recorded them, each "
                 "cut that is this program's own convention carrying a source that says so. A "
                 "verdict is reproducible only against its own cuts: edit one later and every "
-                "stored screen silently changes meaning."
+                "stored screen silently changes meaning. provenance says, for each cut, what "
+                "kind of number it is. read_results drops provenance for size and returns the "
+                "cuts themselves; this tool returns both."
             ),
+            "properties": {"provenance": _PROVENANCE_SCHEMA},
         },
         "metrics_file": {
             "description": (
@@ -593,8 +679,12 @@ _VERDICT_SCHEMA: dict[str, object] = {
                 "The first design's buried area, interface residues, polar satisfaction and "
                 "Lawrence-Colman Sc, with the reference_thresholds they are read against, or "
                 "interface_quality_blocker saying why they are missing. A report recorded beside the "
-                "verdict: it does not move the call."
+                "verdict: it does not move the call. provenance says what kind of bar each "
+                "threshold is, and carries the bar itself: three of the five are another "
+                "project's defaults for quantities it counts differently, and two adopt no cut "
+                "at all, so a measurement here is not read against a published standard."
             ),
+            "properties": {"provenance": _PROVENANCE_SCHEMA},
         },
         "ligand_alerts": {
             "type": "object",
@@ -608,8 +698,14 @@ _VERDICT_SCHEMA: dict[str, object] = {
         "mhc_class_i": {
             "type": "object",
             "description": (
-                "The first design's class I peptide-window count, and whether a predictor is "
-                "available, for a protein or peptide run. This report never feeds the verdict."
+                "The first design's class I peptide-window count for a protein or peptide run, "
+                "and whether the scan that writes a table can run: whether MHCflurry, its "
+                "presentation weights and an allele list are each present, and whether an "
+                "mhc_i.tsv is already beside the run. This report can decide a verdict. When "
+                "all three are present and no table is there, the screen writes mhc_i.tsv "
+                "itself and the mhc_i axis reads it, so what scan says the write did, and "
+                "scan_blocker says about a predictor that failed, is what that axis rests on. "
+                "The reference table's path stays in screen.json."
             ),
         },
         "synthesis": {

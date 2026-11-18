@@ -27,6 +27,15 @@ from pathlib import Path
 # this direction is the acyclic one.
 from rfproteina.disease.mcp_layers import PROGRAM
 
+# The closed vocabulary of threshold kinds, imported rather than copied. It is
+# a frozenset in one module and it grew by two entries while this check was
+# being written, which is exactly what a literal list here would have missed:
+# a kind added there would read as malformed here and the entry would be
+# dropped from every verdict until someone noticed. ``threshold_provenance``
+# imports nothing but the standard library, so this costs nothing at import.
+from rfproteina.disease.threshold_provenance import KINDS as _PROVENANCE_KINDS
+from rfproteina.disease.threshold_provenance import PROVENANCE_KEY
+
 #: A residue run long enough to be a sequence rather than a word. Upper case
 #: from nine, which is the shortest window the screen measures and is the case
 #: every table and CIF reader normalises a peptide to before recording it. Any
@@ -79,8 +88,8 @@ _PROSE_SEQUENCE = re.compile(r"(?i:[acdefghiklmnpqrstvwy]{20,})")
 #: ``designed_interface_quality``, ``ligand_alerts``, ``mhc_class_i`` and
 #: ``synthesis`` arrived with version 4. Each is a report that enters no call,
 #: which by the rule above would keep it out; they are returned by decision, so
-#: a client reads them without asking for the whole record. Two keys inside them
-#: stay in screen.json, see ``_HELD_BACK``.
+#: a client reads them without asking for the whole record. Three keys inside
+#: them stay in screen.json, see ``_HELD_BACK``.
 _VERDICT_FIELDS = (
     "call",
     "bar",
@@ -114,10 +123,36 @@ _VERDICT_FIELDS = (
 #: the length a reader acts on. ``smiles`` is the screened molecule, and the same
 #: sequence rule reads a long carbon chain as a peptide, so a fatty acid came back
 #: as ``[sequence omitted](=O)O``.
+#:
+#: ``reference`` is the third. ``mhc_tables.py`` stores it as ``str(path)`` of
+#: the ``mhc_i_reference.tsv`` it wrote inside the run directory, which makes it
+#: an absolute path identifying this checkout, and because it is a ``str`` and
+#: not a ``Path`` it goes through the free-text scrubber rather than ``_shown``
+#: -- which, as ``_shown``'s own docstring says, collapses two different run
+#: directories into one string naming neither. Its sibling ``metrics_file`` is
+#: relativised before it is stored (``screen.py:_metrics_name``); this one never
+#: was. Whether the reference table exists still travels, under ``scan``.
 _HELD_BACK: dict[str, frozenset[str]] = {
     "synthesis": frozenset({"repeat_sequence"}),
     "ligand_alerts": frozenset({"smiles"}),
+    "mhc_class_i": frozenset({"reference"}),
 }
+#: The two blocks that carry a nested ``provenance`` record, keyed by the thing
+#: the threshold applies to. ``cuts`` gained one on every cut, and
+#: ``designed_interface_quality`` on every interface bar. Neither is a new
+#: top-level key, so the pin in ``test_disease_mcp_record_keys.py`` -- which
+#: compares top-level names -- stayed green while the view returned the
+#: numbers and dropped the account of where they came from. That account is
+#: the whole point of the block: a reader cannot otherwise tell a published
+#: cut from a default this program borrowed from another project and never
+#: fitted, and three of the five interface bars are exactly that.
+_PROVENANCE_BLOCKS = ("cuts", "designed_interface_quality")
+#: What one provenance entry may carry. ``citation`` is present only on a
+#: ``published`` kind, and an empty one is the point rather than an omission;
+#: ``caveat`` says what the number does not cover; ``bar`` is the threshold
+#: itself and is written only on the interface record, where the measurement
+#: and its bar would otherwise sit in two different files.
+_PROVENANCE_FIELDS = ("kind", "source", "citation", "caveat", "bar")
 #: ``source`` says whether a state was measured or declared by a person in
 #: ``axis_evidence.json``. A declared state keeps what the measurement said
 #: under ``measured_state`` and ``measured_blocker``, and what it was declared
@@ -212,7 +247,7 @@ _HELD_BACK: dict[str, frozenset[str]] = {
 #: ``observed_extent``, ``motif_sites``, ``transmembrane_spans``). A listing is
 #: what screen.json is for.
 #:
-#: The final fifteen complete the same sweep. Nine are counts that say how wide
+#: The final sixteen complete the same sweep. Nine are counts that say how wide
 #: a clear is: ``alleles`` and ``peptides_scored`` are the panel and the set the
 #: median rule was applied over, so a clear over two peptides and one over
 #: sixty-two stop reading alike; ``binding_alleles`` is how close the nearest
@@ -222,6 +257,13 @@ _HELD_BACK: dict[str, frozenset[str]] = {
 #: axis turns on; ``window_residues`` is the width a span count was taken at,
 #: as ``seed_width`` is for the oligo scan. ``failed`` names the designs that
 #: made a run-level axis a hit -- the hit-side twin of ``covered_examples``.
+#:
+#: ``positive_examples`` is the tenth, and the names behind ``positive_windows``
+#: rather than another count: ``liability.py`` writes it on the line after that
+#: count in every branch that sets one. A count says how many windows reached
+#: the cut, which leaves a reader who wants to look at one with nothing to look
+#: up -- the same gap ``covered_examples`` and ``failed`` were added to close
+#: beside their own counts.
 #:
 #: The last six are one stored note that no client has ever seen: the
 #: co-evolution note ``read_paralog_coevolution`` merges onto the paralog axis.
@@ -283,6 +325,7 @@ _AXIS_FIELDS = (
     "binding_alleles",
     "presented_ligands",
     "positive_windows",
+    "positive_examples",
     "promiscuous_peptides",
     "cpg_count",
     "window_residues",
@@ -976,6 +1019,29 @@ def _archive_copy(directory: Path) -> dict[str, object]:
     return found
 
 
+def _without_held_back(payload: Mapping[str, object]) -> dict[str, object]:
+    """``payload`` with every ``_HELD_BACK`` key dropped from its own block.
+
+    The per-field loop in :func:`_verdict` applies ``_HELD_BACK`` on the way
+    into the view, but ``include_record`` returns the stored screen whole and so
+    went around it: a repeated subsequence, a ligand SMILES and the absolute
+    path of a reference table all travelled inside ``record``, which is the one
+    request that reaches a client without passing that loop. The allowlist's
+    whole purpose is that those three stay in screen.json, so it has to hold on
+    both paths.
+
+    A block whose stored value is not a mapping is left exactly as found. That
+    loop can rely on ``_VERDICT_TYPES`` having screened the value first; this
+    runs on the raw record, where a hand-edited file could put anything.
+    """
+    record = dict(payload)
+    for name, held in _HELD_BACK.items():
+        block = record.get(name)
+        if isinstance(block, Mapping):
+            record[name] = {key: item for key, item in block.items() if key not in held}
+    return record
+
+
 def _verdict(payload: Mapping[str, object], *, include_record: bool) -> dict[str, object]:
     """The decision fields. The full record is included only when asked for.
 
@@ -998,6 +1064,8 @@ def _verdict(payload: Mapping[str, object], *, include_record: bool) -> dict[str
         held = _HELD_BACK.get(name)
         if held:
             value = {key: item for key, item in value.items() if key not in held}
+        if name in _PROVENANCE_BLOCKS:
+            value = _provenance(value, name, malformed)
         view[name] = _redact(value)
     replaced = _replaced(payload.get("replaced"), malformed)
     if replaced is not None:
@@ -1014,7 +1082,7 @@ def _verdict(payload: Mapping[str, object], *, include_record: bool) -> dict[str
     if malformed:
         view["malformed"] = malformed
     if include_record:
-        view["record"] = _redact(dict(payload))
+        view["record"] = _redact(_without_held_back(payload))
     return view
 
 
@@ -1110,6 +1178,52 @@ def _replaced(value: object, malformed: list[str]) -> dict[str, object] | None:
     return view
 
 
+def _provenance(block: object, label: str, malformed: list[str]) -> object:
+    """A block's nested provenance record, each entry checked field by field.
+
+    Checked the way :func:`_axis_summary` checks an axis: a field whose stored
+    type is wrong is left out and named, and the rest of the entry still
+    travels. Dropping the whole block over one bad field would take the twelve
+    sound accounts with it, and dropping the whole entry would take the
+    ``source`` slug -- which is the stable name two tests already pin -- over a
+    caveat somebody hand-edited.
+
+    ``kind`` is checked against the vocabulary imported from the module that
+    declares it, never a copy. That set is explicitly closed there: a kind
+    outside it is called a bug in that file, which is precisely the thing worth
+    reporting to a client rather than passing through as though it were a kind.
+
+    A block with no provenance is returned unchanged, so this is safe to run
+    over a screen written before the record existed.
+    """
+    if not isinstance(block, Mapping) or PROVENANCE_KEY not in block:
+        return block
+    entries = block[PROVENANCE_KEY]
+    record = dict(block)
+    if not isinstance(entries, Mapping):
+        malformed.append(f"{label}.{PROVENANCE_KEY}")
+        del record[PROVENANCE_KEY]
+        return record
+    kept: dict[str, object] = {}
+    for name, entry in entries.items():
+        if not isinstance(entry, Mapping):
+            malformed.append(f"{label}.{PROVENANCE_KEY}.{name}")
+            continue
+        fields: dict[str, object] = {}
+        for field in _PROVENANCE_FIELDS:
+            if field not in entry:
+                continue
+            expected = _PROVENANCE_TYPES.get(field)
+            if expected is not None and not expected(entry[field]):
+                malformed.append(f"{label}.{PROVENANCE_KEY}.{name}.{field}")
+                continue
+            fields[field] = entry[field]
+        if fields:
+            kept[str(name)] = fields
+    record[PROVENANCE_KEY] = kept
+    return record
+
+
 def _is_text(value: object) -> bool:
     return isinstance(value, str)
 
@@ -1136,6 +1250,32 @@ def _is_flag(value: object) -> bool:
     return isinstance(value, bool)
 
 
+def _is_kind(value: object) -> bool:
+    """A threshold kind this program declares. Imported, so it cannot drift."""
+    return isinstance(value, str) and value in _PROVENANCE_KINDS
+
+
+def _is_bar(value: object) -> bool:
+    """The threshold itself: a ``min`` or ``max`` object, or null where no cut is adopted.
+
+    Null is a real answer here and not a missing one. Two of the five interface
+    bars deliberately adopt no cut, and the record says so rather than leaving
+    a reader to hunt for a pass that was never defined.
+    """
+    return value is None or isinstance(value, Mapping)
+
+
+#: The type each provenance field is checked against. ``kind`` is the one that
+#: matters: the rest are free text a person wrote, and a wrong type in them
+#: costs the reader that sentence, while a kind outside the closed set is the
+#: record claiming a category this program does not define.
+_PROVENANCE_TYPES: dict[str, Callable[[object], bool]] = {
+    "kind": _is_kind,
+    "source": _is_text,
+    "citation": _is_text,
+    "caveat": _is_text,
+    "bar": _is_bar,
+}
 #: The type the axis schema declares for each axis field, for the same reason
 #: :data:`_VERDICT_TYPES` exists and with the same consequence when it is
 #: missing: a stored field whose type the schema forbids makes a validating
@@ -1191,6 +1331,7 @@ _AXIS_TYPES: dict[str, Callable[[object], bool]] = {
     "binding_alleles": _is_count,
     "presented_ligands": _is_count,
     "positive_windows": _is_count,
+    "positive_examples": _is_names,
     "promiscuous_peptides": _is_count,
     "cpg_count": _is_count,
     "window_residues": _is_count,

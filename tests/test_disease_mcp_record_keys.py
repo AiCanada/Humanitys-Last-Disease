@@ -384,6 +384,156 @@ def test_the_version_four_reports_arrive_without_the_design_slice_or_the_molecul
     assert "mhc_class_i" in mcp_layers.screen_fields()
 
 
+def _with_provenance() -> dict:
+    """A screen carrying the nested provenance both blocks that have one now write.
+
+    Nested rather than top-level, which is why the pin at the head of this file
+    stayed green through the change: it compares top-level names, and ``cuts``
+    was already one.
+    """
+    record = _version_three_record()
+    record["cuts"]["provenance"] = {
+        "gravy_max": {
+            "kind": "convention",
+            "source": "program_convention",
+            "caveat": "No published bar says where a developable protein stops.",
+        },
+        "mhc_i_rank_max": {
+            "kind": "recommended",
+            "source": "iedb_class_i_selection",
+            "caveat": "IEDB's recommended class I selection: percentile rank <= 1, or IC50 <= 500 nM.",
+        },
+    }
+    record["designed_interface_quality"] = {
+        "interface_polar_contacts": 9,
+        "provenance": {
+            "interface_polar_contacts": {
+                "kind": "borrowed",
+                "source": "bindcraft_average_n_interface_hbonds",
+                "caveat": "BindCraft's default of 3. DEFINITION DIFFERS: it counts Rosetta hydrogen bonds.",
+                "bar": {"min": 3},
+            },
+            "shape_complementarity": {
+                "kind": "reported_only",
+                "source": "lawrence_colman_1993_scale_differs",
+                "bar": None,
+            },
+        },
+    }
+    return record
+
+
+def test_the_kind_vocabulary_is_the_one_the_program_declares() -> None:
+    """The check imports the closed set rather than copying it.
+
+    A copy is the failure this record exists to prevent. The set gained
+    ``borrowed`` and ``reported_only`` after the first draft of the check was
+    written, and against a literal list every borrowed BindCraft default would
+    have been dropped from the verdict as malformed -- silently turning the
+    disclosure that a bar is borrowed into no disclosure at all.
+    """
+    from rfproteina.disease import mcp_api
+    from rfproteina.disease.threshold_provenance import KINDS
+
+    assert KINDS, "the vocabulary is not empty"
+    assert all(mcp_api._is_kind(kind) for kind in KINDS)
+    assert not mcp_api._is_kind("published_somewhere")
+    assert not mcp_api._is_kind(None)
+    assert set(mcp_api._PROVENANCE_TYPES) == set(
+        mcp_api._PROVENANCE_FIELDS
+    ), "every provenance field is checked, for the reason _AXIS_TYPES exists"
+    declared = set(_server()._PROVENANCE_SCHEMA["additionalProperties"]["properties"])
+    assert declared == set(mcp_api._PROVENANCE_FIELDS), "the provenance view and its published shape have drifted apart"
+    assert "required" not in _server()._PROVENANCE_SCHEMA["additionalProperties"], (
+        "a field is dropped when it is malformed, so requiring one would make a "
+        "validating client discard the whole answer over a hand-edited caveat"
+    )
+
+
+def test_a_threshold_says_what_kind_of_number_it_is(tmp_path: Path) -> None:
+    """A reader cannot tell a published cut from a borrowed default without this.
+
+    Both blocks that carry the record are checked here: the cuts the verdict was
+    taken against, and the interface bars, which also carry the bar itself
+    because the measurement and its threshold otherwise sit in two files.
+    """
+    from rfproteina.disease import mcp_api
+
+    _screened(tmp_path, _with_provenance())
+    answer = mcp_api.read_verdict({"directory": str(tmp_path)})
+    verdict = answer["runs"][0]["verdict"]
+    cuts = verdict["cuts"]["provenance"]
+    assert cuts["gravy_max"]["kind"] == "convention"
+    assert cuts["mhc_i_rank_max"]["source"] == "iedb_class_i_selection"
+    assert "malformed" not in verdict
+    # The cuts themselves are untouched beside their account.
+    assert verdict["cuts"]["gravy_max"] == 0.1
+    interface = verdict["designed_interface_quality"]["provenance"]
+    assert interface["interface_polar_contacts"]["bar"] == {"min": 3}
+    assert interface["shape_complementarity"]["bar"] is None, "no cut adopted is an answer, not a gap"
+    schema = {str(tool["name"]): tool.get("outputSchema") for tool in _server()._TOOLS}["read_verdict"]
+    jsonschema.validate(answer, schema)
+
+
+def test_a_kind_this_program_does_not_declare_is_named_rather_than_returned(tmp_path: Path) -> None:
+    """One bad field costs that field, not the entry, and not the other eleven accounts."""
+    from rfproteina.disease import mcp_api
+
+    record = _with_provenance()
+    record["cuts"]["provenance"]["gravy_max"]["kind"] = "invented"
+    record["cuts"]["provenance"]["mhc_i_rank_max"]["caveat"] = 17
+    record["cuts"]["provenance"]["plasma_fold_max"] = "not an entry"
+    _screened(tmp_path, record)
+    answer = mcp_api.read_verdict({"directory": str(tmp_path)})
+    verdict = answer["runs"][0]["verdict"]
+    kept = verdict["cuts"]["provenance"]
+    assert "kind" not in kept["gravy_max"], "a kind outside the closed set is not a kind"
+    assert kept["gravy_max"]["source"] == "program_convention", "the slug two tests pin still travels"
+    assert "caveat" not in kept["mhc_i_rank_max"]
+    assert kept["mhc_i_rank_max"]["kind"] == "recommended", "the sound half of the entry stands"
+    assert "plasma_fold_max" not in kept
+    assert {
+        "cuts.provenance.gravy_max.kind",
+        "cuts.provenance.mhc_i_rank_max.caveat",
+        "cuts.provenance.plasma_fold_max",
+    } <= set(verdict["malformed"])
+    schema = {str(tool["name"]): tool.get("outputSchema") for tool in _server()._TOOLS}["read_verdict"]
+    jsonschema.validate(answer, schema)
+
+
+def test_a_tree_of_runs_does_not_repeat_the_threshold_prose(tmp_path: Path) -> None:
+    """The accounts are the same on every run; the numbers are not.
+
+    Measured at 2,908 bytes on a protein screen, which is more than two of the
+    blocks the walk already drops outright. ``cuts`` itself has to stay: the
+    numbers a verdict was taken against are what the verdict means.
+    """
+    from rfproteina.disease import mcp_api, mcp_layers
+
+    _screened(tmp_path, _with_provenance())
+    result = mcp_layers.read_results({"directory": str(tmp_path)})
+    cuts = result["screens"][0]["cuts"]
+    assert "provenance" not in cuts
+    assert cuts["gravy_max"] == 0.1, "the cut stays; only the prose about it goes"
+    assert "iedb_class_i_selection" not in json.dumps(result)
+    assert mcp_layers._SCREEN_TRIMMED["cuts"] == frozenset({"provenance"})
+    assert "cuts" in mcp_layers.screen_fields(), "trimmed, not omitted"
+    # The one run's own answer still carries it, which is where a reader goes.
+    verdict = mcp_api.read_verdict({"directory": str(tmp_path)})["runs"][0]["verdict"]
+    assert "provenance" in verdict["cuts"]
+
+
+def test_the_stored_screen_keeps_every_account_the_view_trims(tmp_path: Path) -> None:
+    """``include_record`` is the full record, so nothing here is lost to a reader who asks."""
+    from rfproteina.disease import mcp_api
+
+    _screened(tmp_path, _with_provenance())
+    answer = mcp_api.read_verdict({"directory": str(tmp_path), "include_record": True})
+    record = answer["runs"][0]["verdict"]["record"]
+    assert set(record["cuts"]["provenance"]) == {"gravy_max", "mhc_i_rank_max"}
+    assert record["designed_interface_quality"]["provenance"]["shape_complementarity"]["bar"] is None
+
+
 def _alternatives(pattern: str) -> set[str]:
     """The top-level branches of an alternation. No branch here contains a bar."""
     return {part for part in pattern.split("|") if part}

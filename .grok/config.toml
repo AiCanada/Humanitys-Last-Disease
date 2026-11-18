@@ -5,8 +5,16 @@ enabled = true
 startup_timeout_sec = 30
 tool_timeout_sec = 600
 
+# One entry per tool the server declares. The two live tools keep the full budget;
+# the eight read-only tools read files already on disk and get the short one.
 [mcp_servers.Humanitys-Last-Disease.tool_timeouts]
-list_options = 120
 run = 600
 screen_directory = 600
+list_options = 120
 read_verdict = 120
+describe_architecture = 120
+retrieve_databases = 120
+retrieve_structures = 120
+read_sequence_measures = 120
+read_results = 120
+backend_status = 120
