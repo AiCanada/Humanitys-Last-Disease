@@ -9,3 +9,12 @@
 *.md text eol=lf
 *.rst text eol=lf
 *.json text eol=lf
+# Vendored upstream source is kept byte-for-byte as upstream committed it, so
+# every file's blob id matches upstream's at the commit its manifest.toml names.
+# Both trees' upstream files are CRLF, and the rules above would rewrite them to
+# LF on commit. That is not cosmetic: it changes the stored bytes, so the blob
+# ids stop matching upstream and the tree can no longer be checked against the
+# commit it claims to be. It had already happened to 37 of CrossAbSense's 89
+# files before this rule existed.
+screening[[:space:]]subpackage/thermompnn/ThermoMPNN/** -text
+screening[[:space:]]subpackage/crossabsense/CrossAbSense/** -text
