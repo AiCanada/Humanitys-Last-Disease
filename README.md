@@ -8,6 +8,13 @@ Goal: e/acc Simplified... Computation to Wet Lab. Help Guide Norms.
 
 Looking for Ideas or Feedback.
 
+Prepping program for entry into Drug Discovery and Development Benchmark
+https://dddbench.insilico.com/?tab=core
+
+https://huggingface.co/datasets/AICanada/humanitys_last_disease/tree/main (datasets, weights)
+
+https://github.com/AiCanada/Humanitys-Last-Disease (Code)
+
 Not Medically Verified.
 
 INPUT=Disease
