@@ -580,14 +580,60 @@ mirroring `mhc_tables.py`'s "only if on PATH" rule. None is a hard dependency.
   hydrogens). Interaction counts are `no_cut`: no published pass mark.
 * **ProLIF backend** (`prolif_fingerprint`) is the honest engine (it protonates
   and types atoms). It is behind an import guard and raises
-  `ProLIFUnavailableError` when ProLIF/MDAnalysis are absent (they are, here).
+  `ProLIFUnavailableError` when ProLIF/MDAnalysis are absent. **Now installed**
+  (prolif 2.1.x, capped below 2.2 because every 2.2.x needs `gemmi>=0.7.5`
+  while `bionemo-ir` pins `gemmi==0.6.5`).
 * **Complex comparison** (`compare_to_reference`): native **Fnat** — fraction of
   the reference's interface residue-residue heavy-atom contacts (within 5.0 A,
   CAPRI convention) that the model reproduces, plus fnonnat. Labelled **Fnat
-  only, NOT a DockQ score**. Full DockQ (`dockq`) is behind a guard and raises
-  `DockQUnavailableError` when the `DockQ` package is absent.
+  only, NOT a DockQ score**.
 * **Gating.** `comparison_verdicts` has NO default Fnat bar: a caller that gates
   must pass `fnat_min`, recorded as `caller_supplied`.
+
+#### D.2.2.1 Full DockQ (`dockq`), now installed
+
+DockQ v2 (MIT; Mirabello and Wallner, *Bioinformatics* 40(10) 2024,
+doi:10.1093/bioinformatics/btae586) gives the whole score — Fnat, iRMSD and
+LRMSD combined per interface — with the model-to-native chain mapping searched
+automatically. `install_dockq.py` installs it and `dockq()` runs it.
+
+**It runs as a subprocess against its own virtual environment, and that is not
+a style choice.** Every released DockQ pins `numpy<2.0`; this project runs
+numpy 2.2.6. Resolving `DockQ` into the project environment downgrades numpy
+underneath torch, bionemo and everything else — the constraint-file dry run
+refused it outright, which is how this was caught rather than discovered later.
+So DockQ is isolated under `DATA_PATH/dockq/venv` with its own numpy 1.26.4,
+exactly as `mhc_tables` isolates mhcflurry, and `dockq_command()` resolves
+`DOCKQ_EXECUTABLE` → that venv → `PATH`, ignoring a value that is not an
+executable file so a stale variable reads as "not installed" rather than
+crashing. Going through `--json` also buys the automatic chain mapping, which
+the in-process `run_on_all_native_interfaces` call does **not** do: that path
+scores whatever chains happen to share an identifier.
+
+**Two traps, both measured and both now guarded:**
+
+| what | measured |
+| --- | --- |
+| `best_dockq` in DockQ's JSON | a **sum** over interfaces — **3.0** for a three-chain identity comparison |
+| `GlobalDockQ` | the 0-to-1 figure, 1.0 for the same case |
+| stdout "Total DockQ" | the *mean*, i.e. `GlobalDockQ`, not `best_dockq` |
+| a single-chain input | prints "Need at least two chains", writes **no JSON**, and **exits 0** |
+
+So the record names `global_dockq` (0–1, what `dockq_verdicts` gates on) apart
+from `dockq_sum` (explicitly a sum, >1 above one interface) and never emits a
+bare `dockq` key — reporting the sum as "the DockQ score" would read as a scale
+error on any multimer. And the wrapper validates the JSON file rather than the
+exit status, because the status is 0 on that no-result case; a wrapper trusting
+it would report success with no score. Verified live: identity 1.000 (iRMSD
+2.9e-07), a 20°/4 Å displaced chain 0.603 with 50 clashes, trimer sum 3.0
+against global 1.0, `--mapping ':AB'` limiting to one interface, and a
+single-chain input raising `DockQFailedError`.
+
+`DockQFailedError` is separate from `DockQUnavailableError` on purpose: one
+means install it, the other means the inputs are not a pair DockQ can compare.
+Bands (`>=0.80` high, `>=0.49` medium, `>=0.23` acceptable) are the authors'
+own published classification, so they are reported; the pass/fail is still only
+a caller's `dockq_min`, recorded as `caller_supplied`.
 
 ### D.2.3 Ligand safety (`ligand_safety.py`)
 * **The honest route.** `fetch_measured_nm` reads **measured** IC50/Ki/Kd from
@@ -601,10 +647,56 @@ mirroring `mhc_tables.py`'s "only if on PATH" rule. None is a hard dependency.
   CHEMBL1980, CYP3A4 CHEMBL340, CYP2D6 CHEMBL289, CYP2C9 CHEMBL3397, CYP1A2
   CHEMBL3356, CYP2C19 CHEMBL3622, P-gp CHEMBL4302, BCRP CHEMBL5393, BSEP
   CHEMBL6020. None guessed.
-* **The predicted route, fenced off.** `bayesherg_probability` (BayeshERG, MIT)
-  and `admet_ai_predictions` (ADMET-AI, MIT) return **probabilities**, stored
-  only under `*_prob` keys with `unit="probability"`. Both are behind import
-  guards and raise `SafetyBackendUnavailableError` when absent (both are, here).
+* **The predicted route, fenced off.** `bayesherg_probability` (BayeshERG) and
+  `admet_ai_predictions` (ADMET-AI, MIT) return **probabilities**, stored only
+  under `*_prob` keys with `unit="probability"`. Both are behind import guards
+  and raise `SafetyBackendUnavailableError` when absent. ADMET-AI **is**
+  installed here (2.0.1, via the `ligand-safety` extra) and answers seven axes.
+  BayeshERG is not, and cannot be by `pip`: it publishes no package (no
+  `setup.py`, no `pyproject.toml`), and while its *code* is MIT its README puts
+  the **trained weights** under CC-BY-NC-SA-4.0, "restricted for commercial
+  use". The weights are the part that predicts, so it is a non-commercial tool.
+* **The trained route** (`ligand_regressor.py`). ADMET-AI has no endpoint for
+  `nav1_5`, `bcrp` or `bsep` — `ADMET_AI_UNCOVERED_AXES` — so for a designed
+  ligand those three axes had no answer at all. No tool fills them, but
+  BindingDB has the measurements, and `tables.bindingdb_panel_subset` already
+  reduces the download to those accessions (Q14524, Q9UNQ0, O95342). So the
+  regressors are **fitted here** rather than installed:
+
+  | axis | train | RMSE log10 | fold | Spearman | test n |
+  | --- | --- | --- | --- | --- | --- |
+  | `nav1_5` | 1,710 | 0.592 | 3.9x | 0.777 | 639 |
+  | `bcrp` | 860 | 0.631 | 4.3x | 0.715 | 321 |
+  | `bsep` | 352 | 0.535 | 3.4x | 0.587 | 132 |
+
+  Pooled over three scaffold-balanced splits, on determinate rows only — a
+  `>10000 nM` row is a bound, and scoring it as a point value would be a
+  fabricated number. A typical prediction is wrong by about four-fold, so this
+  is **triage, not an assay**.
+* **A third units line.** `*_nm` means somebody measured it;
+  `neighbour_nanomolar` means it was measured on a *different* molecule (the
+  read-across); `predicted_nanomolar` means a model guessed it.
+  `assert_no_probability_in_nm` cannot catch the third — a predicted nanomolar
+  is a well-formed concentration — so `ligand_regressor`'s own
+  `assert_prediction_not_measured` refuses any prediction stored under an
+  `*_nm` key. Each prediction also carries the model's held-out RMSE and its
+  Tanimoto to the nearest training compound, and says `EXTRAPOLATION` below
+  0.4.
+* **Chemprop was measured and lost.** The named tool for this was a D-MPNN. On
+  identical splits it scored 0.520 against the forest's 0.481 on `nav1_5`,
+  0.613 against 0.507 on `bcrp`, and 0.570 against 0.551 on `bsep`, and it
+  early-stopped between 32 and 69 epochs against a 500-epoch ceiling, so
+  training longer is not the missing ingredient — at 350 to 1,700 molecules a
+  graph network has too little data to beat Morgan fingerprints. Early stopping
+  was decisive to that comparison: without it chemprop scored a *negative* R²
+  on two axes. Both backends are built and selectable (`--backend chemprop`);
+  the default is the one that measured better.
+
+  ```bash
+  python scripts/train_ligand_regressor.py train     # fit, and print the held-out error
+  python scripts/train_ligand_regressor.py predict --smiles "<SMILES>"
+  python scripts/train_ligand_regressor.py have      # what is on disk, what each backend needs
+  ```
 * **The units line, enforced.** `assert_no_probability_in_nm` walks a record and
   raises if a probability (0-1 under a `probability` unit) sits under an `*_nm`
   key, or if a `*_prob` value is out of range. `toxicology.py`'s `HIT_NM` cut is
@@ -661,7 +753,11 @@ optional backends are asserted to raise when absent.
    protein residue identity, not a titration at pH 7.4. Pi-stacking is centroid
    distance only — no ring-normal angle test, so edge-to-face vs face-to-face is
    not distinguished, and a 5.5 A centroid cut will admit some non-stacked pairs.
-   ProLIF is the right engine; it is wired but not installed here.
+   ProLIF is the right engine and **is now installed** (2.1.0), so prefer it; the
+   native proxy remains the fallback and the method id says which produced a
+   count. The two are not the same measurement: on one stacked pose ProLIF
+   reports a single typed hydrophobic interaction where the proxy reports dozens
+   of atom pairs.
 2. **`internal_steric_clash` / strain overlap.** PoseBusters already flags
    internal clashes; MMFF strain and PoseBusters' `internal_energy` are related
    but not identical. Is reporting both redundant, or useful cross-checks?
@@ -677,10 +773,18 @@ optional backends are asserted to raise when absent.
 6. **No published pass mark exists for strain, clashes, interaction counts or
    Fnat.** Every one is `suggested` or `no_cut`. These are reports until someone
    calibrates them on this program's own designs — do not gate on them blind.
-7. **Optional backends are untested beyond the "raises when absent" path**,
-   because ProLIF/DockQ/BayeshERG/ADMET-AI are not installed in this venv. The
-   column-mapping inside `prolif_fingerprint` and `admet_ai_predictions` has not
-   been exercised against real output and is marked `# pragma: no cover`.
+7. **Optional backends: mostly resolved, one still open.** ProLIF (2.1.0),
+   ADMET-AI (2.0.1) and chemprop (2.3.1) are installed in this venv, and DockQ
+   is installed in its own (see D.2.2.1), so all three are now exercised
+   against real output rather than only on the "raises when absent" path —
+   ProLIF on a computed-ring-normal stacked pose, DockQ on identity, displaced,
+   trimer and mapping cases. **BayeshERG is still not installed**, so
+   `bayesherg_probability` is the one backend whose real-output path is
+   untested, and it is marked `# pragma: no cover` accordingly.
+   Worth re-reading: the absence tests for ProLIF and DockQ had to be rewritten
+   once the engines arrived, because asserting a raise on a machine that merely
+   lacks a tool tests the machine, not the guard — ProLIF's now blocks the
+   import and DockQ's empties every route to the executable.
 8. **`screen_pose_safety.py safety` makes live ChEMBL calls.** It is the only
    network path; keep it out of any automated pass that must be offline.
 
@@ -1063,10 +1167,13 @@ H chain typed `H`, light chain typed `K`; CDR-H1 `GFNIKDTY`, CDR-H2
 M at H115. The CDR-H2 NG and CDR-H3 DG are the two liabilities that antibody
 is known for, which is a useful sanity check on the scan.
 
-**DeepSP and CrossAbSense were not installed, and the reason is concrete.**
-DeepSP (MIT) ships Keras models and there is no TensorFlow in this
-environment; adding one to a torch environment for three descriptors was not
-worth the dependency risk while four other workers share it. CrossAbSense
+**DeepSP was not installed when this was written, and now is; CrossAbSense
+still is not.** The reason in both cases was concrete. DeepSP (MIT) ships Keras
+models and there is no TensorFlow in this environment; adding one to a torch
+environment for three descriptors was not worth the dependency risk while four
+other workers share it. That was resolved by porting the three Conv1D stacks to
+torch instead -- see `deepsp.py` and C.4.1 below, where the port is checked
+against published descriptors rather than asserted to be faithful. CrossAbSense
 v0.9 (Apache-2.0, weights on Hugging Face under the same licence -- model card
 read 2026-11-16) runs a frozen ESM-Cambrian 6B encoder, which is not a CPU
 screening step. Both are therefore supported as **readers**:
@@ -1075,6 +1182,89 @@ write, attach the method and source, refuse a file that does not carry their
 columns, and refuse an unparsable cell rather than dropping it. The five
 CrossAbSense assays and their Spearman rho from the model card are recorded in
 the module.
+
+### C.4.1 Viscosity at high concentration (`deepviscosity.py`)
+
+This is the screen's first viscosity answer. Nothing else here predicted one:
+the motif scan and the oracle readers say nothing about how a formulation
+flows, and **DeepSCM, the other sequence surrogate for the same endpoint, is
+CC BY-NC and so excluded on licence grounds** -- its README has an explicit
+commercial-use section. DeepViscosity is MIT for code and weights alike
+(`Copyright (c) 2025 Lailabcode`, GitHub's licence endpoint reports `spdx_id
+MIT`, read 2026-11-18). One honest caveat on that: the LICENSE covers "this
+software and associated documentation files" and names no artefact separately,
+so nothing in the repository states that the trained weights carry different
+terms, and nothing states that they are covered either. The MIT grant is the
+only statement found.
+
+**What it answers.** An ensemble of 102 feed-forward networks reads DeepSP's 30
+descriptors and returns the probability that viscosity exceeds 20 cP **at
+150 mg/mL in 20 mM histidine-HCl, pH 6.0**. Those conditions are the only ones
+the underlying measurements were taken at. The 102 models are one per
+leave-one-group-out split of 229 antibodies clustered into 102 groups by
+Levenshtein distance; the class is the mean probability thresholded at 0.5.
+Reported accuracy is 80.7 per cent training, 88.2 per cent leave-one-group-out,
+and 87.5 and 89.5 per cent on two independent test sets (Kalejaye et al., mAbs
+17(1) 2025, doi:10.1080/19420862.2025.2483944).
+
+**The port is checked, not asserted.** Same TensorFlow problem, same answer as
+DeepSP: four tanh dense layers of 128, 64, 32 and 16 units and a sigmoid head,
+evaluated in torch. Upstream's own predictor notebook ships its executed output
+for its 16-antibody test set, so that is the reference:
+
+| comparison | measured |
+| --- | --- |
+| ensemble probability vs published | worst 4.6e-07 |
+| ensemble spread vs published | worst 4.6e-07 |
+| all 16 published classes | identical (4 high, matching the paper) |
+| whole chain from raw sequence | worst 5.0e-07, no class flipped |
+| this project's DeepSP port vs the descriptors DeepViscosity bundles | 480 values, worst relative 1.1e-05 |
+
+That last row is a second, independent check on the descriptor half:
+DeepViscosity bundles DeepSP's own output for its test set, so the port is
+compared against two separately published copies of the same 480 values.
+`install_deepsp.py` now also fetches DeepSP's own `DeepSP_input.csv` and
+`DeepSP_descriptors_anarci2.csv` (about 9 KB), so
+`tests/test_disease_deepsp.py` runs its comparison after a normal install
+instead of skipping unless `RFD4_DEEPSP_MODELS` was set by hand — which is how
+that test came to be the suite's one skip for so long.
+
+**Nothing is unpickled.** Upstream ships its input scaler as an sklearn
+`StandardScaler` inside a joblib pickle, and unpickling a downloaded file runs
+whatever that file says. `scripts/install_deepviscosity.py` verifies a pinned
+SHA-256 (`2e9a5f56…87cd0`, 1,335 bytes), reads it once through an unpickler
+whose allowlist can reach no callable of an attacker's choosing -- sklearn is
+answered with a class that only stores state and is never imported -- and
+writes the 30 means and 30 scales as plain JSON. The library reads only that
+JSON, so predicting needs neither joblib nor scikit-learn. If upstream
+publishes a different scaler the digest fails and says so, because every
+prediction depends on those 60 numbers.
+
+**No pass cut, and a unit guard.** The 20 cP figure is the classifier's own
+definition of its two classes, not a mark this project has decided an antibody
+fails: a high call is information for a formulator, and no publication says a
+design is unusable because a sequence model placed it above 20 cP at one
+concentration in one buffer. Separately, DeepViscosity produces a class and a
+probability and **never a viscosity**, so `assert_no_predicted_centipoise`
+refuses any record that puts a model output in a `_cp` field -- a probability
+of 0.55 written there would read downstream as 0.55 cP, a measurement, and a
+thousandfold away from the boundary it was meant to express. The one permitted
+`_cp` key is the published boundary, and it must still carry 20.0.
+
+**What a reviewer should attack.** Nine of upstream's own sixteen test
+antibodies fall closer to the 0.5 boundary than their own ensemble spread, so
+the record carries `near_boundary` beside the class rather than a class alone;
+the flag is the antibody's own margin against its own spread, not a fixed
+number. The authors state their model cannot represent isotype or subclass
+effects, is weakest on closely related variants of one lineage, and is trained
+on an imbalanced set (162 low, 67 high). Their 38-antibody test set, measured
+in histidine/sucrose at pH 5.8 rather than the training buffer, was called high
+viscosity throughout -- including its four low-viscosity members. Read a class
+away from 150 mg/mL and that buffer as an extrapolation.
+
+    python scripts/install_deepsp.py          # the descriptors
+    python scripts/install_deepviscosity.py   # 102 pairs + the scaler, 8.2 MB
+    python scripts/screen_antibody.py viscosity --heavy ... --light ...
 
 ## C.5 Humanness
 
@@ -1103,8 +1293,9 @@ IgFold was not used: academic-use only.
 
 ## C.6 MHC class II
 
-There is no permissively licensed class II predictor. Each option was checked
-and quoted in `immunogenicity.CLASS_II_OPTIONS` with the date:
+There is no permissively licensed class II predictor **to download**. Each
+option was checked and quoted in `immunogenicity.CLASS_II_OPTIONS` with the
+date:
 
 | Option | Licence | Commercial |
 | --- | --- | --- |
@@ -1113,16 +1304,57 @@ and quoted in `immunogenicity.CLASS_II_OPTIONS` with the date:
 | MHCnuggets 2.4.1 (JHU) | JHU Academic Software License: "restricted to non-commercial purposes" | separate agreement required |
 | IEDB class II consensus tools | bundles NetMHCIIpan; components not all read | unverified |
 | epytope 4.0.1 / mhctools 4.9.5 | framework is BSD-3 / Apache-2.0 | the wrapped predictor licence still binds |
+| IEDB-trained PSSM (`disease.class_ii`) | the *data* is CC BY 4.0, declared as `dcterms:license` in the JSON-LD of IEDB's export page (read 2026-11-17; the prose page at `/terms` is 404) | granted, with attribution |
 
 **One trap worth attention:** MHCnuggets PyPI metadata says "Apache License"
 while the repository LICENSE file is the JHU academic agreement. A licence
 read off PyPI alone would have wired a non-commercial tool in. A test asserts
 that contradiction stays recorded.
 
-So nothing is wired in. What is implemented instead: `register_backend()` for
-whoever holds a licence, `predict_class_ii()` which raises with the reason,
-`class_ii_status()` as a documented unavailable path a screen can report, and
-`write_class_ii_table()` for someone who ran a licensed predictor elsewhere.
+So no *downloaded* predictor is wired in. What is implemented for that case:
+`register_backend()` for whoever holds a licence, `predict_class_ii()` which
+raises with the reason, `class_ii_status()` as a documented unavailable path a
+screen can report, and `write_class_ii_table()` for someone who ran a licensed
+predictor elsewhere.
+
+**The last row is the way around the problem.** The tools are restricted; the
+measurements they were fitted to are not. `rfproteina.disease.class_ii` fits a
+predictor from IEDB's own CC BY data, so the licence stops being the blocker:
+
+- `scripts/install_iedb_class_ii.py` pulls the DR-panel class II measurements
+  through IEDB's query API — about 20,000 rows, a few MB. Not the 10.26 GB
+  `mhc_ligand_full` export, which `tables.SOURCES` describes and which this
+  does not need. The API refuses an `offset` without an `order`, which is the
+  right refusal: paging an unordered query repeats some rows and silently
+  drops others.
+- `class_ii.load_corpus` keeps only what can be fitted and reports the rest by
+  reason. This matters more than it sounds: IEDB's units column also holds
+  `min` — a dissociation half-life — and `angstroms`, and 3,121 rows carry an
+  inequality, meaning the value is a bound rather than a measurement.
+  Repeated pairs are aggregated by **geometric mean**, because these are
+  log-scale affinities and the most-repeated pair spans 6.5 to 75 nM.
+- `class_ii.train` fits one position-specific scoring matrix per allele over
+  the 9-mer core, treating the core's register as latent, and **measures what
+  it is worth**: mean held-out AUC **0.735** over all seven panel alleles
+  (0.70–0.80 each), splitting on peptide so none is in both halves. That is
+  matrix-method accuracy, below the ~0.80–0.86 of a licensed neural
+  predictor. It covers the DRB3, DRB4 and DRB5 alleles TEPITOPE has no matrix
+  for, so the panel is complete rather than partial.
+- Its rank is **its own scale**. `CLASS_II_METHOD` deliberately omits
+  `CONSENSUS_MARK`, so `convert_class_ii_rows` emits
+  `ada_axis_will_report_rank_scale_unknown` and the ADA axis refuses the
+  table. That refusal is correct and is not a gap to be closed by renaming:
+  the median threshold of 20 in Paul et al. 2015 is defined on the IEDB
+  consensus rank and means nothing on this one. **The class II axis gains a
+  predictor; the ADA axis does not.**
+- Nothing registers it automatically, which is why `class_ii_status()` and the
+  config still report `available: false` until a caller chooses to register it.
+
+```bash
+python scripts/install_iedb_class_ii.py          # fetch the CC BY corpus
+python scripts/screen_antibody.py mhc2-train     # fit, and print the held-out AUC
+python scripts/screen_antibody.py mhc2 --sequence <VH> --out run/
+```
 The converter warns in advance about the two failures that would otherwise be
 silent -- a rank on a scale the ADA threshold does not belong to, and an
 incomplete DR panel -- and two tests prove the warnings are right by handing
@@ -1140,7 +1372,12 @@ duplicate it.
 * **NetSolP** -- BSD-3 per the earlier pass; **I did not re-verify the licence
   file myself**, so treat it as unconfirmed until someone opens it. Sequence
   solubility from a transformer; would need weights.
-* **DeepSP** (MIT) -- the SAP/SCM surrogate, see C.4. Needs TensorFlow.
+* **DeepSP** (MIT) -- the SAP/SCM surrogate. **No longer open: implemented** in
+  `deepsp.py`, ported to torch so no TensorFlow is needed, and now checked
+  against published descriptors by way of C.4.1.
+* **DeepViscosity** (MIT) -- **no longer open: implemented** in
+  `deepviscosity.py`, see C.4.1. Covers the viscosity endpoint DeepSCM would
+  have, without DeepSCM's CC BY-NC restriction.
 * **CamSol** -- web service, not open source. Excluded.
 * **Aggrescan3D** -- server and a standalone with its own terms; not read.
 * **Protein-Sol** -- web service; the sequence method is simple enough to
@@ -1540,3 +1777,150 @@ The `af3.yaml`, `chai1.yaml` and `boltz2.yaml` configs each parse under
    intended behaviour, or should the off-target assay be AF3-only?
 6. Which of these is worth the validation cost first — making Chai-1 the default
    oracle, or enabling the ThermoMPNN stability axis?
+
+---
+
+# Threshold provenance in the stored verdict (appended 2026-11-18)
+
+## What this adds
+
+A screen records the cuts it was taken against, which is what makes a verdict
+reproducible. It did not record *what kind of thing* each cut is, and that is a
+separate question. Twelve cuts are written into every screen; two named a
+source. From the numbers alone a reader cannot tell that `instability_max` of
+40 is a published prediction rule while `gravy_max` of 0.1 is a number this
+program chose, so a `sequence_pass: false` decided by the second reads exactly
+like one decided by the first.
+
+On the real asthma/IL5 screen that prompted this, the verdict was decided
+entirely by the convention: GRAVY 0.1304 exceeded the 0.1 convention while the
+instability index of 30.0 cleared the published bar of 40 comfortably. Nothing
+in the record or the terminal line said so.
+
+## Where it lives
+
+`src/rfproteina/disease/threshold_provenance.py`. It is a **sibling of**
+`provenance.py`, not a change to it: that module answers *which code* produced
+a record, this one answers *where its numbers came from*. The two together
+cover the four things a verdict is reproducible against — inputs, cuts, bar and
+code.
+
+## The record
+
+`cuts["provenance"]` is one nested object, keyed by cut name, one entry per
+cut: `{"kind", "source", "citation" (published only), "caveat" (optional)}`.
+
+Nested rather than flattened deliberately. Flattening to `<cut>_kind`,
+`<cut>_citation` and `<cut>_caveat` would have added 36 keys to every consumer
+holding an allowlist of record keys; this adds one. No top-level key changed,
+so `SCREEN_VERSION` stays 4 — `tests/test_disease_screen_shape.py` pins only
+top-level keys.
+
+The existing `<cut>_source` slugs are untouched, so the two MCP tests asserting
+`gravy_max_source == "program_convention"` keep passing. A test pins both.
+
+## The kinds
+
+| kind | meaning |
+| --- | --- |
+| `published` | a paper states this threshold for this purpose |
+| `recommended` | an external body documents it as practice; no paper behind the number |
+| `convention` | this program chose it. No publication, no external recommendation |
+| `caller_supplied` | the operator passes it; `None` until they do |
+| `measurement_parameter` | not a pass bar: a constant that shapes a measurement |
+| `unrecorded` | no entry. A defect, and the tests fail on it |
+
+As classified today: 2 `published` (`instability_max`, `ada_median_rank_max`),
+4 `recommended` (the IEDB MHC rules), 2 `convention` (`gravy_max`,
+`ligand_panel_nm_max`), 3 `caller_supplied` (the plasma bars), 1
+`measurement_parameter` (`clash_distance_angstrom`).
+
+Every classification is taken from what the defining constant already says
+about itself — `liability.py:104` "IEDB recommended MHC class I selection",
+`liability.py:228` "Both numbers are the paper's", `screen.py:232` "This one IS
+published", `combinations.py:76` "NOT A PUBLISHED THRESHOLD". None is inferred,
+and where this module and a constant disagree the constant is right.
+
+## `caveat` is the field worth reading
+
+`ada_median_rank_max` is a genuinely published threshold that is still refused
+on most machines: Paul et al. define it on the IEDB consensus percentile rank,
+and the axis reports `rank_scale_unknown` rather than applying the number to a
+table produced by another method. A published threshold is not a portable one,
+and the record now says that where a reader will see it.
+
+`mhc_ii_rank_max` carries the related note: IEDB's recommended rank of 10
+assumes a continuous scale, and the installed TEPITOPE scorer emits only the
+bins 1, 10 and 100, so at a cut of 10 two of its three bins pass and the
+reference density is refused as implausible.
+
+## The terminal line
+
+A failed `sequence_pass` now names the bar it failed and that bar's kind:
+
+```
+sequence_pass false (failed gravy_max 0.1, convention)
+sequence_pass false (failed instability_max 40.0, published)
+```
+
+A pass explains nothing, and a screen stored before `cuts` carried the bars
+degrades to the old sentence rather than inventing one.
+
+## The guard
+
+`unsourced()` plus `test_every_cut_a_screen_records_has_a_provenance` fails if
+any cut reaches a stored verdict unclassified, across all four binder kinds.
+The point is not the strings in the registry; it is that a new threshold cannot
+be added without saying where it came from.
+
+A drift test also asserts `combinations.panel_cut_source()` agrees with the
+registry's `ligand_panel_nm_max` source, so the two places that describe that
+cut cannot diverge.
+
+## What this does NOT do
+
+It does not change any threshold, any verdict, or any axis state. It records
+what the thresholds already were. Nothing in `disease_runs` moves except by
+re-screening.
+
+## The interface-quality bars
+
+The five bars in `interface_quality.REFERENCE_THRESHOLDS` are registered too,
+and they are the ones where this bites hardest. Three are BindCraft defaults
+carried across to proxies BindCraft never fitted, and each is slack against
+this program's own measured distribution:
+
+| bar | value | kind | measured median | what the bar actually is |
+| --- | --- | --- | --- | --- |
+| `interface_residues_binder` | >= 7 | `borrowed` | 27 (16-47) | a floor every accepted design clears |
+| `interface_polar_contacts` | >= 3 | `borrowed` | 18 | a floor; definition differs from BindCraft's Rosetta hbond |
+| `buried_unsatisfied_polar_atoms` | <= 4 | `borrowed` | 2 | a calibrated-compatible soft cut |
+| `shape_complementarity` | none | `reported_only` | 0.166 (0.069-0.254) | scale differs from Lawrence & Colman; 0.55 would fail everything |
+| `dsasa_total_a2` | none | `reported_only` | 2393 A^2 | BindCraft's default is a fraction, not an area |
+
+A reader seeing `interface_polar_contacts: 9` cleared has learned almost
+nothing when the measured median is 18. The record now says so rather than
+letting the bar imply a discrimination it does not make, and the two with no
+cut say that too, so nobody hunts for a pass that was deliberately not adopted.
+
+They are attached to `designed_interface_quality["provenance"]`, keyed by bar
+name, each carrying the bar itself alongside the kind and caveat — the measured
+block previously held the numbers and none of the bars. Two kinds exist for
+these: `borrowed` (another project's default; the definition or scale may
+differ, and the entry says which) and `reported_only` (measured, no cut
+adopted — distinct from `measurement_parameter`, which shapes how a
+measurement is made).
+
+`test_every_interface_bar_has_a_provenance` fails if `REFERENCE_THRESHOLDS`
+gains a bar the registry does not know, or keeps one the registry still
+describes, and `test_a_bar_with_no_cut_is_reported_only_and_one_with_a_cut_is_not`
+fails if a bar's classification stops matching what the runtime actually
+adopts. The classification cannot drift from the thresholds it describes.
+
+## What this does NOT do, continued
+
+The thresholds inside individual screens that are neither cuts nor interface
+bars — the ligand alert rules, the novelty TM-score, the stability bars — are
+not registered yet. The same two guards would extend to them, and the novelty
+cut is the interesting case: TM >= 0.5 is one of the few genuinely `published`
+values in the whole layer (Xu & Zhang, Bioinformatics 26(7):889-895, 2010).

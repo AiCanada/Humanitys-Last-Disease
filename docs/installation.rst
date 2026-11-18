@@ -154,7 +154,7 @@ sets. A wheel install reads local environment files from the working directory;
 an editable install reads them from the checkout root.
 
 AtomWorks is installed from the project metadata. The base package runs generation with the
-default metrics. There are two extras; pick the one that matches your driver, because it selects the
+default metrics. There are two CUDA extras; pick the one that matches your driver, because it selects the
 TMol and cuEquivariance operator wheels (``tmol-ops-cu12`` or ``tmol-ops-cu13``).
 
 .. list-table::
@@ -171,6 +171,44 @@ TMol and cuEquivariance operator wheels (``tmol-ops-cu12`` or ``tmol-ops-cu13``)
        analysis tools (matplotlib, scikit-learn, boto3) and the BioIR runtime for ``inference_backend=bioir``.
    * - ``all-cuda12``
      - The same with ``tmol-ops-cu12`` and the CUDA 12 cuEquivariance operators, without BioIR (CUDA 13 only).
+   * - ``ligand-safety``
+     - ADMET-AI, for the predicted route in :mod:`rfproteina.disease.ligand_safety`: classification probabilities
+       for seven of the ten ligand-safety panel axes (Nav1.5, BCRP and BSEP have no ADMET-AI endpoint). It ships
+       its two Chemprop ensembles inside the wheel, so there is no separate weight download, and it pulls RDKit.
+       Independent of the CUDA choice, so combine it with either one. The measured route, ChEMBL activities in
+       nanomolar, needs nothing beyond the base package.
+   * - ``deepsp``
+     - ``h5py`` alone, so :mod:`rfproteina.disease.deepsp` can read DeepSP's Keras ``.h5`` weights; the forward pass
+       is reimplemented in torch rather than adding TensorFlow beside it. The models are a separate 17 MB download
+       from the DeepSP repository — see ``scripts/install_deepsp.py``, which also fetches DeepSP's own 16 example
+       antibodies and the 480 descriptors it published for them (about 9 KB), so the test that checks the port
+       against those values runs after a normal install rather than skipping.
+   * - *(no extra)* ``DockQ``
+     - Not a Python extra, on purpose. DockQ scores a modelled complex against a reference for
+       :mod:`rfproteina.disease.interactions`, but every released version pins ``numpy<2.0`` while this project
+       runs numpy 2.x, so installing it here would downgrade numpy underneath torch. ``scripts/install_dockq.py``
+       puts it in its own virtual environment under ``DATA_PATH/dockq`` instead, and the runner finds it there or
+       through ``DOCKQ_EXECUTABLE``. About 25 MB, no weights. Without it, Fnat is still computed natively.
+   * - ``deepviscosity``
+     - ``h5py`` and ``joblib``, for :mod:`rfproteina.disease.deepviscosity` — the high-concentration viscosity class
+       (low ≤ 20 cP, high > 20 cP at 150 mg/mL) that DeepSP's descriptors feed. ``joblib`` is needed only by the
+       installer, which converts upstream's sklearn scaler pickle to JSON after checking a pinned SHA-256, so
+       predicting opens no pickle and needs no scikit-learn. The 102-model ensemble is an 8.2 MB download — see
+       ``scripts/install_deepviscosity.py`` — and **DeepSP's own models are required too**, since they generate the
+       descriptors.
+   * - ``ligand-regressor``
+     - scikit-learn and joblib, for the nanomolar regressors in
+       :mod:`rfproteina.disease.ligand_regressor` — the three panel axes ADMET-AI has no endpoint for (Nav1.5, BCRP,
+       BSEP), fitted from BindingDB measurements. A Morgan-fingerprint forest is the default because it measured
+       better than a D-MPNN on all three at this data size, so torch is not needed for it. **Training also needs
+       chemprop**, which supplies the scaffold-balanced splitter; it arrives with ``ligand-safety``. Predicting from
+       a saved forest needs only this extra.
+   * - ``prolif``
+     - ProLIF, the typed interaction-fingerprint engine :mod:`rfproteina.disease.interactions` prefers over its own
+       native fallback. Both remain available and the method id records which produced a count; they are not the same
+       measurement, so the numbers differ and no verdict depends on either. Capped below 2.2, because every 2.2.x
+       requires ``gemmi>=0.7.5`` while ``bionemo-ir`` in ``all-cuda13`` pins ``gemmi==0.6.5``. The ligand must be
+       PDB, MOL2 or PDBQT: MDAnalysis, which the entry point opens it with, has no SDF reader.
 
 For example ``uv pip install "rfd4-proteina[all-cuda13]"``. System drivers and external metric tools are
 configured separately.
