@@ -71,7 +71,45 @@ interactions:
       Fraction of the reference complex's interface residue-residue heavy-atom
       contacts (within 5.0 A, CAPRI convention) reproduced by the model. This is
       Fnat only, NOT a DockQ score (no iRMSD/LRMSD superposition). Full DockQ is
-      available via dockq() when the DockQ package is installed.
+      available via dockq(), which runs the DockQ executable; see the dockq
+      block below.
+  dockq:
+    direction: min
+    threshold: null            # caller-supplied only; no program-wide DockQ cut
+    label: no_cut
+    bands:                     # the authors' own classification, not a bar set here
+      high: '>= 0.80'
+      medium: '>= 0.49'
+      acceptable: '>= 0.23'
+      incorrect: '< 0.23'
+    licence: MIT
+    licence_verified: >-
+      2026-11-18, the installed distribution's metadata reports the classifier
+      'License :: OSI Approved :: MIT License' for DockQ 2.1.3.
+    isolation: >-
+      Runs as a subprocess against its own virtual environment under
+      DATA_PATH/dockq, named by DOCKQ_EXECUTABLE, the way mhc_tables runs
+      mhcflurry. Every released DockQ pins numpy<2.0 while this project runs
+      numpy 2.2.6, so installing it into the project environment resolves by
+      downgrading numpy underneath torch. Going through the --json interface
+      also performs the automatic chain mapping v2 added, which calling
+      run_on_all_native_interfaces in-process does not.
+    reported_keys: >-
+      global_dockq is the 0-to-1 score the CLI prints as "Total DockQ", and is
+      what dockq_verdicts gates on. dockq_sum adds the per-interface scores and
+      exceeds 1 whenever there is more than one interface, measured at 3.0 for a
+      three-chain identity comparison, so the two are named apart rather than
+      both called a total. Per-interface values are passed through under DockQ's
+      own field names.
+    applicability: >-
+      Only where a reference complex exists. A DockQ score is always against a
+      native, so a design with no reference has none, and a single chain has no
+      interface to score at all.
+    source: >-
+      Mirabello and Wallner, 'DockQ v2: improved automatic quality measure for
+      protein multimers, nucleic acids, and small molecules', Bioinformatics
+      40(10) (2024), doi:10.1093/bioinformatics/btae586
+    provenance: cited
 
 ligand_safety:
   module: rfproteina.disease.ligand_safety

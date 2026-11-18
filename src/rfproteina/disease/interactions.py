@@ -19,8 +19,15 @@ Two things live here, kept apart:
   The native reading is **Fnat**, the fraction of the reference's interface
   heavy-atom contacts that the model reproduces -- the one DockQ component that
   needs no superposition and so cannot be got subtly wrong. Full **DockQ**
-  (Mirabello and Wallner) is offered through a guarded wrapper and refuses
-  loudly when the ``DockQ`` package is absent, rather than approximating it.
+  (Mirabello and Wallner, MIT) is offered through a guarded wrapper and refuses
+  loudly when no DockQ executable is found, rather than approximating it.
+
+  DockQ runs as a **subprocess against its own virtual environment**, the way
+  ``mhc_tables`` runs mhcflurry, and for a hard reason: every released DockQ
+  pins ``numpy<2.0`` while this project runs numpy 2.x, so installing it here
+  would downgrade numpy underneath torch. Going through its ``--json``
+  interface also buys the automatic chain mapping v2 added, which calling
+  ``run_on_all_native_interfaces`` in-process does not do.
 
 Nothing here calls a network or needs weights. A structure this cannot read is
 refused; a missing optional engine is reported as missing, never faked.
@@ -28,6 +35,11 @@ refused; a missing optional engine is reported as missing, never faked.
 
 from __future__ import annotations
 
+import json
+import os
+import shutil
+import subprocess
+import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -40,6 +52,36 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 METHOD_NATIVE = "native_geometric_ifp_v1"
 METHOD_PROLIF = "prolif_ifp_v1"
+METHOD_DOCKQ = "dockq_v2_cli"
+
+DOCKQ_SOURCE = "DockQ v2 (MIT), https://github.com/bjornwallner/DockQ"
+DOCKQ_PAPER = (
+    "Mirabello and Wallner, 'DockQ v2: improved automatic quality measure for protein multimers, "
+    "nucleic acids, and small molecules', Bioinformatics 40(10) (2024), doi:10.1093/bioinformatics/btae586"
+)
+#: Names the ``DockQ`` executable. DockQ pins ``numpy<2.0`` and this project
+#: runs numpy 2.x, so it is installed into its own virtual environment and run
+#: as a subprocess -- the same isolation ``mhc_tables`` uses for mhcflurry.
+#: Installing it into the project environment would downgrade numpy under torch.
+DOCKQ_COMMAND_ENV = "DOCKQ_EXECUTABLE"
+#: Where ``scripts/install_dockq.py`` puts that environment, under ``DATA_PATH``.
+DOCKQ_SUBDIR = Path("dockq")
+DOCKQ_REQUIREMENT = "DockQ>=2.1.3,<3"
+#: The chain-mapping search is combinatorial in the number of chains, so a run
+#: is bounded rather than left to hang on a large multimer.
+DOCKQ_TIMEOUT_S = 900
+
+#: The authors' own quality bands, as the CLI banner prints them: a published
+#: classification, not a bar chosen here. Highest floor first.
+DOCKQ_BANDS: tuple[tuple[float, str], ...] = (
+    (0.80, "high"),
+    (0.49, "medium"),
+    (0.23, "acceptable"),
+    (0.0, "incorrect"),
+)
+#: Keys DockQ's ``--json`` output must carry. Checked so a release that renames
+#: one is refused loudly instead of reported as a missing score.
+_DOCKQ_KEYS = ("best_dockq", "GlobalDockQ", "best_result", "best_mapping_str")
 
 #: Distance cutoffs in angstrom. Read from ProLIF's documented interaction
 #: defaults on 2026-11-16 and applied to heavy atoms. They are ProLIF's bars for
@@ -122,7 +164,16 @@ class ProLIFUnavailableError(Exception):
 
 
 class DockQUnavailableError(Exception):
-    """The DockQ package is not installed. Fnat is computed natively instead."""
+    """No DockQ executable could be found. Fnat is computed natively instead."""
+
+
+class DockQFailedError(Exception):
+    """A DockQ executable was found and run, and did not produce a score.
+
+    Separate from :class:`DockQUnavailableError` because the two call for
+    different actions: one means install it, the other means the inputs are
+    not a pair DockQ can compare.
+    """
 
 
 def _load(path: Path) -> AtomArray:
@@ -342,22 +393,227 @@ def compare_to_reference(
     )
 
 
-def dockq(model_path: str | Path, reference_path: str | Path) -> dict[str, object]:
-    """Full DockQ through the ``DockQ`` package. Raises if it is not installed.
+def dockq_install_root() -> Path | None:
+    """``DATA_PATH/dockq``, or ``None`` where ``DATA_PATH`` is unset."""
+    root = os.environ.get("DATA_PATH", "").strip()
+    return Path(root) / DOCKQ_SUBDIR if root else None
+
+
+def _executable(path: Path) -> bool:
+    return path.is_file() and os.access(path, os.X_OK)
+
+
+def dockq_command() -> str | None:
+    """The ``DockQ`` executable to run, or ``None`` when there is none.
+
+    :data:`DOCKQ_COMMAND_ENV` wins, then the virtual environment under
+    :func:`dockq_install_root`, then ``PATH``. A value that is not an
+    executable file is ignored rather than handed to :mod:`subprocess`, so a
+    stale variable reads as "not installed" instead of as a crash -- the rule
+    :func:`rfproteina.disease.mhc_tables.predictor_command` already follows.
+    """
+    named = os.environ.get(DOCKQ_COMMAND_ENV, "").strip()
+    if named:
+        if _executable(Path(named)):
+            return named
+        found = shutil.which(named)
+        if found:
+            return found
+    root = dockq_install_root()
+    if root is not None:
+        for relative in (Path("venv") / "bin" / "DockQ", Path("venv") / "Scripts" / "DockQ.exe"):
+            candidate = root / relative
+            if _executable(candidate):
+                return str(candidate)
+    return shutil.which("DockQ")
+
+
+def dockq_available() -> tuple[bool, str | None]:
+    """Whether a DockQ executable can be found, and where to get one if not."""
+    command = dockq_command()
+    if command is None:
+        return False, "dockq_unavailable:no_executable_on_path_or_under_data_path"
+    return True, None
+
+
+def dockq_version(command: str | None = None) -> str | None:
+    """DockQ's version, or ``None``.
+
+    DockQ has no ``--version`` flag -- it exits 2 on one -- so the version is
+    read from the metadata of the interpreter beside the executable. Best
+    effort: a missing version is reported as unknown, never guessed.
+    """
+    command = command or dockq_command()
+    if command is None:
+        return None
+    python = Path(command).parent / "python"
+    if not _executable(python):
+        python = Path(command).parent / "python.exe"
+        if not _executable(python):
+            return None
+    try:
+        done = subprocess.run(
+            [str(python), "-c", "import importlib.metadata as m; print(m.version('DockQ'))"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = done.stdout.strip()
+    return value or None
+
+
+def dockq_quality(score: float) -> str:
+    """The authors' own band for a DockQ score in ``[0, 1]``."""
+    for floor, name in DOCKQ_BANDS:
+        if score >= floor:
+            return name
+    return "incorrect"
+
+
+def dockq(
+    model_path: str | Path,
+    reference_path: str | Path,
+    *,
+    mapping: str | None = None,
+    no_align: bool = False,
+    small_molecule: bool = False,
+    n_cpu: int | None = None,
+    allowed_mismatches: int | None = None,
+    timeout: float = DOCKQ_TIMEOUT_S,
+) -> dict[str, object]:
+    """Full DockQ against a reference complex, through the DockQ executable.
 
     Kept behind a guard on purpose: DockQ needs a superposition that Fnat does
     not, and approximating it would produce a number under a name that means
-    something specific. When the package is absent, use :func:`compare_to_reference`
-    for Fnat and record that DockQ was unavailable.
+    something specific. When no executable is found, use
+    :func:`compare_to_reference` for Fnat and record that DockQ was
+    unavailable.
+
+    Run as a subprocess rather than imported. Two reasons, both measured:
+    DockQ pins ``numpy<2.0`` and this project runs numpy 2.x, so importing it
+    would mean downgrading numpy underneath torch; and the ``--json`` interface
+    performs the automatic chain mapping that v2 added, which calling
+    ``run_on_all_native_interfaces`` directly does not -- that path scores
+    whatever chains happen to share an identifier.
+
+    ``mapping`` is DockQ's own ``MODELCHAINS:NATIVECHAINS`` form, and
+    ``':BC'`` limits the comparison to one native interface. ``no_align``
+    matches residues by numbering instead of by sequence alignment, which is
+    what a design and its own refold want.
+
+    Returns a record whose ``global_dockq`` is the 0-to-1 figure the CLI prints
+    as "Total DockQ". ``dockq_sum`` adds the interfaces up and is **greater
+    than 1 whenever there is more than one** -- measured at 3.0 for a
+    three-chain identity comparison -- so the two are named apart rather than
+    both called a total.
     """
-    try:
-        from DockQ.DockQ import load_PDB, run_on_all_native_interfaces
-    except ImportError as error:
-        raise DockQUnavailableError(f"dockq_unavailable:{error}") from error
-    model = load_PDB(str(model_path))
-    native = load_PDB(str(reference_path))
-    result, total = run_on_all_native_interfaces(model, native)
-    return {"dockq_total": float(total), "per_interface": result}
+    command = dockq_command()
+    if command is None:
+        raise DockQUnavailableError("dockq_unavailable:no_executable_on_path_or_under_data_path")
+    model = Path(model_path)
+    native = Path(reference_path)
+    for label, path in (("model", model), ("reference", native)):
+        if not path.is_file():
+            raise StructureUnreadableError(f"dockq_{label}_absent:{path.name}")
+
+    with tempfile.TemporaryDirectory(prefix="rfd4_dockq_") as scratch:
+        out = Path(scratch) / "dockq.json"
+        argv = [command, str(model), str(native), "--json", str(out)]
+        if mapping:
+            argv += ["--mapping", mapping]
+        if no_align:
+            argv.append("--no_align")
+        if small_molecule:
+            argv.append("--small_molecule")
+        if n_cpu is not None:
+            argv += ["--n_cpu", str(int(n_cpu))]
+        if allowed_mismatches is not None:
+            argv += ["--allowed_mismatches", str(int(allowed_mismatches))]
+        try:
+            done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
+        except subprocess.TimeoutExpired as error:
+            raise DockQFailedError(f"dockq_timeout:{timeout:g}s") from error
+        except OSError as error:
+            raise DockQUnavailableError(f"dockq_unavailable:{error}") from error
+
+        # The exit code is not enough. Given a single-chain input DockQ prints
+        # "Need at least two chains in the two inputs", writes no JSON, and
+        # still exits 0, so a wrapper that trusted the status would report a
+        # silent success with no score. The file is what is checked.
+        if not out.is_file():
+            detail = (done.stdout or done.stderr or "").strip().splitlines()
+            reason = detail[-1] if detail else f"exit_{done.returncode}_and_no_output"
+            raise DockQFailedError(f"dockq_no_result:{reason}")
+        try:
+            document = json.loads(out.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise DockQFailedError(f"dockq_result_unreadable:{type(error).__name__}") from error
+
+    missing = [key for key in _DOCKQ_KEYS if key not in document]
+    if missing:
+        raise DockQFailedError(f"dockq_result_keys_absent:{','.join(missing)}")
+    interfaces = document["best_result"]
+    if not isinstance(interfaces, dict) or not interfaces:
+        raise DockQFailedError("dockq_no_interface_scored")
+
+    global_score = float(document["GlobalDockQ"])
+    return {
+        "method": METHOD_DOCKQ,
+        "source": DOCKQ_SOURCE,
+        "paper": DOCKQ_PAPER,
+        "command": command,
+        "version": dockq_version(command) or "unknown",
+        "model": str(model),
+        "reference": str(native),
+        "global_dockq": round(global_score, 6),
+        "quality": dockq_quality(global_score),
+        "dockq_sum": round(float(document["best_dockq"]), 6),
+        "interface_count": len(interfaces),
+        # DockQ's own per-interface fields, passed through: these are the
+        # authoritative numbers, and rewriting them would only add a way to
+        # get one wrong. Keys are interface names such as "BC".
+        "interfaces": interfaces,
+        "mapping": document["best_mapping_str"],
+        "chain_map": document.get("best_mapping", {}),
+        "notes": [
+            "global_dockq is the 0-to-1 score the CLI prints as Total DockQ",
+            "dockq_sum adds the per-interface scores and exceeds 1 when there is more than one interface",
+            "bands are the authors' own: >=0.80 high, >=0.49 medium, >=0.23 acceptable, below that incorrect",
+            "a DockQ score is always against a reference; a design with no native complex has none",
+        ],
+    }
+
+
+def dockq_verdicts(record: dict[str, object], dockq_min: float | None = None) -> dict[str, dict[str, object]]:
+    """DockQ applied to a caller-supplied bar, with the published band reported.
+
+    The band is reported whatever happens, because unlike the interaction
+    counts it is the authors' own published classification rather than a bar
+    invented here. The pass or fail is still only a caller's: ``dockq_min`` has
+    no default, so a gate names its bar and that bar is recorded as
+    ``caller_supplied``.
+    """
+    score = float(record["global_dockq"])  # type: ignore[arg-type]
+    if dockq_min is None:
+        state = "no_cut"
+        source = "no cut supplied; DockQ reported with its published band"
+    else:
+        state = "clear" if score >= dockq_min else "hit"
+        source = f"caller_supplied dockq_min={dockq_min}"
+    return {
+        "dockq": {
+            "value": score,
+            "band": record.get("quality"),
+            "band_source": DOCKQ_PAPER,
+            "state": state,
+            "threshold": dockq_min,
+            "direction": "min" if dockq_min is not None else "none",
+            "threshold_source": source,
+        }
+    }
 
 
 def native_verdicts(fingerprint: InteractionFingerprint) -> dict[str, dict[str, object]]:
