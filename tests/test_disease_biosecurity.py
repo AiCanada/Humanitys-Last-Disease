@@ -7,6 +7,7 @@ database.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -18,8 +19,10 @@ from rfproteina.disease.screening_tools import ScreeningInputError, ToolResult
 
 def test_recommendation_mapping_is_conservative() -> None:
     assert biosecurity.verdict("Pass")["state"] == "clear"
+    assert biosecurity.verdict("Pass (Skipped Taxonomy)")["state"] == "clear"
     assert biosecurity.verdict("Flag")["state"] == "hit"
     assert biosecurity.verdict("Warn")["state"] == "hit"
+    assert biosecurity.verdict("Warning")["state"] == "hit"
     assert biosecurity.verdict("Error")["state"] == "untested"
 
 
@@ -52,7 +55,7 @@ def test_screen_raises_without_records(tmp_path: Path) -> None:
 def test_screen_is_unavailable_when_commec_is_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fasta = tmp_path / "x.fasta"
     fasta.write_text(">d1\nACGTACGT\n", encoding="utf-8")
-    monkeypatch.setattr(biosecurity, "commec_available", lambda: False)
+    monkeypatch.setattr(biosecurity, "commec_command", lambda: None)
     with pytest.raises(biosecurity.BiosecurityUnavailableError, match="commec_not_installed"):
         biosecurity.biosecurity_screen(fasta, tmp_path, tmp_path / "work")
 
@@ -62,7 +65,7 @@ def test_screen_is_unavailable_when_the_database_dir_is_missing(
 ) -> None:
     fasta = tmp_path / "x.fasta"
     fasta.write_text(">d1\nACGTACGT\n", encoding="utf-8")
-    monkeypatch.setattr(biosecurity, "commec_available", lambda: True)
+    monkeypatch.setattr(biosecurity, "commec_command", lambda: "commec")
     with pytest.raises(biosecurity.BiosecurityUnavailableError, match="commec_databases_missing"):
         biosecurity.biosecurity_screen(fasta, tmp_path / "nodir", tmp_path / "work")
 
@@ -78,10 +81,13 @@ def test_screen_builds_a_record_per_input_from_mocked_commec(
     def fake_run_tool(command: Sequence[str], **_kwargs: object) -> ToolResult:
         if "flag" in command:
             out = Path(command[command.index("-o") + 1])
-            out.write_text("name,recommendation\nd1,Pass\nd2,Flag\n", encoding="utf-8")
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "screen_pipeline_status.csv").write_text(
+                "name,flag\nd1,Pass\nd2,Flag\n", encoding="utf-8"
+            )
         return ToolResult(True, 0, "", "")
 
-    monkeypatch.setattr(biosecurity, "commec_available", lambda: True)
+    monkeypatch.setattr(biosecurity, "commec_command", lambda: "commec")
     monkeypatch.setattr(biosecurity, "run_tool", fake_run_tool)
     records = biosecurity.biosecurity_screen(fasta, databases, tmp_path / "work")
     assert records["d1"]["state"] == "clear"
@@ -94,6 +100,29 @@ def test_screen_builds_a_record_per_input_from_mocked_commec(
 def test_rollup_is_a_hit_when_any_record_is_flagged() -> None:
     records = {"d1": biosecurity.verdict("Pass"), "d2": biosecurity.verdict("Flag")}
     assert biosecurity.rollup(records)["state"] == "hit"
+
+
+def test_search_tools_under_data_path_are_put_on_the_screen_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DATA_PATH", str(tmp_path))
+    (tmp_path / "commec" / "tools" / "usr" / "bin").mkdir(parents=True)
+    (tmp_path / "commec" / "tools" / "usr" / "lib" / "ncbi-blast+").mkdir(parents=True)
+    env = biosecurity._screen_environment()
+    assert str(tmp_path / "commec" / "tools" / "usr" / "bin") in env["PATH"].split(os.pathsep)
+    assert str(tmp_path / "commec" / "tools" / "usr" / "lib" / "ncbi-blast+") in env[
+        "LD_LIBRARY_PATH"
+    ].split(os.pathsep)
+
+
+def test_the_installed_binary_is_found_under_data_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("COMMEC", raising=False)
+    monkeypatch.setenv("DATA_PATH", str(tmp_path))
+    binary = tmp_path / "commec" / "venv" / "bin" / "commec"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("", encoding="utf-8")
+    binary.chmod(0o755)
+    assert biosecurity.commec_command() == str(binary)
 
 
 def test_requirements_are_actionable_and_name_the_local_free_tool() -> None:

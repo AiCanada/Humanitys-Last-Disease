@@ -29,6 +29,8 @@ is not installed, or the database directory is absent, the stage returns
 
 from __future__ import annotations
 
+import os
+import shutil
 from pathlib import Path
 
 from rfproteina.disease.combinations import rollup_axis
@@ -39,12 +41,17 @@ from rfproteina.disease.screening_tools import (
     ScreeningInputError,
     alphabet_of,
     axis_record,
+    data_dir,
     read_fasta,
     run_tool,
-    tool_available,
+    tool_code_path,
 )
 
 COMMEC = "commec"
+#: An executable path. It wins over the copy installed under ``DATA_PATH``.
+COMMEC_ENV = "COMMEC"
+#: The database directory. It wins over ``DATA_PATH/commec/databases``.
+COMMEC_DATABASES_ENV = "COMMEC_DATABASES"
 
 #: Commec recommendation -> axis state. ``warn`` maps to a hit deliberately: a
 #: lower-confidence concern still needs human review, and for a safety gate the
@@ -52,8 +59,12 @@ COMMEC = "commec"
 #: untested. Keys are compared case-folded.
 RECOMMENDATION_STATE: dict[str, str] = {
     "pass": CLEAR,
+    # The installed ``commec flag`` writes this when ``--skip-tx`` skipped taxonomy.
+    "pass (skipped taxonomy)": CLEAR,
     "flag": HIT,
     "warn": HIT,
+    # ScreenStatus.WARN is the word "Warning", not "Warn".
+    "warning": HIT,
     "error": UNTESTED,
 }
 
@@ -61,7 +72,17 @@ RECOMMENDATION_STATE: dict[str, str] = {
 #: exact spelling is parsed flexibly and should be verified against a real run.
 _ID_COLUMNS = ("name", "query", "query_name", "record", "sequence", "sequence_name", "id", "target")
 #: Candidate header names for the recommendation column.
-_RECOMMENDATION_COLUMNS = ("recommendation", "recommend", "status", "outcome", "overall", "screen_status")
+# ``flag`` is the overall column in ``screen_pipeline_status.csv``. It is matched
+# exactly, before the substring fallback, so ``virus_flag`` is not selected.
+_RECOMMENDATION_COLUMNS = (
+    "flag",
+    "recommendation",
+    "recommend",
+    "status",
+    "outcome",
+    "overall",
+    "screen_status",
+)
 
 
 class BiosecurityUnavailableError(RuntimeError):
@@ -72,9 +93,98 @@ class BiosecurityUnavailableError(RuntimeError):
         self.blocker = blocker
 
 
+def _executable(path: Path) -> bool:
+    return path.is_file() and os.access(path, os.X_OK)
+
+
+def _install_root() -> Path:
+    """``DATA_PATH/commec``: the virtual environment and the 39 GB of databases.
+
+    Neither moved into the checkout. Only Commec's bundled search binaries did,
+    and :func:`_tools_root` resolves those separately.
+    """
+    return data_dir("commec")
+
+
+def _tools_root() -> Path | None:
+    """Commec's bundled HMMER/BLAST/Infernal binaries, wherever they are.
+
+    These are third-party compiled code, so they moved into the checkout's
+    ``screening subpackage/commec/tools``; the databases they search did not.
+    ``None`` when no copy is on disk, which leaves ``PATH`` untouched.
+
+    Resolved by artifact rather than by directory: ``DATA_PATH/commec`` still
+    exists here -- it holds the virtual environment and the databases -- so
+    asking for that directory first would shadow the relocated ``tools`` and
+    report them missing.
+    """
+    tools = tool_code_path("commec", "tools")
+    return tools if tools is not None and tools.is_dir() else None
+
+
+def commec_command() -> str | None:
+    """The Commec executable, or None when this machine has none.
+
+    ``COMMEC`` wins, then ``DATA_PATH/commec/venv`` (the copy
+    ``scripts/install_commec.py`` installs), then ``PATH``.
+    """
+    named = os.environ.get(COMMEC_ENV, "").strip()
+    if named:
+        candidate = Path(named)
+        if _executable(candidate):
+            return str(candidate)
+        found = shutil.which(named)
+        if found:
+            return found
+    venv = _install_root() / "venv"
+    for relative in ("bin/commec", "Scripts/commec.exe", "Scripts/commec"):
+        candidate = venv / relative
+        if _executable(candidate):
+            return str(candidate)
+    return shutil.which(COMMEC)
+
+
+def commec_databases() -> Path | None:
+    """The installed database directory, or None when it is not on disk."""
+    named = os.environ.get(COMMEC_DATABASES_ENV, "").strip()
+    if named:
+        path = Path(named)
+        return path if path.is_dir() else None
+    path = _install_root() / "databases"
+    return path if path.is_dir() else None
+
+
 def commec_available() -> bool:
-    """Whether ``commec`` is on PATH. Checked, never assumed."""
-    return tool_available(COMMEC)
+    """Whether a Commec executable can be resolved. Checked, never assumed."""
+    return commec_command() is not None
+
+
+def _screen_environment() -> dict[str, str]:
+    """Process environment plus the HMMER, BLAST, and Infernal binaries.
+
+    ``scripts/install_commec.py`` fetches databases. The search programs are
+    unpacked under ``screening subpackage/commec/tools`` (or, on a machine
+    whose code has not been relocated, ``DATA_PATH/commec/tools``) because
+    Commec calls ``hmmscan``, ``blastx``, ``blastn``, and ``cmscan`` from
+    ``PATH``. BLAST also needs its shared libraries on ``LD_LIBRARY_PATH``.
+
+    When no copy of the tools is on disk, ``PATH`` is left exactly as it was
+    rather than prepended with directories that do not exist.
+    """
+    env = os.environ.copy()
+    tools = _tools_root()
+    if tools is None:
+        return env
+    bindirs = [tools / "usr/lib/infernal", tools / "usr/bin"]
+    libdirs = [tools / "usr/lib/x86_64-linux-gnu", tools / "usr/lib/ncbi-blast+"]
+    bins = [str(path) for path in bindirs if path.is_dir()]
+    libs = [str(path) for path in libdirs if path.is_dir()]
+    if bins:
+        env["PATH"] = os.pathsep.join([*bins, env.get("PATH", "")])
+    if libs:
+        previous = env.get("LD_LIBRARY_PATH", "")
+        env["LD_LIBRARY_PATH"] = os.pathsep.join([*libs, previous] if previous else libs)
+    return env
 
 
 def build_screen_command(
@@ -103,9 +213,13 @@ def build_screen_command(
     return command
 
 
-def build_flag_command(screen_dir: Path, csv_out: Path, *, commec: str = COMMEC) -> list[str]:
-    """The ``commec flag`` argument list: collate ``.screen.json`` files into a CSV."""
-    return [commec, "flag", "-i", str(screen_dir), "-o", str(csv_out)]
+def build_flag_command(screen_dir: Path, output_dir: Path, *, commec: str = COMMEC) -> list[str]:
+    """The ``commec flag`` argument list.
+
+    The directory is positional. ``-o`` is the directory where Commec writes
+    ``screen_pipeline_status.csv``, whose overall column is ``flag``.
+    """
+    return [commec, "flag", str(screen_dir), "-o", str(output_dir)]
 
 
 def _header_index(header: list[str], candidates: tuple[str, ...]) -> int | None:
@@ -185,26 +299,37 @@ def biosecurity_screen(
     records = read_fasta(fasta_path.read_text(encoding="utf-8"))
     if not records:
         raise ScreeningInputError("no_fasta_records")
-    if not commec_available():
-        raise BiosecurityUnavailableError("commec_not_installed")
+    if commec == COMMEC:
+        resolved = commec_command()
+        if resolved is None:
+            raise BiosecurityUnavailableError("commec_not_installed")
+    else:
+        resolved = commec
     if not Path(databases_dir).is_dir():
         raise BiosecurityUnavailableError("commec_databases_missing")
     work_dir = Path(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
     screen_out = work_dir / "screen"
     screen_out.mkdir(parents=True, exist_ok=True)
-    csv_out = work_dir / "flags.csv"
+    flag_dir = work_dir / "flags"
+    screen_env = _screen_environment()
     screen_result = run_tool(
         build_screen_command(
-            fasta_path, Path(databases_dir), screen_out, commec=commec, skip_tx=skip_tx, threads=threads
+            fasta_path, Path(databases_dir), screen_out, commec=resolved, skip_tx=skip_tx, threads=threads
         ),
         timeout_s=timeout_s,
+        env=screen_env,
     )
     if not screen_result.ok:
         raise BiosecurityUnavailableError(screen_result.blocker or "commec_screen_failed")
-    flag_result = run_tool(build_flag_command(screen_out, csv_out, commec=commec), timeout_s=timeout_s)
+    flag_result = run_tool(
+        build_flag_command(screen_out, flag_dir, commec=resolved),
+        timeout_s=timeout_s,
+        env=screen_env,
+    )
     if not flag_result.ok:
         raise BiosecurityUnavailableError(flag_result.blocker or "commec_flag_failed")
+    csv_out = flag_dir / "screen_pipeline_status.csv"
     text = csv_out.read_text(encoding="utf-8") if csv_out.is_file() else flag_result.stdout
     recommendations = parse_flag_csv(text)
     out: dict[str, dict[str, object]] = {}

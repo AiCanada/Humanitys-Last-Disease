@@ -9,8 +9,10 @@ axis: biosecurity
 tool:
   name: commec
   licence: MIT  # software and biorisk/benign databases both MIT; ibbis-bio/common-mechanism
-  install: "pip install commec"
-  on_path_only: true
+  install: "python scripts/install_commec.py  (package plus databases.commec.io, MIT, under DATA_PATH/commec)"
+  environment_variable: COMMEC
+  databases_environment_variable: COMMEC_DATABASES
+  on_path_only: false
 
 databases:
   biorisk_benign_controllists:
