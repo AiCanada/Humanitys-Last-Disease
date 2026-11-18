@@ -10,8 +10,9 @@ axis: proteome_offtarget_alignment  # distinct from liability.py's proteome_offt
 tool:
   name: mmseqs
   licence: MIT  # relicensed to MIT 2024-11; soedinglab/MMseqs2
-  install: "conda install -c bioconda mmseqs2  OR static binary from mmseqs.com/latest (free)"
-  on_path_only: true
+  install: "python scripts/install_mmseqs.py  (static binary from mmseqs.com, MIT, under DATA_PATH/mmseqs)"
+  environment_variable: MMSEQS
+  on_path_only: false
 
 target_database:
   file: "UP000005640_9606.fasta.gz"

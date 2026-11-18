@@ -20,12 +20,15 @@ was excluded for that reason.
 
 The human proteome FASTA (``UP000005640_9606.fasta.gz``, 7.38 MB, CC-BY-4.0) is
 already on disk in the data folder; MMseqs2 (MIT) reads it gzipped. Nothing here
-is downloaded. If MMseqs2 is not on PATH, or the proteome path is absent, the
-screen returns ``untested`` with a blocker naming what is missing.
+is downloaded. The binary is ``MMSEQS``, then ``DATA_PATH/mmseqs/mmseqs``, then
+``PATH``. If it is absent, or the proteome path is absent, the screen returns
+``untested`` with a blocker naming what is missing.
 """
 
 from __future__ import annotations
 
+import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -37,11 +40,13 @@ from rfproteina.disease.screening_tools import (
     ScreeningInputError,
     axis_record,
     run_tool,
-    tool_available,
+    tool_code_path,
     write_fasta,
 )
 
 MMSEQS = "mmseqs"
+#: An executable path. It wins over the copy installed under ``DATA_PATH``.
+MMSEQS_ENV = "MMSEQS"
 
 #: The axis this screen writes to. Distinct from ``proteome_offtarget`` so the
 #: exact-9-mer axis in ``liability.py`` is left untouched.
@@ -108,9 +113,38 @@ class OffTargetUnavailableError(RuntimeError):
         self.blocker = blocker
 
 
+def _executable(path: Path) -> bool:
+    return path.is_file() and os.access(path, os.X_OK)
+
+
+def mmseqs_command() -> str | None:
+    """The MMseqs2 executable, or None when this machine has none.
+
+    ``MMSEQS`` wins, then the binary wherever
+    :func:`screening_tools.tool_code_path` finds it -- ``DATA_PATH/mmseqs`` if
+    a copy is still there, otherwise the checkout's
+    ``screening subpackage/mmseqs`` -- then ``PATH``.
+
+    MMseqs2 is a compiled binary and therefore third-party *code*, so it moved
+    into the checkout; nothing it reads moved with it.
+    """
+    named = os.environ.get(MMSEQS_ENV, "").strip()
+    if named:
+        candidate = Path(named)
+        if _executable(candidate):
+            return str(candidate)
+        found = shutil.which(named)
+        if found:
+            return found
+    found = tool_code_path(MMSEQS, "mmseqs", "mmseqs.exe", "bin/mmseqs")
+    if found is not None and _executable(found):
+        return str(found)
+    return shutil.which(MMSEQS)
+
+
 def mmseqs_available() -> bool:
-    """Whether ``mmseqs`` is on PATH. Checked, never assumed."""
-    return tool_available(MMSEQS)
+    """Whether an MMseqs2 executable can be resolved. Checked, never assumed."""
+    return mmseqs_command() is not None
 
 
 def accession_of(target_id: str) -> str:
@@ -268,8 +302,12 @@ def offtarget_scan(
     usable = [(design_id, seq) for design_id, seq in designs if seq and seq.strip()]
     if not usable:
         raise ScreeningInputError("no_design_sequences")
-    if not mmseqs_available():
-        raise OffTargetUnavailableError("mmseqs_not_installed")
+    if mmseqs == MMSEQS:
+        resolved = mmseqs_command()
+        if resolved is None:
+            raise OffTargetUnavailableError("mmseqs_not_installed")
+    else:
+        resolved = mmseqs
     if not Path(proteome_fasta).exists():
         raise OffTargetUnavailableError("proteome_missing")
     work_dir = Path(work_dir)
@@ -280,7 +318,7 @@ def offtarget_scan(
     tmp_dir = work_dir / "tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
     command = build_search_command(
-        query_fasta, Path(proteome_fasta), result_out, tmp_dir, mmseqs=mmseqs, evalue_max=evalue_max
+        query_fasta, Path(proteome_fasta), result_out, tmp_dir, mmseqs=resolved, evalue_max=evalue_max
     )
     result = run_tool(command, timeout_s=timeout_s)
     if not result.ok:

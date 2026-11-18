@@ -62,13 +62,23 @@ def test_scan_raises_without_sequences(tmp_path: Path) -> None:
 
 
 def test_scan_is_unavailable_when_mmseqs_is_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(offtarget, "mmseqs_available", lambda: False)
+    monkeypatch.setattr(offtarget, "mmseqs_command", lambda: None)
     with pytest.raises(offtarget.OffTargetUnavailableError, match="mmseqs_not_installed"):
         offtarget.offtarget_scan([("d1", "ACDEFG")], tmp_path / "p.fasta", tmp_path / "work")
 
 
+def test_the_installed_binary_is_found_under_data_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MMSEQS", raising=False)
+    monkeypatch.setenv("DATA_PATH", str(tmp_path))
+    binary = tmp_path / "mmseqs" / "mmseqs"
+    binary.parent.mkdir()
+    binary.write_text("", encoding="utf-8")
+    binary.chmod(0o755)
+    assert offtarget.mmseqs_command() == str(binary)
+
+
 def test_scan_is_unavailable_when_the_proteome_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(offtarget, "mmseqs_available", lambda: True)
+    monkeypatch.setattr(offtarget, "mmseqs_command", lambda: "mmseqs")
     with pytest.raises(offtarget.OffTargetUnavailableError, match="proteome_missing"):
         offtarget.offtarget_scan([("d1", "ACDEFG")], tmp_path / "nope.fasta", tmp_path / "work")
 
@@ -84,7 +94,7 @@ def test_scan_builds_a_record_per_design_from_mocked_mmseqs(
         out.write_text("d1\tsp|P2|OFF\t0.80\t180\t0.9\t0.85\t1e-40\t350\n", encoding="utf-8")
         return ToolResult(True, 0, "", "")
 
-    monkeypatch.setattr(offtarget, "mmseqs_available", lambda: True)
+    monkeypatch.setattr(offtarget, "mmseqs_command", lambda: "mmseqs")
     monkeypatch.setattr(offtarget, "run_tool", fake_run_tool)
     records = offtarget.offtarget_scan([("d1", "ACDEFGHIKL"), ("d2", "WWWWWWWWWW")], proteome, tmp_path / "work")
     assert records["d1"]["state"] == "hit"
