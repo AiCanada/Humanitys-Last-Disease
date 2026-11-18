@@ -119,9 +119,15 @@ CUT_PROVENANCE: dict[str, Provenance] = {
         kind=CONVENTION,
         source="program_convention",
         caveat=(
-            "No published bar says where a developable protein stops. The number asks that "
-            "the chain not be net hydrophobic overall; it is this program's strictness, not "
-            "a literature value."
+            "No published bar says where a developable protein stops: ProtParam's GRAVY "
+            "section is one definitional sentence and names no cutoff, the dedicated "
+            "benchmark of hydrophobicity scales against a measured antibody property "
+            "proposes none, and the canonical developability threshold tables are wet-lab "
+            "readouts that do not mention GRAVY at all. The bar sits just above neutral: on "
+            "the Kyte-Doolittle scale positive is net hydrophobic, so 0.1 asks that the "
+            "chain not be APPRECIABLY net hydrophobic and admits a slightly hydrophobic "
+            "one. The only community touchstone is the sign split at 0.0, which is stricter "
+            "than this. It is this program's strictness, not a literature value."
         ),
     ),
     "instability_max": Provenance(
@@ -141,12 +147,26 @@ CUT_PROVENANCE: dict[str, Provenance] = {
     "mhc_i_rank_max": Provenance(
         kind=RECOMMENDED,
         source="iedb_class_i_selection",
-        caveat="IEDB's recommended class I selection: percentile rank <= 1, or IC50 <= 500 nM.",
+        caveat=(
+            "IEDB's recommended class I selection: percentile rank <= 1 for each (allele, "
+            "length) combination, or IC50 <= 500 nM. IEDB states the two as alternatives, "
+            "and this program applies them as a disjunction. IEDB itself notes the absolute "
+            "IC50 correlates with immunogenicity better than the rank, and allele-specific "
+            "cuts better still: Paul et al. 2013 fitted 60 nM to 944 nM across 38 HLA-A/B "
+            "alleles, a sixteenfold spread this flat cut does not carry."
+        ),
     ),
     "mhc_i_ic50_nm_max": Provenance(
         kind=RECOMMENDED,
         source="iedb_class_i_selection",
-        caveat="The IC50 half of the same IEDB rule. Either condition selects a peptide.",
+        caveat=(
+            "The IC50 half of the same IEDB rule. Either condition selects a peptide. The "
+            "number is not IEDB's own: it originates with Sette et al., Journal of "
+            "Immunology 153(12):5586-92 (1994), which says an affinity threshold of "
+            "APPROXIMATELY 500 nM, preferably 50 nM or less, determines the capacity of a "
+            "peptide to elicit a CTL response. IEDB inherits it rather than deriving it, so "
+            "the exact 500.0 here is this program's sharpening of an approximate figure."
+        ),
     ),
     "mhc_ii_rank_max": Provenance(
         kind=RECOMMENDED,
@@ -160,7 +180,15 @@ CUT_PROVENANCE: dict[str, Provenance] = {
     "mhc_ii_ic50_nm_max": Provenance(
         kind=RECOMMENDED,
         source="iedb_class_ii_binding_cutoff",
-        caveat="The IC50 binding cutoff for class II. Unused by a scorer that reports no IC50.",
+        caveat=(
+            "The IC50 binding cutoff for class II, 1,000 nM and not the 500 nM of class I. "
+            "Unused by a scorer that reports no IC50, which IEDB's current recommended "
+            "class II method is. IEDB cites Southwood et al. 1998 for it, but the same "
+            "group's later benchmark calls 1,000 nM chosen on an expert recommendation and "
+            "'still somewhat arbitrary', so it is nearer this program's own convention kind "
+            "than a fitted value. Do not read the 500 nM in IEDB's class II affinity BANDS "
+            "as this cutoff: those bands label high, intermediate and low affinity."
+        ),
     ),
     "ada_median_rank_max": Provenance(
         kind=PUBLISHED,
@@ -267,9 +295,122 @@ INTERFACE_PROVENANCE: dict[str, Provenance] = {
     ),
 }
 
-#: Every threshold this module can classify, from either family. The two names
-#: do not overlap, and a lookup should not care which family a bar came from.
-ALL_PROVENANCE: dict[str, Provenance] = {**CUT_PROVENANCE, **INTERFACE_PROVENANCE}
+#: Bars that live inside an individual screen, keyed ``<module>.<bar>``.
+#:
+#: Dotted because this family does collide: ``evalue_max`` is a bar in both
+#: novelty and offtarget, with the same value and different reasoning, and a
+#: flat key would silently give one of them the other's provenance.
+#:
+#: Each entry is classified from the ``status`` or ``source`` string the
+#: defining module already carries, not from this file's own judgement.
+SCREEN_BAR_PROVENANCE: dict[str, Provenance] = {
+    # --- novelty.NOVELTY_THRESHOLDS -------------------------------------
+    "novelty.same_fold_tmscore": Provenance(
+        kind=PUBLISHED,
+        source="xu_zhang_2010_same_fold",
+        citation=(
+            "Xu and Zhang, Bioinformatics 26(7):889-895 (2010): two structures with a "
+            "TM-score above 0.5 are in the same fold."
+        ),
+        caveat=(
+            "The polarity is the opposite of most axes here: a hit means the fold is "
+            "already known, which is to say NOT novel. The boundary point is the "
+            "program's rather than the paper's: Xu and Zhang say a TM-score ABOVE 0.5, "
+            "and the verdict here is inclusive at exactly 0.5. One point on a "
+            "continuous measure, and no stored verdict has turned on it, but a "
+            "published cut applied with a different boundary is not quite the "
+            "published cut."
+        ),
+    ),
+    "novelty.evalue_max": Provenance(
+        kind=CONVENTION,
+        source="program_default_pending_calibration",
+        caveat="Foldseek's own default E-value is 10. This program uses 1e-3 and has not calibrated it.",
+    ),
+    # --- offtarget.OFFTARGET_THRESHOLDS ---------------------------------
+    "offtarget.identity_min": Provenance(
+        kind=CONVENTION,
+        source="program_default_pending_calibration",
+        caveat="No published cross-reactivity identity cut exists to adopt.",
+    ),
+    "offtarget.coverage_min": Provenance(
+        kind=CONVENTION,
+        source="program_default_pending_calibration",
+        caveat="The minimum of query and target coverage. A program default, not a literature value.",
+    ),
+    "offtarget.evalue_max": Provenance(
+        kind=CONVENTION,
+        source="program_default_pending_calibration",
+        caveat="Same number as the novelty E-value cut and a separate decision; neither is calibrated.",
+    ),
+    # --- stability.STABILITY_BARS ---------------------------------------
+    "stability.fraction_positions_improvable": Provenance(
+        kind=CONVENTION,
+        source="program_default_pending_calibration",
+        caveat=(
+            "ThermoMPNN publishes no design-level pass mark for whether a protein is stable "
+            "enough, and none is invented here. Do not gate on this until it is calibrated."
+        ),
+    ),
+    "stability.n_strongly_stabilizing": Provenance(
+        kind=REPORTED_ONLY,
+        source="informational_no_gate",
+        caveat="A count of mutations below the strongly-stabilising ddG. No bar is adopted.",
+    ),
+    "stability.most_stabilizing_ddg": Provenance(
+        kind=REPORTED_ONLY,
+        source="informational_no_gate",
+        caveat="The largest stability headroom available. Reported for triage, not gated.",
+    ),
+    # --- ligand_alerts.PROPERTY_BARS ------------------------------------
+    "ligand_alerts.mol_weight": Provenance(
+        kind=PUBLISHED,
+        source="lipinski_1997_rule_of_five",
+        citation="Lipinski et al. 1997, rule of five: molecular weight at or below 500 Da.",
+        caveat="A rule for oral small-molecule likeness. It says nothing about a biologic.",
+    ),
+    "ligand_alerts.clogp": Provenance(
+        kind=PUBLISHED,
+        source="lipinski_1997_rule_of_five",
+        citation="Lipinski et al. 1997, rule of five: ClogP at or below 5.",
+    ),
+    "ligand_alerts.h_bond_donors": Provenance(
+        kind=PUBLISHED,
+        source="lipinski_1997_rule_of_five",
+        citation="Lipinski et al. 1997, rule of five: at most 5 hydrogen-bond donors.",
+    ),
+    "ligand_alerts.h_bond_acceptors": Provenance(
+        kind=PUBLISHED,
+        source="lipinski_1997_rule_of_five",
+        citation="Lipinski et al. 1997, rule of five: at most 10 hydrogen-bond acceptors.",
+    ),
+    "ligand_alerts.sa_score": Provenance(
+        kind=CONVENTION,
+        source="program_default_pending_calibration",
+        caveat=(
+            "Ertl and Schuffenhauer 2009 define the scale, 1 easy to 10 hard, but no cut on "
+            "it. The 6.0 here is this program's, and synthetic accessibility is a cost "
+            "signal rather than a safety finding."
+        ),
+    ),
+    "ligand_alerts.qed": Provenance(
+        kind=CONVENTION,
+        source="program_default_pending_calibration",
+        caveat=(
+            "Bickerton et al. 2012 define QED but publish no pass mark. The 0.5 here is this "
+            "program's, and a QED bar is a ranking preference rather than a safety finding."
+        ),
+    ),
+}
+
+#: Every threshold this module can classify. The cut and interface families use
+#: bare names and do not overlap; the per-screen family is dotted because it
+#: does.
+ALL_PROVENANCE: dict[str, Provenance] = {
+    **CUT_PROVENANCE,
+    **INTERFACE_PROVENANCE,
+    **SCREEN_BAR_PROVENANCE,
+}
 
 #: Where the per-cut records are stored inside ``cuts``.
 PROVENANCE_KEY = "provenance"

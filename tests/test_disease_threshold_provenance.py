@@ -19,6 +19,7 @@ from rfproteina.disease.threshold_provenance import (
     PROVENANCE_KEY,
     PUBLISHED,
     REPORTED_ONLY,
+    SCREEN_BAR_PROVENANCE,
     cut_names,
     describe_cuts,
     provenance_of,
@@ -223,6 +224,60 @@ def test_the_interface_block_carries_the_bars_and_their_kinds() -> None:
 def test_a_screen_with_no_interface_is_left_alone() -> None:
     assert _with_interface_thresholds(None) is None
     assert _with_interface_thresholds("absent") == "absent"
+
+
+def test_every_bar_inside_a_screen_has_a_provenance() -> None:
+    """The guard, extended to the thresholds that live inside individual screens.
+
+    Each module owns its own threshold dict. This walks them and fails when one
+    gains a bar the registry does not know, or keeps one the registry still
+    describes, so the two cannot drift apart.
+    """
+    from rfproteina.disease.ligand_alerts import PROPERTY_BARS
+    from rfproteina.disease.novelty import NOVELTY_THRESHOLDS
+    from rfproteina.disease.offtarget import OFFTARGET_THRESHOLDS
+    from rfproteina.disease.stability import STABILITY_BARS
+
+    owned = {
+        "novelty": NOVELTY_THRESHOLDS,
+        "offtarget": OFFTARGET_THRESHOLDS,
+        "stability": STABILITY_BARS,
+        "ligand_alerts": PROPERTY_BARS,
+    }
+    expected = {f"{module}.{bar}" for module, bars in owned.items() for bar in bars}
+    missing = sorted(expected - set(SCREEN_BAR_PROVENANCE))
+    assert missing == [], f"bars with no provenance: {missing}"
+    stale = sorted(set(SCREEN_BAR_PROVENANCE) - expected)
+    assert stale == [], f"provenance for bars that no longer exist: {stale}"
+
+
+def test_the_colliding_evalue_bars_are_kept_apart() -> None:
+    """novelty and offtarget both have evalue_max. A flat key would merge them."""
+    novelty = provenance_of("novelty.evalue_max")
+    offtarget = provenance_of("offtarget.evalue_max")
+    assert novelty.kind == CONVENTION and offtarget.kind == CONVENTION
+    assert novelty.caveat != offtarget.caveat
+    assert "Foldseek" in novelty.caveat
+    # A bare lookup must not silently answer for either of them.
+    assert provenance_of("evalue_max").kind == "unrecorded"
+
+
+def test_the_novelty_cut_is_published_and_warns_about_its_polarity() -> None:
+    found = provenance_of("novelty.same_fold_tmscore")
+    assert found.kind == PUBLISHED
+    assert "Xu and Zhang" in found.citation
+    assert "NOT novel" in found.caveat
+
+
+def test_the_lipinski_bars_are_published_and_qed_is_not() -> None:
+    for bar in ("mol_weight", "clogp", "h_bond_donors", "h_bond_acceptors"):
+        found = provenance_of(f"ligand_alerts.{bar}")
+        assert found.kind == PUBLISHED, f"{bar} should be published"
+        assert "Lipinski" in found.citation
+    qed = provenance_of("ligand_alerts.qed")
+    assert qed.kind == CONVENTION
+    assert qed.citation == ""
+    assert "publish no pass mark" in qed.caveat
 
 
 def test_a_summary_line_names_the_kind_and_an_unset_cut_reads_as_unset() -> None:
