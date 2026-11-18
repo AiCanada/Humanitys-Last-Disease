@@ -43,12 +43,21 @@ Honesty about what is NOT done here
 
 from __future__ import annotations
 
+import csv
 import importlib.util
+import os
+import subprocess
+import tempfile
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from rfproteina.disease.screening_tools import data_dir
+
 METHOD = "thermompnn_point_stability_v1"
+#: A checkpoint path. It wins over the copy installed under ``DATA_PATH``.
+THERMOMPNN_CHECKPOINT_ENV = "THERMOMPNN_CHECKPOINT"
+CHECKPOINT_NAME = "thermoMPNN_default.pt"
 
 #: ddG (kcal/mol) at or below which a single mutation counts as "strongly
 #: stabilising", i.e. evidence the designed residue is a stability liability.
@@ -122,13 +131,48 @@ class StabilityReport:
         return asdict(self)
 
 
-def predictor_available() -> bool:
-    """True iff the ThermoMPNN package is importable in this environment.
+def _install_root() -> Path:
+    """``DATA_PATH/thermompnn/ThermoMPNN``, else the same path under the checkout.
 
-    Checks importability only; it does not confirm the checkpoint is downloaded,
-    because ThermoMPNN resolves that at model-load time and the check must stay
-    cheap and side-effect free.
+    The clone stays under ``DATA_PATH`` rather than moving into the checkout
+    with the other third-party code, because its sources and its checkpoints
+    are interleaved in one tree. The checkout fallback searches upward for
+    ``.project-root`` instead of counting parents, so it survives a depth
+    change rather than resolving silently to the wrong directory.
     """
+    return data_dir("thermompnn", "ThermoMPNN")
+
+
+def checkpoint_path() -> Path | None:
+    """The ThermoMPNN weight file, or None when it is not on disk."""
+    named = os.environ.get(THERMOMPNN_CHECKPOINT_ENV, "").strip()
+    if named and Path(named).is_file():
+        return Path(named)
+    candidate = _install_root() / "models" / CHECKPOINT_NAME
+    return candidate if candidate.is_file() else None
+
+
+def _inference_python() -> Path | None:
+    root = _install_root().parent
+    for relative in ("venv/bin/python", "venv/Scripts/python.exe"):
+        candidate = root / relative
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def predictor_available() -> bool:
+    """True when the checkpoint is on disk and a runner can load it.
+
+    The runner is the virtual environment ``scripts/install_thermompnn.py``
+    creates, or an importable ThermoMPNN package. The check does not load
+    the weights.
+    """
+    if checkpoint_path() is None:
+        return False
+    script = _install_root() / "analysis" / "custom_inference.py"
+    if script.is_file() and _inference_python() is not None:
+        return True
     return any(importlib.util.find_spec(name) is not None for name in ("thermompnn", "ThermoMPNN"))
 
 
@@ -232,20 +276,42 @@ def run_site_saturation(
 
 
 def _run_thermompnn(path: Path, chain: str | None) -> Sequence[Mapping[str, object]]:
-    """Call ThermoMPNN's real site-saturation API. Imported lazily so the module
-    loads without the package, and so tests never touch the network or weights.
+    """Run ``analysis/custom_inference.py`` against :func:`checkpoint_path`.
 
-    ThermoMPNN exposes SSM through ``analysis/SSM.py`` rather than a stable
-    public function, so the concrete wiring is deferred to the integrator who
-    installs it: this raises with the exact entry point to call. It is never a
-    silent stub that returns fabricated rows.
+    That script is ThermoMPNN's own PDB site-saturation entry point. It writes
+    a CSV with ``ddG_pred``, ``position``, ``wildtype`` and ``mutation``.
     """
-    raise ThermoMPNNUnavailableError(
-        "ThermoMPNN is importable but this build has no verified call into its "
-        "analysis/SSM.py entry point for the installed version. Wire run_site_saturation's "
-        "predict_fn to ThermoMPNN's SSM runner (it yields rows with position/wildtype/"
-        "mutation/ddG_pred) once the checkpoint path is known. Refusing to guess the API."
-    )
+    checkpoint = checkpoint_path()
+    script = _install_root() / "analysis" / "custom_inference.py"
+    python = _inference_python()
+    if checkpoint is None or not script.is_file() or python is None:
+        raise ThermoMPNNUnavailableError(
+            "ThermoMPNN's checkpoint or custom_inference.py is not installed. "
+            "Run scripts/install_thermompnn.py. No ddG was invented."
+        )
+    with tempfile.TemporaryDirectory(prefix="thermompnn_") as scratch:
+        command = [
+            str(python),
+            str(script),
+            "--pdb",
+            str(path),
+            "--chain",
+            chain or "",
+            "--model_path",
+            str(checkpoint),
+            "--out_dir",
+            scratch,
+        ]
+        finished = subprocess.run(command, capture_output=True, text=True, check=False)
+        if finished.returncode != 0:
+            detail = (finished.stderr or finished.stdout).strip().splitlines()
+            tail = detail[-1] if detail else "no output"
+            raise ThermoMPNNUnavailableError(f"thermompnn_failed:{tail}")
+        csv_files = list(Path(scratch).glob("ThermoMPNN_inference_*.csv"))
+        if len(csv_files) != 1:
+            raise ThermoMPNNUnavailableError("thermompnn_failed:inference CSV was not written")
+        with csv_files[0].open(encoding="utf-8", newline="") as handle:
+            return list(csv.DictReader(handle))
 
 
 def screen_structure(

@@ -68,6 +68,15 @@ def test_run_site_saturation_missing_file():
         stability.run_site_saturation("/no/such/file.pdb", predict_fn=lambda p, c: [])
 
 
+def test_the_checkpoint_is_found_under_data_path(tmp_path, monkeypatch):
+    monkeypatch.delenv("THERMOMPNN_CHECKPOINT", raising=False)
+    monkeypatch.setenv("DATA_PATH", str(tmp_path))
+    checkpoint = tmp_path / "thermompnn" / "ThermoMPNN" / "models" / "thermoMPNN_default.pt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_bytes(b"weights")
+    assert stability.checkpoint_path() == checkpoint
+
+
 def test_run_site_saturation_unavailable_raises_clearly(tmp_path, monkeypatch):
     structure = tmp_path / "design.pdb"
     structure.write_text("ATOM\n")
