@@ -334,6 +334,8 @@ runs/
 # Local DATA_PATH created by the setup docs (checkpoints, test dataset)
 data_path/
 
+.devcontainer/
+
 # --- Screening tools: third-party code relocated from DATA_PATH -------------
 # Third-party screening code now lives in "screening subpackage/<tool>/" so the
 # tooling sits beside the repository instead of in the data volume. Weights,
