@@ -573,3 +573,119 @@ def test_fill_reports_a_missing_model_instead_of_failing(tmp_path):
     record = fill_missing_alleles(tmp_path, [("d1", "EVQLVESGGG")], model_path=tmp_path / "absent.json")
     assert record["state"] == "model_missing"
     assert len(_rows_of(tmp_path / "mhc_ii.tsv")) == 1, "the table is untouched"
+
+
+# --------------------- what the adversarial review of 2026-11-20 found and fixed
+#
+# Four defects, each demonstrated by running the code, each pinned here.
+
+
+def _ref_table(directory: Path, alleles, method: str = "tepitope") -> Path:
+    """A reference table in the shape tepitope._write_class_ii_reference writes."""
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "mhc_ii_reference.tsv"
+    columns = ["peptide", "allele", "percentile_rank", "method", "protein", "start", "length", "tepitope_score"]
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=columns, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        for allele in alleles:
+            writer.writerow(
+                {
+                    "peptide": "EVQLVESGGGLVQPG",
+                    "allele": allele,
+                    "percentile_rank": "85.0",
+                    "method": method,
+                    "protein": "P02768",
+                    "start": "1",
+                    "length": "609",
+                    "tepitope_score": "",
+                }
+            )
+    return path
+
+
+def _allele_keys(path: Path) -> set[str]:
+    from rfproteina.disease.liability import _allele_key
+
+    with path.open(encoding="utf-8", newline="") as handle:
+        return {_allele_key(row["allele"]) for row in csv.DictReader(handle, delimiter="\t")}
+
+
+def test_an_unusable_model_is_reported_not_raised_past_the_screens_suppress(tmp_path, fitted_model_path):
+    """screen.py wraps the fill in contextlib.suppress(OSError, ValueError).
+
+    ClassIIModelError is neither, so raising it aborted the whole
+    sequence-liability step over a model that was merely a version ahead.
+    """
+    import contextlib
+    import json as _json
+
+    _mhc_ii_table(tmp_path, ["DRB1*03:01"])
+    bumped = tmp_path / "bumped.json"
+    payload = _json.loads(Path(fitted_model_path).read_text(encoding="utf-8"))
+    payload["version"] = 99
+    bumped.write_text(_json.dumps(payload), encoding="utf-8")
+
+    escaped = False
+    record = {}
+    try:
+        with contextlib.suppress(OSError, ValueError):
+            record = ci.fill_missing_alleles(tmp_path, [("d1", "EVQLVESGGGLVQPGGSLRLSCAASG")], model_path=bumped)
+    except ci.ClassIIModelError:
+        escaped = True
+    assert not escaped, "ClassIIModelError escaped the guard the screen actually uses"
+    assert record["state"] == "model_unusable"
+    assert "version" in str(record["blocker"])
+
+
+def test_a_table_this_program_did_not_write_is_refused(tmp_path, fitted_model_path):
+    """The ADA exposure, closed at source.
+
+    `_declares_consensus` is a table-level any(), so one operator row saying
+    "consensus" would lend these rows that scale -- and they are what completes
+    the seven alleles Paul et al.'s median needs, so they would be the reason
+    the median started being computed at all.
+    """
+    from rfproteina.disease.liability import measure_sequence_liability
+
+    _mhc_ii_table(tmp_path, ["DRB1*03:01", "DRB1*07:01", "DRB1*15:01", "DRB5*01:01"], "consensus (comblib/smm/nn)")
+    sequences = [("d1", "EVQLVESGGGLVQPGGSLRLSCAASGFNIKDTYIHWVRQAPGKG")]
+
+    before = measure_sequence_liability(sequences, directory=tmp_path, binder_kind="protein")[0]["ada"]
+    record = ci.fill_missing_alleles(tmp_path, sequences, model_path=fitted_model_path)
+    after = measure_sequence_liability(sequences, directory=tmp_path, binder_kind="protein")[0]["ada"]
+
+    assert record["state"] == "foreign_table"
+    assert record["declares_consensus"] is True
+    assert _allele_keys(tmp_path / "mhc_ii.tsv") == {"DRB10301", "DRB10701", "DRB11501", "DRB50101"}
+    assert after["state"] == before["state"] == "untested"
+    assert after["blocker"] == before["blocker"], "the ADA verdict must not move because of this fill"
+
+
+def test_allele_spellings_are_compared_the_way_every_reader_compares_them(tmp_path, fitted_model_path):
+    """`HLA-DRB1*03:01` and `DRB1*03:01` are one allele.
+
+    A raw-string membership test read a complete HLA-prefixed panel as empty
+    and rescored all seven, leaving fourteen spellings in the file.
+    """
+    _mhc_ii_table(tmp_path, ["HLA-" + allele for allele in ig.DR_PANEL])
+    record = ci.fill_missing_alleles(tmp_path, [("d1", "EVQLVESGGGLVQPGGSLRLSCAASG")], model_path=fitted_model_path)
+    assert record["state"] == "panel_complete"
+    assert len(_allele_keys(tmp_path / "mhc_ii.tsv")) == len(ig.DR_PANEL)
+
+
+def test_the_reference_catches_up_when_it_appears_after_the_design_table(tmp_path, fitted_model_path):
+    """Gating the reference on the design table's gap left the two out of step
+    for good: the design filled on run one, and run two returned early."""
+    sequences = [("d1", "EVQLVESGGGLVQPGGSLRLSCAASG")]
+    four = ["DRB1*03:01", "DRB1*07:01", "DRB1*15:01", "DRB5*01:01"]
+
+    _mhc_ii_table(tmp_path, four)
+    first = ci.fill_missing_alleles(tmp_path, sequences, model_path=fitted_model_path)
+    assert first["state"] == "appended"
+    assert not (tmp_path / "mhc_ii_reference.tsv").exists()
+
+    _ref_table(tmp_path, four)  # as tepitope writes it on a later run
+    second = ci.fill_missing_alleles(tmp_path, sequences, model_path=fitted_model_path)
+    assert second["reference_rows"] > 0, "a design-complete table must still let the reference catch up"
+    assert _allele_keys(tmp_path / "mhc_ii.tsv") == _allele_keys(tmp_path / "mhc_ii_reference.tsv")

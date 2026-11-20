@@ -5,8 +5,25 @@ Two tiers, both free and open:
 1. :func:`rescore_complex` -- a single-structure MM-GBSA-style binding free
    energy estimate using OpenMM (MIT for the API, Reference and CPU platforms,
    verified from OpenMM's own ``docs-source/licenses/Licenses.txt`` on
-   2026-11-16) with an implicit (Generalized Born) solvent. This is the working,
-   tested tier.
+   2026-11-16) with an implicit (Generalized Born) solvent.
+
+   **This tier is not yet reproducible, and must not be used to rank designs
+   as it stands.** Each of the three subsystems is written out and rebuilt
+   independently inside :func:`_openmm_implicit_energy`, where PDBFixer adds
+   missing atoms and hydrogens. That placement differs between runs, so the
+   same input gave a 124 kcal/mol range in ``dg_bind`` -- including a change of
+   sign -- over five draws on 2026-11-20, and one draw put the receptor 114
+   kcal/mol away from the others on an evidently bad rebuild. It also means the
+   decomposition is not closed: the complex is not the receptor plus the ligand
+   once each has been hydrogenated separately.
+
+   The fix is structural and is deliberately not taken here, because it changes
+   every number the tier produces: rebuild **once** on the complex, then split
+   the rebuilt topology into receptor and ligand so all three energies come
+   from one set of coordinates and one set of added hydrogens. An earlier
+   version of this docstring called this "the working, tested tier"; its tests
+   injected ``energy_fn`` and never ran the back-end, which is how that claim
+   survived.
 
 2. :func:`plan_rbfe` -- a documented scaffold for a relative binding free energy
    (RBFE / FEP) calculation built on OpenFE (MIT), pmx (LGPL-3.0) or alchemlyb
@@ -175,7 +192,13 @@ def rescore_complex(
         notes=(
             "single-structure MM-GBSA-style estimate; not averaged over an MD ensemble",
             "no explicit configurational entropy term is included",
-            "use as a relative ranking across designs, not as a calibrated affinity",
+            "NOT REPRODUCIBLE: one draw, not a measurement. The three subsystems are each "
+            "rebuilt independently by PDBFixer, whose hydrogen and missing-atom placement "
+            "differs run to run, so repeating this call on the same file moved dg_bind over a "
+            "124 kcal/mol range and changed its sign (measured 2026-11-20, five draws on one "
+            "two-chain input). Do not rank designs on a single draw.",
+            "the subtraction is not closed: the complex's atoms are not the receptor's plus the "
+            "ligand's, because each was hydrogenated separately",
         ),
     )
 

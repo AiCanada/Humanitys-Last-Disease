@@ -222,3 +222,25 @@ def test_rescore_complex_runs_end_to_end_without_an_injected_energy_fn(tmp_path)
     assert record["units"] == "kcal/mol"
     assert record["minimized"] is False
     assert record["dg_bind"] == pytest.approx(record["e_complex"] - record["e_receptor"] - record["e_ligand"], abs=1e-6)
+
+
+@needs_openmm
+@pytest.mark.slow
+def test_the_back_end_is_not_reproducible_and_the_record_says_so(tmp_path):
+    """Pins a defect, not a behaviour.
+
+    Each subsystem is rebuilt independently by PDBFixer, whose placement varies
+    run to run, so the same input does not give the same dg_bind. The notes must
+    say that, or a caller ranks designs on one draw. Delete this test when the
+    rebuild-once fix lands -- and replace it with one asserting the opposite.
+    """
+    pdb = _peptide_pdb(tmp_path / "pair.pdb", chains=("A", "B"))
+    draws = [
+        rescoring.rescore_complex(pdb, receptor_chains=["A"], ligand_chains=["B"], minimize=False) for _ in range(3)
+    ]
+    values = [d.as_record()["dg_bind"] for d in draws]
+    assert len(set(values)) > 1, "if this now passes deterministically, the structural fix has landed"
+
+    notes = " ".join(draws[0].as_record()["notes"]).lower()
+    assert "not reproducible" in notes
+    assert "single draw" in notes or "one draw" in notes

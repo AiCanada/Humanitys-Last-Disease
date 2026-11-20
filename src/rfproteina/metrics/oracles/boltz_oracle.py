@@ -109,10 +109,13 @@ class Boltz2Oracle(SequenceRefoldOracle):
         input and --use_msa_server flag not set" unless that flag is passed.
 
         This emitted no ``msa`` key at all while :attr:`use_msa_server` defaulted
-        to false, so Boltz rejected every input, ``check=True`` turned the
-        rejection into an exception, and ``free_oracle_common`` logged it per
-        design and moved on. The oracle could not return a single refold in its
-        shipped configuration, and said so only in a warning line.
+        to false, so Boltz refused every input and wrote no prediction. Whether
+        the refusal also made the CLI exit non-zero -- and so whether
+        ``check=True`` or ``build_output``'s missing-file check raised first --
+        was not verified here and is not asserted: either way
+        ``free_oracle_common`` caught it per design, logged a warning and moved
+        on, so the oracle could not return a single refold in its shipped
+        configuration and said so only in that line.
         """
         lines = ["version: 1", "sequences:"]
         for chain, seq in sequences.items():

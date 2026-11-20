@@ -728,29 +728,46 @@ def fill_missing_alleles(
     """Score the panel alleles ``mhc_ii.tsv`` has no rows for, with this model.
 
     TEPITOPE ships matrices for four of the seven alleles Paul et al.'s DR panel
-    names, so a table written from it alone is silent on ``DRB3*01:01``,
-    ``DRB3*02:02`` and ``DRB4*01:01``. Those are three of the four DRB3/4/5
-    alleles the paper identifies as what made the scheme work, and a design
-    presented only on them reads as clear because nothing looked. This model
-    was fitted on all seven from IEDB's CC BY measurements, so the three are
-    answerable here at no download and with no licence to clear.
+    names, so a table written from it alone carries no row at all for
+    ``DRB3*01:01``, ``DRB3*02:02`` and ``DRB4*01:01``. Those are three of the
+    four DRB3/4/5 alleles the paper identifies as what made the scheme work.
+    This model was fitted on all seven from IEDB's CC BY measurements, so the
+    three are answerable here at no download and with no licence to clear.
 
-    **Two methods in one table is the intended shape, not a workaround.**
-    ``liability._table_methods`` already returns the *set* of methods a table
-    declares, and every row carries its own ``method``, so a reader can tell
-    which rows came from where. What must not happen is a row claiming a scale
-    it was not computed on: these rows say :data:`CLASS_II_METHOD`, never
-    ``tepitope`` and never the IEDB consensus mark, so the ADA axis goes on
-    reporting ``untested`` rather than applying Paul et al.'s cut to a rank
-    that is not the one the paper calibrated.
+    What the missing rows cost is **coverage, not a wrong verdict**: on the
+    protein path the ``mhc_ii`` axis is refused by
+    ``liability._reference_density`` long before allele breadth is reached, so
+    it reads ``untested`` rather than ``clear``. An earlier version of this
+    docstring, and of the commit that added it, said "reads as clear because
+    nothing looked". That was wrong and is corrected here.
+
+    **Only a table this program wrote is appended to.** Two scales can sit in
+    one file -- every row carries its own ``method`` and
+    ``liability._table_methods`` returns the set -- but
+    ``liability._declares_consensus`` is a table-level ``any()``, so one
+    operator row saying ``consensus`` makes the *whole* table consensus-declared
+    and these rows would inherit a scale they were not computed on. Worse, they
+    are what completes the seven-allele panel the ADA rule needs, so they would
+    not merely ride along: they would be the reason Paul et al.'s median starts
+    being computed, over three ranks from this model's own background. So a
+    table carrying any method this program does not write is refused outright.
 
     Windows come from :func:`tepitope.windows`, so the peptides and their
     ``start`` values line up with the rows already in the file instead of
     being a second, differently-framed scan of the same sequence.
 
-    Appends only; an allele already present is never rescored or replaced.
+    Appends only; an allele already present is never rescored or replaced, and
+    allele spellings are compared the way every reader in ``liability``
+    compares them, so ``HLA-DRB1*03:01`` and ``DRB1*03:01`` are one allele.
     """
+    from rfproteina.disease.liability import _allele_key, _declares_consensus
+    from rfproteina.disease.tepitope import METHOD as TEPITOPE_METHOD
     from rfproteina.disease.tepitope import reference_sequences, windows
+
+    #: The only methods whose rows this function will sit beside. Anything else
+    #: is an operator's table or another tool's, and appending to it is what
+    #: licenses a mixed-scale ADA median.
+    ours = {TEPITOPE_METHOD.casefold(), CLASS_II_METHOD.casefold()}
 
     table = Path(directory) / "mhc_ii.tsv"
     if not table.is_file():
@@ -759,11 +776,24 @@ def fill_missing_alleles(
     with table.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle, delimiter="\t")
         columns = list(reader.fieldnames or _TABLE_COLUMNS)
-        present = {(row.get("allele") or "").strip() for row in reader}
+        rows_on_disk = list(reader)
+    present = {_allele_key(row.get("allele") or "") for row in rows_on_disk}
+    present.discard("")
+    found_methods = {(row.get("method") or "").strip() for row in rows_on_disk}
+    found_methods.discard("")
 
-    wanted = [allele for allele in panel if allele not in present]
-    if not wanted:
-        return {"state": "panel_complete", "alleles": sorted(present & set(panel))}
+    foreign = sorted(name for name in found_methods if name.casefold() not in ours)
+    if foreign or _declares_consensus(rows_on_disk):
+        return {
+            "state": "foreign_table",
+            "methods": sorted(found_methods),
+            "foreign_methods": foreign,
+            "declares_consensus": _declares_consensus(rows_on_disk),
+            "path": str(table),
+        }
+
+    wanted = [allele for allele in panel if _allele_key(allele) not in present]
+    design_complete = not wanted
 
     if model_path is not None:
         path = Path(model_path)
@@ -774,69 +804,96 @@ def fill_missing_alleles(
             return {"state": "model_missing", "missing_alleles": wanted, "path": None}
     if not path.is_file():
         return {"state": "model_missing", "missing_alleles": wanted, "path": str(path)}
-    model = load_model(path)
+    try:
+        model = load_model(path)
+    except ClassIIModelError as error:
+        # Reported, not raised: ``screen.py`` wraps this call in
+        # ``contextlib.suppress(OSError, ValueError)`` and ClassIIModelError is
+        # neither, so raising here aborted the whole sequence-liability step on
+        # a model that was merely a version ahead or half-written.
+        return {"state": "model_unusable", "blocker": str(error), "missing_alleles": wanted}
 
-    answerable = [allele for allele in wanted if allele in model.alleles]
-    unanswerable = [allele for allele in wanted if allele not in model.alleles]
-    if not answerable:
-        return {"state": "alleles_not_in_model", "missing_alleles": unanswerable}
-
-    rows: list[dict[str, str]] = []
-    for _name, sequence in sequences:
-        if not sequence:
-            continue
-        for start, peptide in windows(sequence):
-            clean = peptide.strip().upper()
-            if len(clean) < CORE_WIDTH or set(clean) - STANDARD:
+    def _score(
+        targets: Sequence[str],
+        sequence_items: Sequence[tuple[str, str | None]],
+        extra_fields: Callable[[str, str], dict[str, str]] | None = None,
+    ) -> list[dict[str, str]] | None:
+        """Rows for each (window, allele), or None when the model cannot score."""
+        out = []
+        for accession, sequence in sequence_items:
+            if not sequence:
                 continue
-            for allele in answerable:
-                rows.append(
-                    {
+            for start, peptide in windows(sequence):
+                clean = peptide.strip().upper()
+                if len(clean) < CORE_WIDTH or set(clean) - STANDARD:
+                    continue
+                for allele in targets:
+                    try:
+                        rank = percentile_rank(model, clean, allele)
+                    except ClassIIModelError:
+                        # An allele the model carries with no usable background.
+                        # Reported by the caller, never raised past screen.py's
+                        # suppress, which does not admit ClassIIModelError.
+                        return None
+                    row = {
                         "peptide": clean,
                         "allele": allele,
-                        "percentile_rank": str(percentile_rank(model, clean, allele)),
+                        "percentile_rank": str(rank),
                         "method": model.method,
                         "start": str(start),
                         "tepitope_score": "",
                     }
-                )
-    if not rows:
-        return {"state": "no_peptides", "missing_alleles": wanted}
+                    if extra_fields:
+                        row.update(extra_fields(accession, sequence))
+                    out.append(row)
+        return out
 
-    _append_rows(table, columns, rows)
+    answerable = [allele for allele in wanted if allele in model.alleles]
+    unanswerable = [allele for allele in wanted if allele not in model.alleles]
 
-    # The reference table has to move with the design table, or the axis stops
-    # on ``reference_allele_mismatch``: the reader compares the two allele sets
-    # and will not score a design against a tolerated-protein background
-    # measured over different alleles. Filling one and leaving the other turned
-    # a comparison the reader could make into one it refuses, so both are
-    # filled. It is three proteins and about 1,200 windows an allele.
-    reference_rows = 0
+    # The reference table is filled from *its own* gap, not the design table's.
+    # Gating it on the design gap left the two permanently out of step: a first
+    # run with no reference sequences filled the design table alone, a later
+    # run found the design panel complete and returned early, and the reference
+    # stayed at TEPITOPE's four alleles for good -- the very
+    # ``reference_allele_mismatch`` this is here to avoid.
     reference = Path(directory) / "mhc_ii_reference.tsv"
+    reference_columns, reference_wanted = [], []
     if reference.is_file():
+        with reference.open("r", encoding="utf-8", newline="") as handle:
+            reference_reader = csv.DictReader(handle, delimiter="	")
+            reference_columns = list(reference_reader.fieldnames or ())
+            reference_present = {_allele_key(row.get("allele") or "") for row in reference_reader}
+        reference_present.discard("")
+        reference_wanted = [
+            allele for allele in panel if _allele_key(allele) not in reference_present and allele in model.alleles
+        ]
+
+    if not answerable and not reference_wanted:
+        if design_complete:
+            return {
+                "state": "panel_complete",
+                "alleles": sorted({allele for allele in panel if _allele_key(allele) in present}),
+            }
+        return {"state": "alleles_not_in_model", "missing_alleles": unanswerable}
+
+    rows = _score(answerable, sequences) if answerable else []
+    if rows is None:
+        return {"state": "model_unusable", "blocker": "no_background_for_allele", "missing_alleles": wanted}
+    if answerable and not rows:
+        return {"state": "no_peptides", "missing_alleles": wanted}
+    if rows:
+        _append_rows(table, columns, rows)
+
+    reference_rows = 0
+    if reference_wanted:
         status, proteins = reference_sequences()
         if status == "ready":
-            with reference.open("r", encoding="utf-8", newline="") as handle:
-                reference_columns = list(csv.DictReader(handle, delimiter="\t").fieldnames or ())
-            extra: list[dict[str, str]] = []
-            for accession, protein in proteins.items():
-                for start, peptide in windows(protein):
-                    clean = peptide.strip().upper()
-                    if len(clean) < CORE_WIDTH or set(clean) - STANDARD:
-                        continue
-                    for allele in answerable:
-                        extra.append(
-                            {
-                                "peptide": clean,
-                                "allele": allele,
-                                "percentile_rank": str(percentile_rank(model, clean, allele)),
-                                "method": model.method,
-                                "protein": accession,
-                                "start": str(start),
-                                "length": str(len(protein)),
-                                "tepitope_score": "",
-                            }
-                        )
+            extra = _score(
+                reference_wanted,
+                list(proteins.items()),
+                lambda accession, sequence: {"protein": accession, "length": str(len(sequence))},
+            )
             if extra:
                 _append_rows(reference, reference_columns, extra)
                 reference_rows = len(extra)
@@ -847,6 +904,7 @@ def fill_missing_alleles(
         "rows": len(rows),
         "reference_rows": reference_rows,
         "alleles": answerable,
+        "reference_alleles": reference_wanted,
         "still_missing": unanswerable,
         "path": str(table),
         "ada": "untested_not_consensus_rank",

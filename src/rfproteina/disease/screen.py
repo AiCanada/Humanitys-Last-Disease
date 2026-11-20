@@ -1733,12 +1733,19 @@ def _apply_sequence_liability(
     with contextlib.suppress(OSError, ValueError):
         prepare_class_ii_table(output_dir, pairs, binder_kind=_canonical_kind(binder_kind))
         # TEPITOPE has matrices for four of the panel's seven alleles, so the
-        # table it writes is silent on DRB3*01:01, DRB3*02:02 and DRB4*01:01 --
-        # and a design presented only on those reads clear because nothing
-        # looked. The PSSM fitted here from IEDB's CC BY measurements covers
-        # all seven, so it fills the gap at no download. Each row names its own
-        # method, and neither method claims the consensus scale, so the ADA
-        # axis is unaffected. Appends only: an allele already scored is left.
+        # table it writes carries no row at all for DRB3*01:01, DRB3*02:02 and
+        # DRB4*01:01. The PSSM fitted here from IEDB's CC BY measurements covers
+        # all seven and fills the gap at no download. What that buys is
+        # coverage, not a verdict: on the protein path the mhc_ii axis is
+        # refused by the reference-density guard before allele breadth is
+        # reached, so it reads untested either way.
+        #
+        # The fill refuses any table it did not write, which is what keeps the
+        # ADA axis out of this. _declares_consensus is a table-level any(), so
+        # one operator row saying "consensus" would hand these rows a scale
+        # they were not computed on -- and they are what completes the seven
+        # alleles Paul et al.'s median needs, so they would be the reason it
+        # started being computed. Hence foreign_table rather than append.
         from rfproteina.disease.class_ii import fill_missing_alleles
 
         fill_missing_alleles(output_dir, pairs)
