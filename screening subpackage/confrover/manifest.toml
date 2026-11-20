@@ -1,0 +1,198 @@
+# RBase / ConfRover: learned protein conformational dynamics (the 20M model).
+#
+# Unlike the other trees here, this is not a mirror of somebody else's release.
+# It is this project's own program, brought in from its own repository, and it
+# is expected to keep changing. The manifest says so rather than promising a
+# byte-identity it will not keep: there is a tree digest, which can be checked
+# today, instead of a "clone at this commit reproduces it" claim that would
+# stop being true at the first edit.
+#
+# scripts/install_confrover.py reads [[weights]] and [so3_cache] from this file.
+
+[tool]
+name = "RBase"
+also_known_as = "ConfRover"
+role = """
+Conformational ensembles and short trajectories for a single protein chain:
+forward simulation from a starting frame, independent (IID) conformation
+sampling, and interpolation between two states. Read by the Conformational
+Dynamics Analyst tab, which runs after generation and screening.
+"""
+adapter = "src/rfproteina/disease/dynamics.py"
+runner = "src/rfproteina/disease/confrover_runner.py"
+installer = "scripts/install_confrover.py"
+paper = "arXiv:2505.17478 (NeurIPS 2025)"
+
+# What this model can and cannot be asked, taken from the project's own
+# README. The first line is the one that decides what the tab offers: the
+# model takes ONE chain, so a design-plus-target complex is not an input it
+# has. The tab declines that by name rather than feeding it a complex and
+# drawing whatever comes back.
+[scope]
+single_chain_only = true
+proteins_only = true
+trained_on = "ATLAS, 100 ns trajectories"
+timescale_note = """
+Short-timescale, local motions. The training trajectories are 100 ns, so
+nothing here speaks to slow conformational change, and fine-tuning did not
+move that bound.
+"""
+backbone_note = """
+Diffusion runs in backbone SE(3) space with side chains rebuilt from predicted
+torsions, so large rotamer changes are the least reliable part of the output.
+"""
+out_of_distribution_note = """
+Trained on natural proteins and their MD. A de novo design is out of
+distribution in the way that matters most here, and no published number says
+how far. Every record this produces carries the caveat.
+"""
+
+[origin]
+repository = "https://github.com/AiCanada/ConfRover.git"
+# The commit the vendored tree DIVERGES from, not one that reproduces it. At
+# 88f6868 the package is `src/confrover`; the vendored tree is `src/rbase`,
+# which exists only in that repository's working tree. Replace `commit` with
+# the rebrand commit once it is made, and set `reproducible_from_commit`.
+diverges_from = "88f686864a01b64fe4f28a3c94af299a4097ed7b"
+reproducible_from_commit = false
+vendored_from = "uncommitted working tree, src/rbase"
+vendored_on = "2026-11-20"
+# sha256 over every vendored path and its bytes, in sorted order. A record of
+# what was vendored on the date above, not a rule the tree has to keep: this is
+# the project's own code and it is expected to change, so the digest is here to
+# answer "was the copy faithful when it was made" rather than to be re-checked
+# after every edit. A per-file listing was written and then dropped for the
+# same reason -- 182 digests would go stale on the first commit that touches
+# the package and would read as 182 findings.
+tree_sha256 = "517672d56324c0973543ad5e1f9901ac8c896e68b760aa588a37dfb4b6d460f1"
+files = 182
+bytes = 2162000
+
+# Also published, at a different point in the same repository's history. The
+# two are not the same bytes: that tarball was taken at 40a04ac3 and this tree
+# at 88f6868 plus the uncommitted rebrand.
+[origin.published]
+dataset = "https://huggingface.co/datasets/AICanada/H.U.M.A.N"
+code_archive = "code/RBase.tar.gz"
+code_commit = "40a04ac300ec477cde4a3bc30528f79604644d09"
+checksums = "MANIFEST.sha256"
+
+[licence]
+spdx = "Apache-2.0"
+covers = "code and model weights"
+verified_from = "LICENSE in the ConfRover repository root"
+verified_on = "2026-11-20"
+
+# Third-party code inside the vendored tree, each under its own licence, with
+# its own LICENSE file kept beside it. Apache-2.0 section 4(b) asks that a
+# modified file carry a notice saying it was changed; NOTICE in this directory
+# is that notice, and what it records is the whole of what was changed.
+[[third_party]]
+path = "RBase/_ext/openfold"
+project = "OpenFold"
+upstream = "https://github.com/aqlaboratory/openfold"
+spdx = "Apache-2.0"
+licence_file = "RBase/_ext/openfold/LICENSE.txt"
+modified = "import paths only, from `confrover._ext` to `rbase._ext`"
+
+[[third_party]]
+path = "RBase/_ext/ligo_af3"
+project = "Ligo-Biosciences AlphaFold3"
+upstream = "https://github.com/Ligo-Biosciences/AlphaFold3"
+spdx = "Apache-2.0"
+licence_file = "RBase/_ext/ligo_af3/LICENSE.txt"
+modified = "import paths only, from `confrover._ext` to `rbase._ext`"
+
+[[third_party]]
+path = "RBase/model/decoder/confdiff/diffuser"
+project = "SE(3) diffusion (via ConfDiff)"
+upstream = "https://github.com/jasonkyuyim/se3_diffusion"
+licence_file = "RBase/model/decoder/confdiff/diffuser/LICENSE"
+modified = "import paths only"
+
+[[third_party]]
+path = "RBase/utils/hydra_utils"
+project = "Hydra template utilities"
+licence_file = "RBase/utils/hydra_utils/LICENSE"
+modified = "import paths only"
+
+# The ensemble viewer and the mp4 maker, vendored beside the model code because
+# they are what reads its output. A flat directory rather than a package: these
+# modules import each other by bare name, so the directory goes on sys.path and
+# nothing is renamed.
+#
+# This serves the Conformational Dynamics Analyst tab only. The generation and
+# screening pages keep the viewers they already have; nothing here replaces
+# `structure_view.py`.
+[viewer]
+path = "viz"
+entry_point = "visualize_ensemble.py"
+movie_maker = "viz_movie.py"
+template = "template.html"
+files = 10
+bytes = 125440
+tree_sha256 = "04567932de149f8cadbe2b8947254113ae49bd50d56c6c68b3f0783c4fafd65a"
+hard_dependency = "numpy"
+# Imported inside the function that writes a movie, so the page path does not
+# need it and the screen declines by name when it is absent.
+movie_dependency = "imageio-ffmpeg"
+# viz_fetch.py accepts an `hf:` or `hf://` source and will reach the Hub for
+# it. A local path always wins and is never checked against the Hub, and
+# huggingface_hub is imported inside the function that needs it. The tab passes
+# local paths only, so this stays an operator route rather than a screen one.
+network_route = "viz_fetch.py, only for an explicit hf: source"
+
+[contents]
+vendored = """
+The rbase package: cli.py, env.py, inference.py, train.py, train_policy.py,
+_legacy_names.py, __init__.py, and the configs, data, eval, model, utils, _ext
+and _patch trees. 182 files, 2.06 MB. Plus the ten viewer files under viz/.
+"""
+# Left out, and why:
+#   .cache/                 24 MB of generated SO(3) lookup tables; see [so3_cache]
+#   __pycache__/, *.pyc     build products
+#   the two .pt checkpoints weights; see [[weights]]
+not_vendored = ".cache, __pycache__, *.pyc, *.pt"
+
+# The weights, kept under DATA_PATH because they are 75 MB each and this
+# repository is public. The installer fetches each and checks it against these
+# values before it is used.
+[[weights]]
+path = "confrover_base_20m_v1_0.pt"
+role = "Forward simulation and IID sampling."
+bytes = 78739626
+sha256 = "4ba22c4a83c21fc139b689cfb63ff48bbf451346ff3995d658cf158907f4c4c6"
+# This digest is the one the published dataset's own MANIFEST.sha256 gives for
+# confrover_ckpts/confrover_base_20m_v1_0.pt, checked against the local file on
+# 2026-11-20. The two are the same bytes.
+source = "https://huggingface.co/datasets/AICanada/H.U.M.A.N"
+source_path = "confrover_base/confrover_base_20m_v1_0.pt"
+digest_verified_against = "MANIFEST.sha256 in that dataset"
+
+[[weights]]
+path = "confrover_interp_20m_v1_0.pt"
+role = "State interpolation between two conformations."
+bytes = 78548240
+sha256 = "19a016b291fbb9f8d6f6a1d1a9fbbc959e2655c8f86610dc34c6e6c2e81fe52e"
+# Not in the AICanada dataset: this one is the upstream release, and the digest
+# below was taken from the local file rather than from a published manifest.
+source = "https://huggingface.co/ByteDance-Seed/ConfRover-interp-20M-v1.0"
+digest_verified_against = "the local file only"
+
+# Precomputed IGSO3 tables the SE(3) diffuser reads. Generated rather than
+# released: the code writes them on first use and reuses them after. They are
+# 24 MB, they are not source, and they are not in the repository. The
+# installer copies them into DATA_PATH when they already exist beside the
+# source, and otherwise leaves the first run to write them.
+[so3_cache]
+directory = "eps_1000_omega_1000_min_sigma_0_1_max_sigma_1_5_schedule_logarithmic"
+files = ["cdf_vals.npy", "pdf_vals.npy", "score_norms.npy"]
+bytes_each = 8000128
+generated = true
+
+[location]
+code = "screening subpackage/confrover/RBase"
+weights = "DATA_PATH/confrover"
+so3_cache = "DATA_PATH/confrover/so3_cache"
+venv = "DATA_PATH/confrover/venv"
+weights_tracked = false

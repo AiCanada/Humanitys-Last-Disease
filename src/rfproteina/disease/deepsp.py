@@ -72,6 +72,37 @@ DEEPSP_SUBDIR = Path("deepsp") / "models"
 DEEPSP_METHOD = "deepsp_conv1d_torch_v1"
 DEEPSP_SOURCE = "DeepSP (MIT), https://github.com/Lailabcode/DeepSP"
 
+#: One sentence per blocker this module can put on a record.
+#:
+#: Public because :py:mod:`rfproteina.disease.deepviscosity` emits three of
+#: these four names itself and extends this table rather than writing a second
+#: copy of each sentence -- two copies of one sentence are two sentences as
+#: soon as either is edited.
+#:
+#: Worth saying plainly: nothing renders these today. ``deepsp_blocker`` and
+#: ``viscosity_blocker`` are read by no page and no board -- the screen reaches
+#: these descriptors through an oracle table that ``developability.py`` reads,
+#: not by running the models -- so this table is the words for when a surface
+#: does show them, and the place
+#: ``tests/test_disease_board_vocabulary.py`` holds the names to. Putting them
+#: on the screening board instead would have added four sentences to a table
+#: that never draws them, which is the mistake that test's docstring records
+#: costing seventeen duplicated lines once already.
+BLOCKER_TEXT = {
+    "data_path_unset": (
+        "DATA_PATH is not set, so the weights directory could not be located. Set it, or "
+        "name the models directory in the call."
+    ),
+    "deepsp_unavailable": (
+        "The DeepSP weights, or the libraries that run them, are not on this machine. "
+        "scripts/install_deepsp.py fetches them."
+    ),
+    "both_chains_required": (
+        "These descriptors are computed on an aligned heavy and light pair, so a single "
+        "chain cannot be scored. Supply both chains."
+    ),
+}
+
 #: DeepSP's own one-hot alphabet: twenty amino acids in alphabetical order by
 #: one-letter code, then the gap. The channel order is part of the model's
 #: input contract, so it is written out rather than derived from a set.

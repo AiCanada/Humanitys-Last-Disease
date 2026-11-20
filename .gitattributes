@@ -18,3 +18,10 @@
 # files before this rule existed.
 screening[[:space:]]subpackage/thermompnn/ThermoMPNN/** -text
 screening[[:space:]]subpackage/crossabsense/CrossAbSense/** -text
+# RBase is this project's own code rather than an upstream mirror, so there is
+# no upstream blob id to match. It is marked the same way for the other half of
+# the reason: its manifest carries a tree digest over the vendored bytes, and a
+# checkout that rewrote line endings would compute a different digest from the
+# tree it was taken from and look tampered with.
+screening[[:space:]]subpackage/confrover/rbase/** -text
+screening[[:space:]]subpackage/confrover/viz/** -text

@@ -474,6 +474,14 @@ CROSSABSENSE_PROPERTIES = {
     "Titer": "expression yield in HEK293",
 }
 CROSSABSENSE_SOURCE = "CrossAbSense v0.9 (Apache-2.0), https://huggingface.co/SimonCrouzet/CrossAbSense"
+#: The method slugs the two oracle readers stamp on a record. Named rather than
+#: written inline at the call site so ``corpus_provenance`` can import them: a
+#: training-corpus declaration has to join on the same slug the record carries,
+#: and a literal in a function body cannot be imported to check that.
+#: ``DEEPSP_READER_METHOD`` is deliberately not :data:`DEEPSP_METHOD` -- one says
+#: a CSV was read, the other says the forward pass ran here.
+CROSSABSENSE_METHOD = "crossabsense_v0.9"
+DEEPSP_READER_METHOD = "deepsp"
 ORACLE_ROW_LIMIT = 64
 ORACLE_FILE_LIMIT = 1_048_576
 
@@ -542,14 +550,14 @@ def read_oracle_table(path: Path, *, method: str, source: str, properties: Seque
 
 def read_deepsp_table(path: Path) -> dict[str, object]:
     """DeepSP's prediction CSV, as a record."""
-    return read_oracle_table(path, method="deepsp", source=DEEPSP_SOURCE, properties=DEEPSP_COLUMNS)
+    return read_oracle_table(path, method=DEEPSP_READER_METHOD, source=DEEPSP_SOURCE, properties=DEEPSP_COLUMNS)
 
 
 def read_crossabsense_table(path: Path) -> dict[str, object]:
     """CrossAbSense's prediction CSV, as a record."""
     return read_oracle_table(
         path,
-        method="crossabsense_v0.9",
+        method=CROSSABSENSE_METHOD,
         source=CROSSABSENSE_SOURCE,
         properties=tuple(CROSSABSENSE_PROPERTIES),
     )

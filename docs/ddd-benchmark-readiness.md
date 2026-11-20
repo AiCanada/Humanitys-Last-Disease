@@ -1,34 +1,53 @@
 # DDD Benchmark readiness: a gap audit
 
 The [Insilico Drug Discovery and Development Benchmark](https://dddbench.insilico.com/)
-(launched 30 July 2026) evaluates frontier and foundation models served through a
-standard chat-completions API, scoring their output against expert reference
-baselines. It has two suites: *Drug Discovery Foundations*, 300+ evaluations built
-from decontaminated public data and proprietary out-of-distribution sets, and *Drug
-Candidate Essentials*, which follows an end-to-end programme from hit identification
-to preclinical candidate nomination. Coverage spans medicinal chemistry, chemical
-synthesis, disease biology, clinical development and longevity.
+scores a system's output against expert reference baselines.
 
-**This document is a gap audit, not a submission plan.** This program is not a
-frontier model: it is a CLI, an MCP server, a generative design pipeline and a
-screening layer. It cannot be submitted as it stands, and the useful thing the
-benchmark offers here is its taxonomy — a map of what a drug-discovery system is
-expected to cover, against which this program's coverage can be read honestly.
+**Read from the site on 2026-11-18** (it reports "last updated Nov 16 2026"):
+**7 domains, 308 benchmarks**, of which 61 are the Core subset — Target Biology (12),
+Medicinal Chemistry (239), Chemical Synthesis (5), Clinical Trials (28), Longevity (16),
+Therapeutic Biomolecules (6) and Structural Biology (2). The last two are
+**Antibody Developability** and **ResidueBench**, and both are this program's own
+subject matter.
+
+**Two premises of the first version of this audit were wrong**, and are corrected here:
+
+- It described five domains, from the launch announcement rather than the live site,
+  and so missed the two that matter most to this program.
+- It said the program "cannot be submitted as it stands". Submission is by endpoint —
+  "Share model details → Connect a secure endpoint → Receive your private report. We
+  query only the endpoint you provide" — and specialist, non-generalist systems are
+  ranked alongside chat models. A pipeline can be evaluated.
+
+What the program does and does not cover is now **in code**, not in this document:
+`src/rfproteina/disease/ddd_benchmark.py` carries the 20 items in scope with the
+blocker that declines each one it cannot answer, and
+`src/rfproteina/disease/corpus_provenance.py` carries what every embedded model was
+trained on. Both are tested. This document keeps the argument; the data lives where
+it can be checked.
 
 ## 1. Domain coverage
 
 Measured against the source tree, not estimated.
 
+The domain names below are the seven the site now uses. Two of them were missing
+from the first version of this table.
+
 | DDD domain | coverage | what exists | what does not |
 | --- | --- | --- | --- |
-| **Disease biology** | **Strong** | Target identification across 8 databases; Reactome pathway selection; `liability.py` immunogenicity (Calis 2013), proteome off-target, MHC class I; `target_liability.py` paralog, plasma abundance, plasma hub, plasma fold; `coevolution.py` | Mechanistic disease modelling; perturbation prediction |
+| **Target Biology** (12) | **Strong for 9 of 12** | Target identification across 8 databases via `sources.py` (Open Targets associations, ranked, which is what Precision@K scores); Reactome pathway selection; `liability.py` immunogenicity (Calis 2013), proteome off-target, MHC class I; `target_liability.py` paralog, plasma abundance, plasma hub, plasma fold | The 3 Single-Cell Perturbation sets: no single-cell module, no perturbation prediction |
+| **Structural Biology** (2) | **1 of 2** | ResidueBench *Mutations* — `stability.py` site-saturation ddG through the vendored ThermoMPNN, verified at 194 positions / 3,686 mutations | ResidueBench *Evolutionary pressure*: nothing computes per-residue conservation. `coevolution.py` reads a caller-supplied paralog table and infers none |
+| **Therapeutic Biomolecules** (6) | **0 of 6 today** | `developability.py` reads a CrossAbSense or DeepSP CSV; `deepsp.py` and `deepviscosity.py` run here | None of the six assays is produced. CrossAbSense is read rather than run, its weights are over the size cap (except PR_CHO), and SMAC, ovalbumin polyreactivity and HAC have no head at all |
 | **Medicinal chemistry** | **Partial** | `ligand_alerts.py` (Lipinski, QED, SA score, PAINS, BRENK); `ligand_safety.py` 10-axis panel via ADMET-AI; `ligand_regressor.py` for the 3 axes ADMET-AI lacks; `octant.py` measured CYP; `toxicology.py` | No SAR reasoning, no lead optimisation loop, no generative small-molecule chemistry, no potency prediction against a novel target |
 | **Chemical synthesis** | **Absent as the benchmark means it** | `synthesis.py` scores *gene* synthesis manufacturability: local GC windows, long repeats, hairpins — whether a DNA construct can be ordered | Zero modules for retrosynthesis, reaction routes, or organic synthesis planning |
-| **Clinical development** | **Absent** | — | Zero modules for trial design, phases, endpoints, regulatory strategy |
-| **Longevity** | **Absent** | — | Zero modules |
+| **Clinical Trials** (28) | **Absent** | — | Zero modules for trial design, phases, endpoints, regulatory strategy |
+| **Longevity** (16) | **Absent** | — | Zero modules |
 
 Verified by search across `src/rfproteina/disease/`: `clinical trial` 0, `phase i` 0,
 `regulatory` 0, `longevity` 0, `retrosynthes` 0, `reaction route` 0, `SAR` 0.
+
+**Ten of the twenty items in scope are answerable today**, and that number is
+asserted in `tests/test_disease_ddd_benchmark.py` so it moves only on purpose.
 
 ### The modality mismatch underneath
 
@@ -70,23 +89,37 @@ table a screen reads. That is possible but narrow.
 A model trained on a public corpus can answer from memory even when the program
 never reads that corpus at runtime.
 
-| model | trained on | overlap risk |
-| --- | --- | --- |
-| **ADMET-AI** | Therapeutics Data Commons ADMET suite | **HIGH** — TDC is *the* public ADMET benchmark; ADMET-AI tops its leaderboard |
-| **Chemprop** (inside ADMET-AI) | the same TDC datasets | **HIGH** — same corpus |
-| **`ligand_regressor`** (fitted in this repo) | BindingDB, scaffold-split | **HIGH** — public and heavily reused |
-| MHCflurry 2.3 | IEDB + mass-spec ligand sets | MEDIUM |
-| ThermoMPNN | Megascale stability dataset | MEDIUM |
-| `class_ii` (fitted in this repo) | IEDB CC BY rows | MEDIUM |
-| DeepSP | 20,530 sequences, MD-derived labels | LOW — labels are simulated, not a QA corpus |
-| DeepViscosity | 229 measured mAbs | LOW |
-| AbLang-2 | Observed Antibody Space | LOW |
-| CrossAbSense v0.9 | GDPA1 assay data | LOW |
+**This table used to live here and was wrong.** It is now
+`src/rfproteina/disease/corpus_provenance.py`, with a guard test that reads the
+vendored CrossAbSense tree for GDPa1's assay columns rather than restating them,
+so a vendor bump fails a test instead of silently ageing this page. Ask it
+directly:
 
-**Three HIGH entries must be declared before any evaluation**, and all three are on
-the small-molecule side — the same side where coverage is weakest. An ADMET or
-potency score from this program would be the least trustworthy number it produces
-and the most likely to look good for the wrong reason.
+```bash
+python -m rfproteina.disease.cli --declare-corpora --corpora-against HIC
+```
+
+The error worth recording, because it is the one this design prevents: the old
+table rated **CrossAbSense LOW**. CrossAbSense is fitted on **GDPa1** (Ginkgo,
+242 IgGs), whose columns are `HIC, AC-SINS_pH7.4, Titer, Tm2, PR_CHO, HAC, Tm1,
+Tonset, Purity, SEC_%Monomer, AC-SINS_pH6.0` — the same assay panel the
+benchmark's Antibody Developability column scores. Against those assays it is
+the *highest*-risk model in the program, in the one domain where it would
+otherwise look strongest.
+
+The mistake was structural, not clerical: **the table stored a severity per
+model.** Overlap is not a property of a model. It is a property of the pair
+(model, what you are scoring it on) — AbLang-2 on the Observed Antibody Space is
+genuinely unaligned with a developability assay and would be a label corpus
+against a humanness benchmark. The registry therefore stores **mechanisms**,
+which do not drift, and derives the severity for a pair on request.
+
+Still true, and now machine-readable: ADMET-AI and the Chemprop model inside it
+rest on Therapeutics Data Commons, which ADMET-AI tops the leaderboard of, and
+the in-repo ligand regressor rests on BindingDB. All three are on the
+small-molecule side, which is why the 239 Medicinal Chemistry benchmarks are
+deliberately out of scope: that is where this program would score well for the
+wrong reason.
 
 ## 3. The question to settle before anything is built
 

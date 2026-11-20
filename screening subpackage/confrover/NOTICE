@@ -1,0 +1,41 @@
+RBase (ConfRover)
+Copyright Artificial Intelligence Canada Inc.
+Licensed under the Apache License, Version 2.0. See RBase/../manifest.toml
+[licence] and the LICENSE file in the ConfRover repository.
+
+This product includes third-party software, each component under its own
+licence and with its own LICENSE file kept beside it in the tree:
+
+  RBase/_ext/openfold
+      OpenFold, https://github.com/aqlaboratory/openfold
+      Apache License 2.0 -- see RBase/_ext/openfold/LICENSE.txt
+
+  RBase/_ext/ligo_af3
+      AlphaFold3 implementation by Ligo Biosciences,
+      https://github.com/Ligo-Biosciences/AlphaFold3
+      Apache License 2.0 -- see RBase/_ext/ligo_af3/LICENSE.txt
+
+  RBase/model/decoder/confdiff/diffuser
+      SE(3) diffusion, https://github.com/jasonkyuyim/se3_diffusion, via
+      ConfDiff -- see that directory's LICENSE
+
+  RBase/utils/hydra_utils
+      Hydra template utilities -- see that directory's LICENSE
+
+Statement of changes, as Apache License 2.0 section 4(b) asks for:
+
+  The files under RBase/_ext/openfold and RBase/_ext/ligo_af3 have been
+  modified by Artificial Intelligence Canada Inc. in one respect only. Their
+  import paths were rewritten from `confrover._ext...` to `rbase._ext...` when
+  the containing package was renamed, and one comment in
+  _ext/openfold/utils/precision_utils.py was reworded by the same rename. No
+  other change was made: no logic, no numerics, no interface, and no removal
+  of any copyright, patent, trademark or attribution notice.
+
+  The same applies to RBase/model/decoder/confdiff/diffuser and
+  RBase/utils/hydra_utils.
+
+  A project banner naming Artificial Intelligence Canada Inc. was briefly
+  present at the top of these files in the originating working tree. It was
+  removed before this tree was vendored, so no file here carries an attribution
+  that is not its own.

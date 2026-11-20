@@ -41,9 +41,46 @@ ORACLE_ENCODERS: dict[str, tuple[str, ...]] = {
 }
 
 
+#: Each published encoder's size, so a per-property total can be taken without
+#: restating a number that already exists above.
+ENCODER_BYTES: dict[str, int] = {
+    "esmc_6b": ESMC_6B_BYTES,
+    "esmc_300m": ESMC_300M_BYTES,
+    "prott5": PROTT5_BYTES,
+}
+
+
 def oracle_bytes() -> int:
     """Bytes of the five ``final.ckpt`` files."""
     return sum(ORACLE_FINAL_BYTES.values())
+
+
+def property_bytes(name: str) -> int:
+    """Bytes one property's head needs: its own ``final.ckpt`` plus its encoders.
+
+    Raises:
+        KeyError: If ``name`` is not one of the five heads, rather than
+            returning a zero that would read as "nothing to download".
+    """
+    encoders = ORACLE_ENCODERS[name]
+    return ORACLE_FINAL_BYTES[name] + sum(ENCODER_BYTES[encoder] for encoder in encoders)
+
+
+def property_permitted(name: str, cap: int = CAP_BYTES) -> bool:
+    """Whether one property alone fits under ``cap``.
+
+    :func:`download_permitted` asks whether *all five* fit, and they do not, so
+    it is false as an all-or-nothing fact. That hides a per-property answer:
+    ``PR_CHO`` loads only ESM-C 300M and fits comfortably, while every other
+    head pulls ESM-C 6B and does not. Asking per property makes the gate a
+    measurement instead of a single refusal covering five different cases.
+
+    Fitting is not a reason to fetch it. ``PR_CHO`` is a primary column of the
+    corpus CrossAbSense was fitted on, so a number from it is the most
+    contaminated one this program could produce; see
+    ``corpus_provenance.overlap_with``.
+    """
+    return property_bytes(name) < cap
 
 
 def required_bytes() -> int:

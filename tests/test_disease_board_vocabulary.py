@@ -58,7 +58,18 @@ from pathlib import Path
 
 import pytest
 
-from rfproteina.disease import results_actions, results_compare, results_retrieve, screen_board
+from rfproteina.disease import (
+    ddd_benchmark,
+    ddd_endpoint,
+    deepsp,
+    deepviscosity,
+    dynamics,
+    human_protocol,
+    results_actions,
+    results_compare,
+    results_retrieve,
+    screen_board,
+)
 
 _PACKAGE = Path(screen_board.__file__).parent
 
@@ -93,6 +104,37 @@ _VOCABULARIES: dict[str, tuple[tuple[str, Mapping[str, str]], ...]] = {
         ("results_compare._COMPLEX_BLOCKERS", results_compare._COMPLEX_BLOCKERS),
     ),
     "results_actions.py": (("results_actions._BLOCKER_TEXT", results_actions._BLOCKER_TEXT),),
+    # The benchmark adapter's blockers answer an external scorer, not a reader of
+    # the board, which never renders them. Routed to its own table for the same
+    # reason the three results modules are: adding them to the board would put a
+    # second copy of each sentence somewhere nobody reads.
+    "ddd_benchmark.py": (("ddd_benchmark._BLOCKER_TEXT", ddd_benchmark._BLOCKER_TEXT),),
+    "ddd_endpoint.py": (("ddd_endpoint._BLOCKER_TEXT", ddd_endpoint._BLOCKER_TEXT),),
+    # The protocol is read on the results page and in a terminal. Its names are
+    # about a comparison a reader set up themselves -- which protein was not in
+    # the proteome, which model was not supplied -- and the advice rides in the
+    # sentence, as it does on the three results surfaces, rather than in a
+    # separate action line the board would need.
+    "human_protocol.py": (("human_protocol._BLOCKER_TEXT", human_protocol._BLOCKER_TEXT),),
+    # These two put their names on a ``deepsp_blocker`` / ``viscosity_blocker``
+    # key that nothing reads: the screen reaches these descriptors through an
+    # oracle table ``developability.py`` reads, rather than by running the
+    # models. So the board does not render them and four sentences added there
+    # would have been four lines nobody draws -- the mistake this file's
+    # docstring records costing seventeen duplicated lines once already. The
+    # words live beside the code that emits them instead, ready for whichever
+    # surface shows them first.
+    "deepsp.py": (("deepsp.BLOCKER_TEXT", deepsp.BLOCKER_TEXT),),
+    "deepviscosity.py": (("deepviscosity.BLOCKER_TEXT", deepviscosity.BLOCKER_TEXT),),
+    # The analyst is read on its own tab and in a terminal, like the protocol
+    # and the three results surfaces. Its names are about an ensemble and an
+    # install, which the screening board has no view of.
+    "dynamics.py": (("dynamics._BLOCKER_TEXT", dynamics._BLOCKER_TEXT),),
+    # The runner prints names for the screen to report, and the screen is what
+    # renders them. One table, not two: it runs under another interpreter and
+    # cannot import this package, but it does not need to -- the sentences are
+    # read on the analyst's surface, so that is where they live.
+    "confrover_runner.py": (("dynamics._BLOCKER_TEXT", dynamics._BLOCKER_TEXT),),
 }
 
 

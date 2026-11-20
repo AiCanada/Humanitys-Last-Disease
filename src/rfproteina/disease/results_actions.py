@@ -67,6 +67,56 @@ COMBINED_FASTA = "results-combined-fasta"
 PREPARE_AF3C = "results-af3c-prepare"
 RETRIEVE_AF2C = "results-af2c"
 RETRIEVE_AF3C = "results-af3c"
+#: The H.U.M.A.N  Protocol tab, which runs in two steps because the first one
+#: is what fills the list the second one reads: propose the human proteins this
+#: design already resembles, then compare the design against the ones ticked.
+HUMAN_PROPOSE = "results-human-propose"
+HUMAN_COMPARE = "results-human-compare"
+
+#: The fields the protocol's buttons read. One spelling each, shared with the
+#: page that posts them: ``ui`` imports these for its ``name=`` attributes
+#: rather than writing the names a second time.
+#:
+#: Not a style preference. A field the page renames and the reader does not is
+#: silent -- no error, no empty value, just an input that stops arriving -- and
+#: ``flat_fields`` carries the docstring of the last time that happened here,
+#: when every typed path, pasted model and accession went on the floor while
+#: the page reported that no download could be found. Two lists checked against
+#: each other would catch it; one list cannot have it.
+HUMAN_PICK = "human_pick"
+HUMAN_NAMES = "human_names"
+HUMAN_TARGET = "human_target"
+HUMAN_MODEL = "human_model"
+HUMAN_MODEL_OF = "human_model_of"
+HUMAN_FIELDS = (HUMAN_PICK, HUMAN_NAMES, HUMAN_TARGET, HUMAN_MODEL, HUMAN_MODEL_OF)
+
+#: The Conformational Dynamics Analyst tab, which runs after generation and
+#: screening because it reads a finished design. Two buttons: one asks the
+#: generator for an ensemble, one draws the ensemble it produced.
+DYNAMICS_RUN = "results-dynamics-run"
+DYNAMICS_DRAW = "results-dynamics-draw"
+#: Its fields, shared with the page that posts them for the reason the
+#: protocol's are: a renamed input that nothing reads is silent.
+DYNAMICS_CHAIN = "dynamics_chain"
+DYNAMICS_TASK = "dynamics_task"
+DYNAMICS_FRAMES = "dynamics_frames"
+DYNAMICS_REPLICATES = "dynamics_replicates"
+DYNAMICS_RMSF_MAX = "dynamics_rmsf_max"
+DYNAMICS_MOBILE_MAX = "dynamics_mobile_max"
+DYNAMICS_DRIFT_MAX = "dynamics_drift_max"
+#: Opt-in, because the page takes seconds and the movie takes minutes to an
+#: hour. A tick box rather than a second button: it is the same drawing.
+DYNAMICS_MOVIE = "dynamics_movie"
+DYNAMICS_FIELDS = (
+    DYNAMICS_CHAIN,
+    DYNAMICS_TASK,
+    DYNAMICS_FRAMES,
+    DYNAMICS_REPLICATES,
+    DYNAMICS_RMSF_MAX,
+    DYNAMICS_MOBILE_MAX,
+    DYNAMICS_DRIFT_MAX,
+    DYNAMICS_MOVIE,
+)
 ACTIONS = (
     OUTPUT_FASTA,
     RETRIEVE_AF2,
@@ -76,6 +126,10 @@ ACTIONS = (
     PREPARE_AF3C,
     RETRIEVE_AF2C,
     RETRIEVE_AF3C,
+    HUMAN_PROPOSE,
+    HUMAN_COMPARE,
+    DYNAMICS_RUN,
+    DYNAMICS_DRAW,
 )
 
 StructureBytes = Callable[[str], bytes | None]
@@ -131,9 +185,7 @@ def binder_sequences(
             continue
         body, strand, _residues = made
         sequences = _polymer_sequences(text)
-        found.append(
-            BinderSequence(sample, strand=strand, sequence=sequences.get(strand, ""), fasta=body)
-        )
+        found.append(BinderSequence(sample, strand=strand, sequence=sequences.get(strand, ""), fasta=body))
     return found
 
 
@@ -159,6 +211,10 @@ class Done:
     payload: str = ""
     #: A file name for that text, used by the download link.
     payload_name: str = ""
+    #: A machine-readable record for an action whose result is a table rather
+    #: than a block of text. The page draws it; this module does not render
+    #: HTML, and the sentence above cannot carry a dozen numbers.
+    record: Mapping[str, object] | None = None
 
 
 def perform(
@@ -167,12 +223,18 @@ def perform(
     structure_bytes: StructureBytes,
     fields: Sequence[str] = (),
     directories: Sequence[Path] | None = None,
+    held: Mapping[str, object] | None = None,
 ) -> Done:
     """Run one action and return the sentence the page should show.
 
     ``directories`` bounds where a download may be looked for. Injected so a
     test never reads the machine's real downloads folder and picks up whatever
     happens to be sitting in it.
+
+    ``held`` is what earlier actions on this page left behind. Only the
+    dynamics tab reads it, and only because its two buttons are one job split
+    in half: the first produces an ensemble and the second draws it, so the
+    second has to be told where the first put it.
     """
     if action in {COMBINED_FASTA, PREPARE_AF3C}:
         made = combined_sequences(catalog, structure_bytes)
@@ -180,9 +242,7 @@ def perform(
         name = "combined.fasta" if action == COMBINED_FASTA else "combined_for_alphafold3.fasta"
         said = _combined_sentence(made)
         if action == PREPARE_AF3C and body:
-            said += (
-                " Give it to the AlphaFold Server yourself; nothing was sent from here."
-            )
+            said += " Give it to the AlphaFold Server yourself; nothing was sent from here."
         return Done(said, payload=body, payload_name=name if body else "")
     if action in {RETRIEVE_AF2C, RETRIEVE_AF3C}:
         return _retrieve(action, catalog, structure_bytes, fields, directories)
@@ -194,9 +254,321 @@ def perform(
         return Done(said, payload=body, payload_name=name if body else "")
     if action in {RETRIEVE_AF2, RETRIEVE_AF3}:
         return _retrieve(action, catalog, structure_bytes, fields, directories)
+    if action in {HUMAN_PROPOSE, HUMAN_COMPARE}:
+        return _human_protocol(action, catalog, structure_bytes, fields)
+    if action in {DYNAMICS_RUN, DYNAMICS_DRAW}:
+        earlier = (held or {}).get("dynamics")
+        return _dynamics(
+            action,
+            catalog,
+            structure_bytes,
+            fields,
+            earlier if isinstance(earlier, Mapping) else None,
+        )
     # Not an error the run should notice: an unknown action is a page out of
     # step with this build, and the page comes back either way.
     return Done("That button is not one this version knows.")
+
+
+def _all_fields(fields: Sequence[str], name: str) -> list[str]:
+    """Every submitted value under one name, not just the first.
+
+    A tick-box list posts its name once per box ticked, and :func:`_field`
+    returns the first match: reading the protocol's selection through that
+    compared the design against one protein and silently dropped the rest.
+    """
+    prefix = f"{name}="
+    return [entry[len(prefix) :].strip() for entry in fields if entry.startswith(prefix)]
+
+
+def _human_protocol(
+    action: str,
+    catalog: Sequence[Mapping[str, object]],
+    structure_bytes: StructureBytes,
+    fields: Sequence[str],
+) -> Done:
+    """The H.U.M.A.N  Protocol tab's two buttons.
+
+    Imported here rather than at the top of the module so the results page
+    keeps costing nothing for a reader who never opens this tab: the protocol
+    reaches a reference proteome, an alignment binary and -- on the interface
+    route -- the structure terms, none of which the FASTA buttons or the
+    viewers need.
+
+    The work directory is temporary and removed on the way out. What the scan
+    writes is a FASTA of the designs, an alignment table and MMseqs2's own
+    scratch, and none of it is a result: the record is the result, and it comes
+    back in memory.
+    """
+    import tempfile
+
+    from rfproteina.disease import human_protocol as protocol
+
+    designs = [(item.sample, item.sequence) for item in binder_sequences(catalog, structure_bytes) if item.found]
+    if not designs:
+        # The name and its sentence both come from the protocol module. Written
+        # as a literal here it would be checked against this module's own
+        # vocabulary, which speaks in fragments for a different surface.
+        record = protocol.blocked_record(protocol.NO_DESIGNS)
+        return Done(str(record["reason"]), record=record)
+    proteome = protocol.default_proteome()
+    with tempfile.TemporaryDirectory(prefix="human-protocol-") as temporary:
+        work = Path(temporary)
+        if action == HUMAN_PROPOSE:
+            return _human_proposal(designs, proteome, work, fields)
+        return _human_comparison(designs, proteome, work, fields, catalog, structure_bytes)
+
+
+def _human_proposal(
+    designs: Sequence[tuple[str, str]],
+    proteome: Path | None,
+    work: Path,
+    fields: Sequence[str],
+) -> Done:
+    """Step one: the human proteins these designs already resemble.
+
+    This is what fills the tick-box list. It is derived from the alignment
+    rather than read off a curated panel, because a panel of proteins to avoid
+    would be this program's guess at what matters for somebody else's
+    therapeutic, and what the alignment can say is which human proteins *this*
+    design already looks like.
+    """
+    from rfproteina.disease import human_protocol as protocol
+
+    scan = protocol.scan_designs(designs, proteome, work)
+    if not scan.ran:
+        said = protocol.sentence(scan.blocker)
+        return Done(said, record={"candidates": [], "blocker": scan.blocker, "reason": said})
+    # Resolved before it is excluded, because a reader may have named the
+    # target by gene symbol and the alignment reports accessions.
+    target = protocol.resolve(_field(fields, HUMAN_TARGET), proteome)
+    proposed = protocol.enrich(
+        protocol.propose_anti_targets(scan, exclude=(target,) if target else ()),
+        proteome,
+    )
+    if not proposed:
+        return Done(
+            "No human protein aligned to these designs over the E-value cut, so there is "
+            "nothing to propose. Name the proteins to avoid yourself.",
+            record={"candidates": [], "blocker": None, "reason": ""},
+        )
+    said = (
+        f"{len(proposed)} human protein{'' if len(proposed) == 1 else 's'} these designs already "
+        "resemble, strongest first. Tick the ones this design must not bind, then compare. "
+        "Resemblance is not binding: see the note on the tab."
+    )
+    return Done(said, record={"candidates": [item.as_record() for item in proposed], "blocker": None, "reason": ""})
+
+
+def _human_comparison(
+    designs: Sequence[tuple[str, str]],
+    proteome: Path | None,
+    work: Path,
+    fields: Sequence[str],
+    catalog: Sequence[Mapping[str, object]],
+    structure_bytes: StructureBytes,
+) -> Done:
+    """Step two: the designs against the proteins that were chosen.
+
+    The on-target side of the interface route is this run's own complex, taken
+    from the first design the page is showing that has one. Which design it was
+    is recorded, because an interface number with no design beside it cannot be
+    acted on.
+    """
+    from rfproteina.disease import human_protocol as protocol
+
+    names = [*_all_fields(fields, HUMAN_PICK), *_all_fields(fields, HUMAN_NAMES)]
+    complex_text, binder_chain, sample = _first_complex(catalog, structure_bytes)
+    record = protocol.protocol_record(
+        designs,
+        names=names,
+        target=_field(fields, HUMAN_TARGET),
+        proteome=proteome,
+        work_dir=work,
+        model_text=_field(fields, HUMAN_MODEL),
+        model_of=_field(fields, HUMAN_MODEL_OF),
+        complex_text=complex_text,
+        binder_chain=binder_chain,
+    )
+    drawn = dict(record)
+    # Only where that measurement was actually taken. The on-target interface
+    # is measured only when there is an off-target one to compare it with, and
+    # this line was being set on every comparison -- so the page said "the
+    # on-target interface was measured on design_1" under a route that had
+    # declined to measure anything at all.
+    drawn["interface_design"] = sample if protocol.on_target_measured(record) else ""
+    return Done(
+        protocol.summary_line(record),
+        payload="\n".join(protocol.readout_lines(record)),
+        payload_name="human_protocol.txt",
+        record=drawn,
+    )
+
+
+def _dynamics(
+    action: str,
+    catalog: Sequence[Mapping[str, object]],
+    structure_bytes: StructureBytes,
+    fields: Sequence[str],
+    held: Mapping[str, object] | None = None,
+) -> Done:
+    """The Conformational Dynamics Analyst tab's two buttons.
+
+    Imported here rather than at the top of the module for the reason the
+    protocol is: a reader who never opens this tab should not pay for numpy
+    geometry, a vendored generator and a viewer they are not using.
+
+    Run asks the generator for an ensemble of ONE chain and measures it. Draw
+    turns the ensemble it produced into a page, and a movie when the writer for
+    one is installed. Neither reaches the network: everything the generator
+    would otherwise fetch is checked for first and declined by name.
+    """
+    from rfproteina.disease import dynamics as analyst
+
+    design_text, chain_hint, sample = _first_design(catalog, structure_bytes)
+    if not design_text:
+        # The name and its sentence both come from the analyst's module.
+        # Written as a literal here it would be checked against this module's
+        # vocabulary, which speaks in fragments for a different surface.
+        record = analyst.blocked_record(analyst.NO_DESIGN)
+        return Done(str(record["reason"]), record={"dynamics": record})
+    if action == DYNAMICS_DRAW:
+        return _dynamics_page(fields, held)
+
+    chain = _field(fields, DYNAMICS_CHAIN) or chain_hint
+    limits = analyst.DynamicsLimits(
+        rmsf_max_a=_number(_field(fields, DYNAMICS_RMSF_MAX)),
+        mobile_fraction_max=_number(_field(fields, DYNAMICS_MOBILE_MAX)),
+        drift_max_a=_number(_field(fields, DYNAMICS_DRIFT_MAX)),
+    )
+    task = _field(fields, DYNAMICS_TASK) or analyst.FORWARD
+    frames = int(_number(_field(fields, DYNAMICS_FRAMES)) or 10)
+    replicates = int(_number(_field(fields, DYNAMICS_REPLICATES)) or 1)
+
+    # Kept rather than written into a temporary directory, because the run and
+    # the draw are two button presses: an ensemble that vanished with the
+    # process left the second button with nothing to draw, which reads as a
+    # design that does not move.
+    kept = analyst.ensembles_root()
+    where = (kept / (sample or "design")) if kept is not None else None
+
+    def produce(text: str, which: str, mode: str) -> object:
+        return analyst.generate_ensemble(text, which, mode, frames=frames, replicates=replicates, work_dir=where)
+
+    record = analyst.analyse(
+        design_text,
+        chain=chain,
+        task_mode=task,
+        limits=limits,
+        generate=produce,  # type: ignore[arg-type]
+    )
+    drawn = dict(record)
+    drawn["design_sample"] = sample
+    if where is not None and record.get("measured") is not None:
+        drawn["ensemble_dir"] = str(where / "ensemble")
+    return Done(
+        analyst.summary_line(record),
+        payload="\n".join(analyst.readout_lines(record)),
+        payload_name="conformational_dynamics.txt",
+        record={"dynamics": drawn},
+    )
+
+
+def _dynamics_page(fields: Sequence[str], held: Mapping[str, object] | None) -> Done:
+    """Draw the ensemble the last run produced, and a movie when one is asked for.
+
+    The viewer is the vendored one, which is what reads this generator's
+    output. The generation and screening pages keep the viewers they already
+    have; this draws ensembles and nothing else.
+
+    It runs under this project's own interpreter rather than the generator's,
+    because the viewer needs numpy and nothing else -- so a page can be drawn
+    on a machine where the generator is not installed at all, from an ensemble
+    somebody else produced.
+    """
+    from rfproteina.disease import dynamics as analyst
+
+    where = (held or {}).get("ensemble_dir")
+    if not isinstance(where, str) or not where:
+        # Nothing to draw until a run has produced one. Said plainly rather
+        # than drawing an empty page, which would read as a design that does
+        # not move.
+        record = analyst.blocked_record(analyst.NO_ENSEMBLE)
+        said = f"Run the generator first: there is no ensemble to draw yet. {analyst.OUT_OF_DISTRIBUTION}"
+        return Done(said, record={"dynamics": {**record, "drawn": None}})
+
+    out = Path(where).parent / "page"
+    drawn = analyst.draw_ensemble(
+        where,
+        out,
+        chain=_field(fields, DYNAMICS_CHAIN),
+        title=str((held or {}).get("design_sample") or ""),
+        movie=_field(fields, DYNAMICS_MOVIE).strip().lower() in {"1", "on", "true", "yes"},
+    )
+    page = drawn.get("page")
+    if not page:
+        return Done(str(drawn.get("reason") or ""), record={"dynamics": {**dict(held or {}), "drawn": drawn}})
+    said = f"Drew {drawn['conformers_drawn']} conformers. {analyst.OUT_OF_DISTRIBUTION}"
+    if drawn.get("movie"):
+        said = f"Drew {drawn['conformers_drawn']} conformers, with a movie. {analyst.OUT_OF_DISTRIBUTION}"
+    elif drawn.get("blocker"):
+        said = f"{said} {drawn.get('reason')}"
+    return Done(said, record={"dynamics": {**dict(held or {}), "drawn": drawn}})
+
+
+def _number(text: str) -> float | None:
+    """A finite number a reader typed, or None. A blank is not a cut."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return None
+    try:
+        value = float(cleaned)
+    except ValueError:
+        return None
+    return value if value == value and value not in {float("inf"), float("-inf")} else None
+
+
+def _first_design(
+    catalog: Sequence[Mapping[str, object]],
+    structure_bytes: StructureBytes,
+) -> tuple[str, str, str]:
+    """``(text, binder_chain, sample)`` for the first design with a readable structure.
+
+    The binder chain is handed over as the default because the generator takes
+    one chain and the run recorded which one is the design. Reading the first
+    chain in the file instead would analyse the target on most of this
+    program's outputs.
+    """
+    for item in catalog:
+        token = str(item.get("complex_token", ""))
+        chains = item.get("binder_chains")
+        binder_chains = tuple(str(name) for name in chains) if isinstance(chains, list | tuple) else ()
+        if not token:
+            continue
+        raw = structure_bytes(token)
+        if raw is None:
+            continue
+        text = raw.decode("utf-8", errors="replace")
+        return text, (binder_chains[0] if binder_chains else ""), str(item.get("sample", ""))
+    return "", "", ""
+
+
+def _first_complex(
+    catalog: Sequence[Mapping[str, object]],
+    structure_bytes: StructureBytes,
+) -> tuple[str, str, str]:
+    """``(text, binder_chain, sample)`` for the first design with a readable complex."""
+    for item in catalog:
+        token = str(item.get("complex_token", ""))
+        chains = item.get("binder_chains")
+        binder_chains = tuple(str(name) for name in chains) if isinstance(chains, list | tuple) else ()
+        if not token or not binder_chains:
+            continue
+        raw = structure_bytes(token)
+        if raw is None:
+            continue
+        return raw.decode("utf-8", errors="replace"), binder_chains[0], str(item.get("sample", ""))
+    return "", "", ""
 
 
 def _retrieve(
@@ -245,9 +617,7 @@ def _retrieve(
         # database leaves ``AF-<accession>-F1-model_v6.cif``; searching for
         # either would let the newest server archive answer a database lookup
         # and be captioned as a database model of the target.
-        guess = newest_download(
-            within_seconds=AUTO_WINDOW, directories=directories, service=service
-        )
+        guess = newest_download(within_seconds=AUTO_WINDOW, directories=directories, service=service)
         if guess is None:
             if service == "af2":
                 message = NO_AF2_ENTRY_COMBINED if combined else NO_AF2_ENTRY
@@ -390,6 +760,7 @@ def _why(found: Sequence[BinderSequence]) -> str:
     more = f" and {len(blocked) - 4} more" if len(blocked) > 4 else ""
     return f"({named}{more})"
 
+
 # ----------------------------------------------------------- retrieved models
 
 
@@ -456,8 +827,9 @@ def overlay_for(
         # unrelated frames -- a predictor's frame has nothing to do with a
         # deposit's -- so the picture would be two objects in one box that
         # reads as a comparison and is not one. The sentence says why.
-        return Overlay(which, blocker=found.blocker or "not_superposed",
-                       detail=f"{found.sentence()} {retrieved.caption()}")
+        return Overlay(
+            which, blocker=found.blocker or "not_superposed", detail=f"{found.sentence()} {retrieved.caption()}"
+        )
     rotation, translation = found.transform
     moved = apply_transform(retrieved.text, rotation, translation)
     return Overlay(which, text=moved, detail=f"{found.sentence()} {retrieved.caption()}")
@@ -523,9 +895,7 @@ def _combined_sentence(found: Sequence[CombinedSequence]) -> str:
     read = [item for item in found if item.found]
     if not read:
         return "No combined sequence could be read. " + _why_combined(found)
-    where = ", ".join(
-        f"{item.sample} ({len(item.chains)} chains, {item.residues} residues)" for item in read[:4]
-    )
+    where = ", ".join(f"{item.sample} ({len(item.chains)} chains, {item.residues} residues)" for item in read[:4])
     more = f" and {len(read) - 4} more" if len(read) > 4 else ""
     return (
         f"Combined FASTA for {where}{more}, below -- copy it or download it. Every chain is in "

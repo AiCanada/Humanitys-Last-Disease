@@ -56,6 +56,9 @@ from pathlib import Path
 from typing import Any
 
 from rfproteina.disease.deepsp import (
+    BLOCKER_TEXT as DEEPSP_BLOCKER_TEXT,
+)
+from rfproteina.disease.deepsp import (
     DEEPSP_METHOD,
     DeepSPResult,
     DeepSPUnavailableError,
@@ -70,6 +73,24 @@ from rfproteina.disease.developability import DEEPSP_COLUMNS, NumberingUnavailab
 #: stored record says which rule produced it.
 VISCOSITY_METHOD = "deepviscosity_ann_ensemble_torch_v1"
 VISCOSITY_SOURCE = "DeepViscosity (MIT), https://github.com/Lailabcode/DeepViscosity"
+
+#: One sentence per blocker this module can put on a record.
+#:
+#: Three of the four are DeepSP's own and are inherited rather than restated:
+#: this module looks for the SAP weights too, and reports the same names when
+#: they are missing. A ``data_path_unset`` here can come from either weights
+#: directory, which is why that sentence names neither.
+#:
+#: As in :py:data:`rfproteina.disease.deepsp.BLOCKER_TEXT`, nothing renders
+#: these today -- ``viscosity_blocker`` has no reader -- so this is the words
+#: for when a surface does show them.
+BLOCKER_TEXT = {
+    **DEEPSP_BLOCKER_TEXT,
+    "deepviscosity_unavailable": (
+        "The DeepViscosity weights, or the libraries that run them, are not on this "
+        "machine. scripts/install_deepviscosity.py fetches them."
+    ),
+}
 VISCOSITY_PAPER = (
     "Kalejaye et al., 'Accelerating high-concentration monoclonal antibody development with "
     "large-scale viscosity data and ensemble deep learning', mAbs 17(1) (2025), "

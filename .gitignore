@@ -379,6 +379,20 @@ screening subpackage/**
 # thermompnn/manifest.toml records the upstream commit and why each excluded
 # path was left out. Its checkpoints stay under DATA_PATH/thermompnn.
 !screening subpackage/thermompnn/ThermoMPNN/**
+# RBase is this project's own program rather than an upstream mirror, so the
+# reason for tracking it differs: there is no clone to fall back on. 182 files,
+# 2 MB, no weights and no generated caches. confrover/manifest.toml records the
+# tree digest and the commit the tree diverges from, and confrover/NOTICE
+# records the one change made to the Apache-2.0 code it carries under _ext/.
+# Its 75 MB checkpoints and its 24 MB of SO(3) tables stay under
+# DATA_PATH/confrover; the .npy re-exclusion below keeps the tables out even if
+# one is copied back in beside the source, which is where the code writes them.
+!screening subpackage/confrover/rbase/**
+# The ensemble viewer and mp4 maker that read the model's output, vendored
+# beside it: ten files, 123 KB, a page template and numpy. Tracked for the same
+# reason as the package -- it is this project's own code and there is no clone
+# to fall back on.
+!screening subpackage/confrover/viz/**
 # Re-exclude the payload even where a negation above might otherwise catch it.
 # Installed environments are not readable source, are platform-specific, and
 # are rebuilt by the tracked installers.
@@ -390,6 +404,12 @@ screening subpackage/**/*.pt
 screening subpackage/**/*.pth
 screening subpackage/**/*.ckpt
 screening subpackage/**/*.safetensors
+# RBase's SE(3) diffuser writes its IGSO3 lookup tables into a .cache directory
+# beside its own source on first use -- three .npy files, 8 MB each. They are
+# generated, not source, and they are the one payload a vendored tree here
+# produces by being run rather than by being copied into.
+screening subpackage/**/.cache/
+screening subpackage/**/*.npy
 # A `**` negation re-includes EVERYTHING beneath it, so anything that should
 # stay out of a vendored tree has to be re-excluded here, after the negation,
 # or it silently stops applying. That is the same hazard AGENTS.md names for

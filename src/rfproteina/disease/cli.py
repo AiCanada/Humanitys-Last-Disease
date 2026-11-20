@@ -38,7 +38,7 @@ import shutil
 import subprocess
 import sys
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from http.client import HTTPException
 from pathlib import Path
 
@@ -324,6 +324,126 @@ def build_parser() -> argparse.ArgumentParser:
             "screen selects for the next round. Nothing is started."
         ),
     )
+    parser.add_argument(
+        "--declare-corpora",
+        action="store_true",
+        help=(
+            "Print what every embedded model was trained on, and this program's "
+            "coverage of the DDD Benchmark. Reads nothing and contacts nothing."
+        ),
+    )
+    parser.add_argument(
+        "--benchmark-answer",
+        metavar="ITEM",
+        help=(
+            "Answer one DDD Benchmark item by name, or 'all' for every item in "
+            "scope. An item this program cannot answer returns a named decline "
+            "rather than a guess. Needs --benchmark-structure for the "
+            "structure items; the target items read Open Targets live."
+        ),
+    )
+    parser.add_argument(
+        "--benchmark-structure",
+        type=Path,
+        metavar="PATH",
+        help="The PDB or mmCIF a structure-level benchmark item is answered against.",
+    )
+    parser.add_argument(
+        "--not-binding",
+        metavar="NAMES",
+        help=(
+            "With --human-protocol: what the design must not bind, as UniProt "
+            "accessions, entry names or gene symbols, separated by spaces or "
+            "commas. Omitted, the protocol proposes a list instead of "
+            "comparing against one."
+        ),
+    )
+    parser.add_argument(
+        "--human-chain",
+        metavar="CHAIN",
+        help=(
+            "With --human-protocol on a structure file: which chain is the "
+            "design. Needed only where the file holds more than one, and the "
+            "chains are named in the refusal when it does."
+        ),
+    )
+    parser.add_argument(
+        "--dynamics-chain",
+        metavar="CHAIN",
+        help=(
+            "With --dynamics: which chain is the design. Needed whenever the "
+            "file holds more than one, because the generator takes a single "
+            "polypeptide chain and picking one of a complex would analyse "
+            "whichever came first."
+        ),
+    )
+    parser.add_argument(
+        "--dynamics-task",
+        choices=("forward", "iid", "interp"),
+        default="forward",
+        help=(
+            "What to ask the generator for: a trajectory from the design "
+            "onwards, independent conformers, or a path between two states. "
+            "Defaults to forward."
+        ),
+    )
+    parser.add_argument(
+        "--dynamics-frames",
+        type=int,
+        metavar="N",
+        default=10,
+        help="Conformers to generate, including the starting one.",
+    )
+    parser.add_argument(
+        "--rmsf-max",
+        type=float,
+        metavar="ANGSTROM",
+        help=(
+            "Per-residue fluctuation at or above which a residue counts as "
+            "mobile. No published number sets this, so without it the "
+            "fluctuation is reported and no verdict is reached."
+        ),
+    )
+    parser.add_argument(
+        "--mobile-fraction-max",
+        type=float,
+        metavar="FRACTION",
+        help=(
+            "Share of the chain allowed to be mobile before the design counts "
+            "as one that does not hold its shape. Needed together with "
+            "--rmsf-max: which residues move cannot decide anything without "
+            "how much of the chain they are."
+        ),
+    )
+    parser.add_argument(
+        "--drift-max",
+        type=float,
+        metavar="ANGSTROM",
+        help=(
+            "How far the ensemble mean may sit from the design it started as. "
+            "Unset leaves the drift reported and unjudged."
+        ),
+    )
+    parser.add_argument(
+        "--resemblance-identity-max",
+        type=float,
+        metavar="FRACTION",
+        help=(
+            "Fractional identity at or above which a design counts as "
+            "resembling a protein it must not bind. No published number sets "
+            "this, so without it the protocol reports the identity and reaches "
+            "no verdict."
+        ),
+    )
+    parser.add_argument(
+        "--corpora-against",
+        metavar="DATASET",
+        help=(
+            "With --declare-corpora, report each model's overlap with this "
+            "dataset or assay, such as HIC. Overlap is a property of the "
+            "(model, dataset) pair, so it cannot be reported without one."
+        ),
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--screen",
@@ -333,6 +453,31 @@ def build_parser() -> argparse.ArgumentParser:
             "Re-screen a finished generation directory, or every one beneath "
             "it, reading whatever liability tables are now present. Nothing is "
             "generated, downloaded or started."
+        ),
+    )
+    mode.add_argument(
+        "--dynamics",
+        type=Path,
+        metavar="PATH",
+        help=(
+            "Run the Conformational Dynamics Analyst over a finished design: "
+            "how far it moves and which residues move first. PATH is a "
+            "structure file. One chain at a time, so a complex needs "
+            "--dynamics-chain. Reads only what is already installed under "
+            "DATA_PATH and never reaches the network; "
+            "scripts/install_confrover.py does the fetching."
+        ),
+    )
+    mode.add_argument(
+        "--human-protocol",
+        type=Path,
+        metavar="PATH",
+        help=(
+            "Run The H.U.M.A.N  Protocol over finished designs: what they must "
+            "not bind, before the target. PATH is a FASTA of the designs or a "
+            "structure file. Without --not-binding it proposes the human "
+            "proteins these designs already resemble; with it, it compares "
+            "them. Reads the proteome already on disk and writes nothing."
         ),
     )
     parser.add_argument(
@@ -535,7 +680,14 @@ def main(
     # The log opens before the panel, so a failure in the very first page is in it.
     written = start_log(_log_override(argv))
     if written is not None:
-        print(f"Run log: {written}")
+        # --benchmark-answer writes a JSON document to stdout for a scorer to
+        # read, so its notice goes to stderr instead: one stray line ahead of
+        # the document makes the whole thing unparseable. Every other command
+        # keeps it on stdout, where the person at the terminal expects it.
+        # Read from argv before parsing, because parsing happens much later.
+        supplied = sys.argv[1:] if argv is None else argv
+        machine_readable = any(arg == "--benchmark-answer" or arg.startswith("--benchmark-answer=") for arg in supplied)
+        print(f"Run log: {written}", file=sys.stderr if machine_readable else sys.stdout)
     log().info("human started")
     panel = OptionPanel(exchange)
     # Going back restarts the run, and the structure lookup is nearly all of what a
@@ -657,6 +809,28 @@ def _run(
             print(str(exc), file=sys.stderr)
             return 2
     selected = build_parser().parse_args(incoming)
+    if selected.declare_corpora:
+        # A declaration of what the models were fitted on. Reads nothing and
+        # contacts nothing, so it runs before every part of the pipeline that
+        # would.
+        return _declare_corpora(selected)
+
+    if selected.benchmark_answer is not None:
+        # Answers an external scorer. Writes nothing and reaches no verdict.
+        return _benchmark_answer(selected)
+
+    if selected.dynamics is not None:
+        # Reads a finished design and whatever is installed under DATA_PATH.
+        # Writes nothing into the checkout and reaches no network, so none of
+        # the pipeline below applies.
+        return _dynamics(selected)
+
+    if selected.human_protocol is not None:
+        # Reads finished designs and the proteome already on disk. Nothing in
+        # the pipeline below applies: no disease to confirm, nothing to search
+        # for, download, plan or dispatch.
+        return _human_protocol(selected)
+
     if selected.screen is not None:
         # Screening reads a finished run and writes its verdict. None of the
         # pipeline below applies: no disease to confirm, nothing to search for,
@@ -1677,6 +1851,249 @@ def _refold_only(args: argparse.Namespace) -> int:
     # and after an import what has still not arrived.
     record["status"] = refold_status(oracle, run, requests).as_dict()
     print(json.dumps(record, indent=2, sort_keys=True))
+    return 0
+
+
+def _benchmark_answer(args: argparse.Namespace) -> int:
+    """Answer DDD Benchmark items and print the records as JSON.
+
+    JSON rather than prose because the reader is a scorer or a harness, not a
+    person. A producer that raises becomes a decline carrying the reason, so a
+    missing input or an unreachable database reads as "not answered, here is
+    why" instead of as a wrong answer.
+    """
+    from rfproteina.disease import ddd_benchmark
+
+    wanted = str(args.benchmark_answer)
+    if wanted == "all":
+        items = ddd_benchmark.BENCHMARK_ITEMS
+    elif wanted in ddd_benchmark.ITEMS_BY_NAME:
+        items = (ddd_benchmark.ITEMS_BY_NAME[wanted],)
+    else:
+        known = "\n  ".join(sorted(ddd_benchmark.ITEMS_BY_NAME))
+        print(f"Unknown benchmark item: {wanted}\nKnown items:\n  {known}", file=sys.stderr)
+        return 2
+
+    def rank(item: ddd_benchmark.BenchmarkItem, inputs: Mapping[str, object]) -> list[object]:
+        return ddd_benchmark.rank_from_installed_tools(item, inputs)
+
+    answers = [
+        ddd_benchmark.answer_or_decline(
+            item,
+            structure=args.benchmark_structure,
+            disease=getattr(args, "disease", None),
+            rank_fn=rank,
+        )
+        for item in items
+    ]
+    print(json.dumps(answers, indent=2, allow_nan=False))
+    return 0
+
+
+def _human_protocol(args: argparse.Namespace) -> int:
+    """Run The H.U.M.A.N  Protocol headless, and print what the tab draws.
+
+    The same functions the panel's tab calls, printing the same lines, so a
+    reader checking the browser against a terminal is comparing one
+    implementation with itself rather than two with each other.
+
+    Designs come from a FASTA or from a structure file. A structure holding
+    more than one polymer chain is refused with its chains named instead of
+    having one picked for it: on a design-plus-target complex, picking wrongly
+    would compare the *target* against the proteins the design must avoid.
+    """
+    import tempfile
+
+    from rfproteina.disease import human_protocol as protocol
+
+    path = Path(args.human_protocol)
+    if not path.is_file():
+        _fail(f"{path} is not a file. Pass a FASTA of the designs or a structure file.")
+        return 2
+    designs, problem = _designs_for_protocol(path, getattr(args, "human_chain", None))
+    if problem:
+        _fail(problem)
+        return 2
+    proteome = protocol.default_proteome()
+    if proteome is None:
+        print(protocol.sentence("proteome_not_configured"), file=sys.stderr)
+    limits = protocol.ProtocolLimits(resemblance_identity_max=getattr(args, "resemblance_identity_max", None))
+    avoid = (getattr(args, "not_binding", None) or "").strip()
+    # The target to bind to is the flag this CLI already has for that, rather
+    # than a second one meaning the same thing. It appends, so the protocol
+    # reads the first: one comparison is about one intended target.
+    named = getattr(args, "target", None) or []
+    intended = str(named[0]).strip() if named else ""
+    with tempfile.TemporaryDirectory(prefix="human-protocol-") as temporary:
+        work = Path(temporary)
+        if not avoid:
+            scan = protocol.scan_designs(designs, proteome, work)
+            if not scan.ran:
+                print(protocol.sentence(scan.blocker), file=sys.stderr)
+                return 1
+            # Resolved first: a reader may have named the target by gene
+            # symbol, and the alignment reports accessions.
+            named_target = protocol.resolve(intended, proteome)
+            proposed = protocol.enrich(
+                protocol.propose_anti_targets(scan, exclude=(named_target,) if named_target else ()),
+                proteome,
+            )
+            print(f"{protocol.PROTOCOL_LABEL}: what these designs already resemble, strongest first.")
+            print(protocol.PROTOCOL_LIMIT)
+            for item in proposed:
+                print(f"  {item.accession}  {item.label:<12} identity {item.identity}  {item.description}")
+            if not proposed:
+                print("  nothing aligned over the E-value cut.")
+            return 0
+        record = protocol.protocol_record(
+            designs,
+            names=(avoid,),
+            target=intended,
+            proteome=proteome,
+            work_dir=work,
+            limits=limits,
+        )
+    for line in protocol.readout_lines(record):
+        print(line)
+    return 0
+
+
+def _dynamics(args: argparse.Namespace) -> int:
+    """Run the Conformational Dynamics Analyst headless, printing what the tab draws.
+
+    The same functions the tab calls, printing the same lines, so a reader
+    comparing the browser against a terminal is comparing one implementation
+    with itself.
+
+    A structure holding more than one chain is refused with its chains named
+    rather than having one picked for it: the generator takes a single
+    polypeptide chain, and on most of this program's outputs the first chain is
+    the target.
+    """
+    from rfproteina.disease import dynamics as analyst
+    from rfproteina.disease.results_compare import chain_labels
+
+    path = Path(args.dynamics)
+    if not path.is_file():
+        _fail(f"{path} is not a file. Pass a structure file.")
+        return 2
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        _fail(f"{path} could not be read: {error}")
+        return 2
+    labels = chain_labels(text)
+    if not labels:
+        _fail(f"{path} holds no chain this reads.")
+        return 2
+    chain = (getattr(args, "dynamics_chain", None) or "").strip()
+    if not chain and len(labels) > 1:
+        named = ", ".join(labels)
+        _fail(f"{path} holds more than one chain ({named}). Name the design with --dynamics-chain.")
+        return 2
+    if chain and chain not in labels:
+        named = ", ".join(labels)
+        _fail(f"{path} has no chain {chain}. It holds: {named}.")
+        return 2
+
+    limits = analyst.DynamicsLimits(
+        rmsf_max_a=getattr(args, "rmsf_max", None),
+        mobile_fraction_max=getattr(args, "mobile_fraction_max", None),
+        drift_max_a=getattr(args, "drift_max", None),
+    )
+    frames = int(getattr(args, "dynamics_frames", 10) or 10)
+
+    def produce(design: str, which: str, mode: str) -> analyst.Ensemble:
+        return analyst.generate_ensemble(design, which, mode, frames=frames)
+
+    record = analyst.analyse(
+        text,
+        chain=chain or labels[0],
+        task_mode=getattr(args, "dynamics_task", analyst.FORWARD),
+        limits=limits,
+        generate=produce,
+    )
+    for line in analyst.readout_lines(record):
+        print(line)
+    return 0
+
+
+def _designs_for_protocol(path: Path, chain: str | None) -> tuple[list[tuple[str, str]], str]:
+    """``(designs, refusal)`` read from a FASTA or a structure file.
+
+    A FASTA is read as itself. Anything else is read for its polymer chains,
+    and ``chain`` says which one is the design.
+
+    ``_entity_poly`` first, because that is the sequence the file declares --
+    residues with no coordinates included -- and the alpha carbons after it, so
+    a PDB works too. The tab's paste box takes either format, and a flag that
+    took only one of them would be the headless route answering a narrower
+    question than the page.
+    """
+    from rfproteina.disease.human_protocol import MODEL_BYTE_LIMIT
+    from rfproteina.disease.results_compare import alpha_carbons, chain_labels
+    from rfproteina.disease.screen import _polymer_sequences
+    from rfproteina.disease.screening_tools import read_fasta
+
+    try:
+        size = path.stat().st_size
+    except OSError as error:
+        return [], f"{path} could not be read: {error}"
+    if size > MODEL_BYTE_LIMIT:
+        # Stat before read. The design bounds inside the protocol cannot help
+        # here: they are counted after the file is parsed, and a reader who
+        # points this at a reference proteome would have it read into memory
+        # first. Same bound the interface route puts on a structure, because
+        # this flag takes the same kinds of file.
+        megabytes = MODEL_BYTE_LIMIT // (1024 * 1024)
+        return [], f"{path} is larger than {megabytes} MiB, which is not a run's designs."
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        return [], f"{path} could not be read: {error}"
+    records = read_fasta(text)
+    if records:
+        return [(name or path.stem, sequence) for name, sequence in records], ""
+    chains = _polymer_sequences(text)
+    if not chains:
+        chains = {
+            label: found.sequence for label in chain_labels(text) if (found := alpha_carbons(text, label)) is not None
+        }
+    if not chains:
+        return [], f"{path} holds neither FASTA records nor a polymer chain this reads."
+    if chain:
+        if chain not in chains:
+            named = ", ".join(sorted(chains))
+            return [], f"{path} has no chain {chain}. It holds: {named}."
+        return [(f"{path.stem}_{chain}", chains[chain])], ""
+    if len(chains) > 1:
+        named = ", ".join(sorted(chains))
+        return [], f"{path} holds more than one chain ({named}). Name the design with --human-chain."
+    only = next(iter(chains))
+    return [(f"{path.stem}_{only}", chains[only])], ""
+
+
+def _declare_corpora(args: argparse.Namespace) -> int:
+    """Print what every embedded model was fitted on. Reads nothing, contacts nothing.
+
+    Printed rather than returned as JSON because the audience is a person
+    deciding whether to trust a number. ``--corpora-against`` names the dataset
+    being scored, which is the only way an overlap can be reported at all:
+    contamination is a property of the (model, dataset) pair.
+    """
+    from rfproteina.disease import corpus_provenance, ddd_benchmark
+
+    against = getattr(args, "corpora_against", None)
+    for model in sorted(corpus_provenance.TRAINED_ON):
+        block = corpus_provenance.declare(model, against=against)
+        corpora = ", ".join(str(entry["name"]) for entry in block["corpora"]) or "nothing recorded"
+        print(f"{model}: {block['overlap']} (trained on {corpora})")
+        print(f"    {block['caveat']}")
+    found = ddd_benchmark.coverage()
+    print(
+        f"DDD Benchmark coverage: {found['answerable']} of {found['items']} items answerable, "
+        f"{found['declined']} declined."
+    )
     return 0
 
 

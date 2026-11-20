@@ -31,6 +31,9 @@ from urllib.parse import parse_qs
 from rfproteina.disease.archive import generation_archive_root
 from rfproteina.disease.design_spec import cif_text
 from rfproteina.disease.dispatch import is_local_host
+from rfproteina.disease.dynamics import ANALYST_LABEL
+from rfproteina.disease.dynamics import TASK_MODES as DYNAMICS_TASK_MODES
+from rfproteina.disease.dynamics import TASK_PURPOSE as DYNAMICS_TASK_PURPOSE
 from rfproteina.disease.focus import (
     DISTINCTION,
     MECHANISMS,
@@ -43,6 +46,8 @@ from rfproteina.disease.focus import (
     row_role,
 )
 from rfproteina.disease.grok_bot import GROK_BOT, GROK_BOT_LABEL, GROK_BOT_MODEL
+from rfproteina.disease.human_protocol import PROTOCOL_LABEL, PROTOCOL_LIMIT
+from rfproteina.disease.human_protocol import SEQUENCE_RESEMBLANCE as HUMAN_SEQUENCE_ROUTE
 from rfproteina.disease.key_store import (
     KeySlot,
     load_key_slots,
@@ -68,6 +73,25 @@ from rfproteina.disease.research import (
     search_plan,
 )
 from rfproteina.disease.results_actions import COMBINED_FASTA as RESULTS_COMBINED_FASTA
+from rfproteina.disease.results_actions import (
+    DYNAMICS_CHAIN,
+    DYNAMICS_DRIFT_MAX,
+    DYNAMICS_FRAMES,
+    DYNAMICS_MOBILE_MAX,
+    DYNAMICS_MOVIE,
+    DYNAMICS_REPLICATES,
+    DYNAMICS_RMSF_MAX,
+    DYNAMICS_TASK,
+    HUMAN_MODEL,
+    HUMAN_MODEL_OF,
+    HUMAN_NAMES,
+    HUMAN_PICK,
+    HUMAN_TARGET,
+)
+from rfproteina.disease.results_actions import DYNAMICS_DRAW as RESULTS_DYNAMICS_DRAW
+from rfproteina.disease.results_actions import DYNAMICS_RUN as RESULTS_DYNAMICS_RUN
+from rfproteina.disease.results_actions import HUMAN_COMPARE as RESULTS_HUMAN_COMPARE
+from rfproteina.disease.results_actions import HUMAN_PROPOSE as RESULTS_HUMAN_PROPOSE
 from rfproteina.disease.results_actions import OUTPUT_FASTA as RESULTS_FASTA
 from rfproteina.disease.results_actions import PREPARE_AF3 as RESULTS_AF3
 from rfproteina.disease.results_actions import PREPARE_AF3C as RESULTS_AF3C_PREPARE
@@ -102,12 +126,53 @@ NAV_SLOT = "<!--rfd4-nav-->"
 UPLOAD_SUFFIXES = (".pdb", ".cif")
 #: What the choose-structures page was asked to do.
 STRUCTURE_ACTIONS = ("download", "missing", "rank", "ask")
+#: The ``results-tab`` value for the protocol's tab. The other two are their
+#: own names, ``binder`` and ``combined``, and this one is read the same way.
+HUMAN_TAB = "human"
+#: The Conformational Dynamics Analyst's tab. It sits last because it reads a
+#: finished design: generation, then screening, then this.
+DYNAMICS_TAB = "dynamics"
+#: Which tabs the results page has, so a stale or hand-typed value falls back
+#: to the first rather than opening nothing at all.
+RESULTS_TABS = ("binder", "combined", HUMAN_TAB, DYNAMICS_TAB)
+#: The sentence above the analyst's buttons. The model takes one polypeptide
+#: chain -- its own stated limitation -- so the thing a reader is most likely
+#: to want from it is the thing it cannot do, and that is said before the run
+#: rather than reported after it.
+DYNAMICS_SINGLE_CHAIN = (
+    "One chain at a time. The generator takes a single polypeptide chain, so this says how "
+    "the design itself moves, not whether an interface holds -- a design-plus-target complex "
+    "is not an input it has. It is also trained on natural proteins, which a de novo design "
+    "is not, so treat the numbers as the model's opinion rather than a measurement."
+)
 _UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 #: A structure address is 16 hex characters from token_hex(8). Anything else is refused.
 _STRUCTURE_TOKEN = re.compile(r"^[0-9a-f]{16}$")
 #: Panel passes allowed before the run gives up. Each one needs a real submission from
 #: the browser, so this only bounds a client that goes back without ever going forward.
 MAX_PANEL_PASSES = 500
+#: Bytes of one submission the panel will read. Generous, because the largest
+#: legitimate one is a structure upload and ``results_retrieve.TEXT_LIMIT``
+#: already accepts a 64 MiB model, and a bound all the same: the handler read
+#: whatever ``Content-Length`` claimed, so a client claiming four gigabytes had
+#: the panel try to allocate four gigabytes. The server listens on loopback,
+#: which makes this a local process or a cross-origin form post rather than the
+#: open internet -- a smaller exposure, not a different one.
+POST_BYTE_LIMIT = 128 * 1024 * 1024
+
+
+def _body_length(header: str) -> int | None:
+    """The submission's length, or None when it is not one this will read.
+
+    None covers both faults a ``Content-Length`` can have, because the caller
+    does the same thing with each: a value that is not a non-negative integer,
+    and one past :data:`POST_BYTE_LIMIT`.
+    """
+    text = (header or "").strip()
+    if not text.isdigit():
+        return None
+    length = int(text)
+    return length if length <= POST_BYTE_LIMIT else None
 
 
 class StepBackError(Exception):
@@ -168,6 +233,32 @@ h1 { margin: 0 0 12px; font-size: 14px; }
 .results-panel { display: none; border-top: 2px solid #1f4fd8; padding-top: 12px; }
 #results-tab-binder:checked ~ .results-panel-binder { display: block; }
 #results-tab-combined:checked ~ .results-panel-combined { display: block; }
+#results-tab-human:checked ~ .results-panel-human { display: block; }
+#results-tab-dynamics:checked ~ .results-panel-dynamics { display: block; }
+/* The protocol's two lists. Each candidate is one row: a tick box, what the
+   protein is, and the resemblance that put it on the list. */
+ul.protocol-picks { list-style: none; margin: 6px 0 10px; padding: 0; }
+ul.protocol-picks > li { padding: 4px 0; border-bottom: 1px solid #d3dde6; }
+ul.protocol-picks > li:last-child { border-bottom: 0; }
+.protocol-why { color: #41525f; font-size: 0.86rem; }
+table.protocol-readout { border-collapse: collapse; width: 100%; margin: 8px 0; }
+table.protocol-readout th, table.protocol-readout td { border-bottom: 1px solid #d6dae2;
+  padding: 4px 6px; text-align: left; font-size: 0.9rem; vertical-align: top; }
+table.protocol-readout td.state-hit { color: #8f2318; font-weight: 700; }
+table.protocol-readout td.state-clear { color: #0b5c40; font-weight: 700; }
+table.protocol-readout td.state-untested { color: #3d4a57; }
+table.protocol-readout caption, .protocol-against { text-align: left; font-weight: 600;
+  margin: 6px 0 0; padding: 6px 0 2px; }
+.protocol-against .state-hit { color: #8f2318; }
+.protocol-against .state-clear { color: #0b5c40; }
+.protocol-against .state-untested { color: #3d4a57; }
+table.protocol-readout caption .state-hit { color: #8f2318; }
+table.protocol-readout caption .state-clear { color: #0b5c40; }
+table.protocol-readout caption .state-untested { color: #3d4a57; }
+/* Not .hint: this one must not be skimmable. It is the sentence that stops a
+   resemblance number being read as a binding result. */
+.protocol-limit { margin: 6px 0 10px; padding: 8px 10px; border-radius: 8px;
+  background: #fdf3e3; color: #6b4a10; }
 .results-retrieve { border: 1px solid #d6dae2; border-radius: 8px; padding: 10px 12px;
   margin: 10px 0; }
 .results-retrieve legend { font-weight: 600; padding: 0 6px; }
@@ -1464,9 +1555,7 @@ class OptionPanel:
             return "close"
         actions = 0
         while True:
-            fields = self._show(
-                with_nav(self._session.done_page(), back=False, forward=False), len(self._answers)
-            )
+            fields = self._show(with_nav(self._session.done_page(), back=False, forward=False), len(self._answers))
             move = _first(fields, "__nav")
             if move == "start":
                 return "start"
@@ -1484,9 +1573,7 @@ class OptionPanel:
             actions += 1
             if actions >= self.MAX_RESULTS_ACTIONS:
                 raise ValueError("The results page was asked for too many things.")
-            self._session.note_result(
-                self._results_action(action, flat_fields(fields))
-            )
+            self._session.note_result(self._results_action(action, flat_fields(fields)))
 
     #: Bounded like every other repeated non-answer on these pages, and for the
     #: same reason: a test whose injected exchange returns the same fields on
@@ -1719,6 +1806,10 @@ class BrowserSession:
         self._payload = ""
         self._payload_name = ""
         self._payload_token = ""
+        #: The machine-readable half of the last results-page action, for a tab
+        #: whose result is a table of numbers rather than a sentence. Merged
+        #: across actions, so the protocol's proposal survives its comparison.
+        self._action_record: dict[str, object] = {}
         #: Bumped whenever a results-page overlay changes, so an open tab can
         #: tell that the page it is looking at is out of date.
         self._results_version = 0
@@ -1819,12 +1910,18 @@ class BrowserSession:
             self._sealed = False
 
     def clear_result(self) -> None:
-        """Drop the results-page sentence and payload when this run starts over."""
+        """Drop the results-page sentence, payload and record when this run starts over.
+
+        The record goes with the rest. A protocol comparison belongs to the
+        designs it was taken over, and carrying one into the next run would
+        draw the last run's off-target table under this run's structures.
+        """
         with self._lock:
             self._action_result = ""
             self._payload = ""
             self._payload_name = ""
             self._payload_token = ""
+            self._action_record = {}
 
     def clear_closing(self) -> None:
         """Drop the previous run's screen and structures, so the next finish shows only its own."""
@@ -1968,14 +2065,23 @@ class BrowserSession:
             catalog = [dict(item) for item in self._catalog]
         for entry in fields or []:
             if entry.startswith("results-tab="):
+                asked = entry.removeprefix("results-tab=").strip()
                 with self._lock:
-                    self._results_tab = entry.removeprefix("results-tab=").strip() or "binder"
-        done = perform(action, catalog, self.structure_bytes, fields or [])
+                    self._results_tab = asked if asked in RESULTS_TABS else "binder"
+        with self._lock:
+            earlier = dict(self._action_record)
+        done = perform(action, catalog, self.structure_bytes, fields or [], held=earlier)
         token = self.token_for_text(done.payload) if done.payload else ""
         with self._lock:
             self._payload = done.payload
             self._payload_name = done.payload_name
             self._payload_token = token
+            if done.record is not None:
+                # Kept across the post, and merged rather than replaced: the
+                # protocol's two buttons each fill a different half of the tab,
+                # and a comparison that dropped the proposal cleared the tick
+                # boxes the reader had just used.
+                self._action_record = {**self._action_record, **dict(done.record)}
         for which, text, detail in done.overlays:
             token = self.token_for_text(text) if text else ""
             with self._lock:
@@ -2084,6 +2190,7 @@ class BrowserSession:
             payload_name = self._payload_name
             payload_token = self._payload_token
             active = self._results_tab
+            action_record = dict(self._action_record)
         structures = render_structure_views(catalog)
         if not lines and not screens and not structures:
             return _done_page()
@@ -2091,11 +2198,7 @@ class BrowserSession:
         # In the body, never the actions row: ``_page`` keeps Close as the last
         # submit control, and both the page script's Enter handling and a test
         # depend on that ordering.
-        tools = (
-            _results_tools(result, payload, payload_name, payload_token, active)
-            if catalog
-            else ""
-        )
+        tools = _results_tools(result, payload, payload_name, payload_token, active, action_record) if catalog else ""
         return _page(PANEL_TITLE, structures + tools + board, "Close")
 
     def close(self) -> None:
@@ -2216,7 +2319,16 @@ class BrowserSession:
 
             def do_POST(self) -> None:
                 try:
-                    length = int(self.headers.get("Content-Length", "0"))
+                    length = _body_length(self.headers.get("Content-Length", "0"))
+                    if length is None:
+                        # A header that is not a length, or a length past the
+                        # bound. Either way nothing is read: the old line did
+                        # `self.rfile.read(int(header))`, so a client claiming
+                        # four gigabytes had the panel try to allocate four
+                        # gigabytes, and a header that was not a number raised
+                        # out of this handler instead of answering.
+                        self._refuse(413 if self.headers.get("Content-Length", "").strip().isdigit() else 400)
+                        return
                     raw = self.rfile.read(length)
                     fields = parse_submission(
                         raw,
@@ -2242,6 +2354,28 @@ class BrowserSession:
             def _send_page(self, html: str, *, closed: bool = False) -> None:
                 """Send one panel page stamped with the step it belongs to."""
                 self._send(_with_step(html, session.step(), closed=closed).encode("utf-8"))
+
+            def _refuse(self, status: int) -> None:
+                """Answer a submission this handler will not read, and say nothing else.
+
+                No page, because a body that was refused unread leaves the
+                session exactly as it was: redrawing the panel here would claim
+                the submission had been applied.
+
+                The body is left on the socket rather than drained, which is
+                safe only because this server does not set ``protocol_version``
+                and so answers HTTP/1.0: the connection closes after the
+                response, and there is no later request on it to misparse. A
+                keep-alive server would have to read and discard the body here,
+                which is the whole cost the bound exists to avoid.
+                """
+                try:
+                    self.send_response(status)
+                    self.send_header("Content-Length", "0")
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                    return
 
             def _redirect(self, location: str) -> None:
                 try:
@@ -4678,7 +4812,12 @@ def _results_payload(payload: str, name: str, token: str) -> str:
 
 
 def _results_tools(
-    result: str, payload: str = "", name: str = "", token: str = "", active: str = "binder"
+    result: str,
+    payload: str = "",
+    name: str = "",
+    token: str = "",
+    active: str = "binder",
+    record: Mapping[str, object] | None = None,
 ) -> str:
     """The results-page buttons, and the last one's outcome.
 
@@ -4704,13 +4843,27 @@ def _results_tools(
     # Which tab is open, kept across the post. Without this every click on a
     # combined button answered on the combined tab and then showed the binder
     # one, so the reader had to find their way back to their own result.
-    binder_on = "" if active == "combined" else " checked"
+    #
+    # Compared by name and not by "is it the combined one", which is how it
+    # read while there were two: a third tab then opened, posted its own name
+    # back, and the page returned with Binder showing and the protocol's result
+    # on a tab nobody was looking at -- the exact bug the comment above
+    # records, one tab along.
+    binder_on = " checked" if active == "binder" else ""
     combined_on = " checked" if active == "combined" else ""
+    human_on = " checked" if active == HUMAN_TAB else ""
+    dynamics_on = " checked" if active == DYNAMICS_TAB else ""
+    if not (binder_on or combined_on or human_on or dynamics_on):
+        binder_on = " checked"
     return f"""<section class="results-tools results-tabbed">
 <input type="radio" name="results-tab" id="results-tab-binder" value="binder"{binder_on}>
 <label for="results-tab-binder" class="results-tab">Binder only</label>
 <input type="radio" name="results-tab" id="results-tab-combined" value="combined"{combined_on}>
 <label for="results-tab-combined" class="results-tab">Combined structure</label>
+<input type="radio" name="results-tab" id="results-tab-human" value="{HUMAN_TAB}"{human_on}>
+<label for="results-tab-human" class="results-tab">{_esc(PROTOCOL_LABEL)}</label>
+<input type="radio" name="results-tab" id="results-tab-dynamics" value="{DYNAMICS_TAB}"{dynamics_on}>
+<label for="results-tab-dynamics" class="results-tab">{_esc(ANALYST_LABEL)}</label>
 {readout}
 {handover}
 <div class="results-panel results-panel-binder">
@@ -4746,13 +4899,372 @@ fold of it answers whether the complex forms.</p>
                label_override="Replicate A Combined Known Sequence to AF 2 Database")}
 {_retrieve_row("af3c", "AlphaFold 3 model of the complex", RESULTS_AF3C, accession=False)}
 </div>
+{_human_panel(record)}
+{_dynamics_panel(record)}
 </section>
 """
 
 
-def _retrieve_row(
-    which: str, label: str, action: str, *, accession: bool, label_override: str = ""
-) -> str:
+def _human_panel(record: Mapping[str, object] | None) -> str:
+    """The H.U.M.A.N  Protocol tab: choose what not to bind, then the target, then compare.
+
+    Two steps in the reader's own order. Propose fills the list from what these
+    designs already resemble; the tick boxes and the free-text box are the
+    selection; the target box is next; compare is last. The limit notice sits
+    above the buttons rather than below the result, because a reader who has
+    just been handed a number is past the point of reading what it does not
+    mean.
+    """
+    held = record if isinstance(record, Mapping) else {}
+    return f"""<div class="results-panel results-panel-human">
+<h2>{_esc(PROTOCOL_LABEL)}</h2>
+<p class="hint">What this design must <strong>not</strong> bind, chosen before the target
+rather than after it. Propose lists the human proteins these designs already resemble,
+strongest first; tick the ones to avoid, or name your own.</p>
+<p class="protocol-limit">{_esc(PROTOCOL_LIMIT)}</p>
+<fieldset class="results-retrieve">
+<legend>1. What not to bind to</legend>
+<p class="results-row"><button type="submit" class="nav" name="__action"
+ value="{RESULTS_HUMAN_PROPOSE}" formnovalidate>Propose what not to bind to</button></p>
+{_human_candidates(held)}
+<label class="field">Or name them yourself — accessions, entry names or gene symbols
+<input type="text" name="{HUMAN_NAMES}" size="48" autocomplete="off"
+ placeholder="P02768 HBA1 FCGRT"></label>
+</fieldset>
+<fieldset class="results-retrieve">
+<legend>2. The target to bind to</legend>
+<label class="field">UniProt accession of the intended target
+<input type="text" name="{HUMAN_TARGET}" size="16" autocomplete="off" placeholder="P05113"></label>
+<p class="hint">Named so it is kept out of the proposal. A binder aimed at a human protein
+resembles that protein's family most of all, and the intended target leading the list of
+things to avoid is noise, not a finding.</p>
+</fieldset>
+<fieldset class="results-retrieve">
+<legend>3. A model of the design with one of them, if you have one</legend>
+<p class="hint">This is the only route here that answers whether the design <em>binds</em>
+what it must not. Nothing in this program docks or folds a pair: fold it elsewhere, paste
+the model, and the interface is measured against this run's own complex by the same code.</p>
+<label class="field">Which of them this model is of — required, and it has to be one you chose
+<input type="text" name="{HUMAN_MODEL_OF}" size="16" autocomplete="off" placeholder="P02768"></label>
+<label class="field">Paste the mmCIF or PDB of the design with that protein
+<textarea name="{HUMAN_MODEL}" rows="3" spellcheck="false"
+ placeholder="data_... or ATOM ..."></textarea></label>
+</fieldset>
+<p class="results-row"><button type="submit" class="nav" name="__action"
+ value="{RESULTS_HUMAN_COMPARE}" formnovalidate>Compare the output against what not to bind to</button></p>
+{_human_readout(held)}
+</div>
+"""
+
+
+def _dynamics_panel(record: Mapping[str, object] | None) -> str:
+    """The Conformational Dynamics Analyst tab: ask what moves, then draw it.
+
+    Last of the four, because it reads a finished design: generation, then
+    screening, then this. The chain is asked for rather than assumed, which is
+    the whole shape of this tab -- the generator takes one polypeptide chain,
+    so a design-plus-target complex is not an input it has, and the notice
+    above the buttons says so before anything is run rather than after.
+    """
+    held = record.get("dynamics") if isinstance(record, Mapping) else None
+    held = held if isinstance(held, Mapping) else {}
+    return f"""<div class="results-panel results-panel-dynamics">
+<h2>{_esc(ANALYST_LABEL)}</h2>
+<p class="hint">How far this design moves, and which parts of it move first. Every other
+structural number in this program is taken on one conformer; this one is taken over an
+ensemble.</p>
+<p class="protocol-limit">{_esc(DYNAMICS_SINGLE_CHAIN)}</p>
+<fieldset class="results-retrieve">
+<legend>1. The chain to analyse</legend>
+<label class="field">Chain — the design's own, not the target's
+<input type="text" name="{DYNAMICS_CHAIN}" size="6" autocomplete="off" placeholder="A"></label>
+</fieldset>
+<fieldset class="results-retrieve">
+<legend>2. What to ask for</legend>
+{_dynamics_tasks()}
+<label class="field">Conformers (frames)
+<input type="text" name="{DYNAMICS_FRAMES}" size="6" autocomplete="off" placeholder="10"></label>
+<label class="field">Replicates
+<input type="text" name="{DYNAMICS_REPLICATES}" size="6" autocomplete="off" placeholder="1"></label>
+</fieldset>
+<fieldset class="results-retrieve">
+<legend>3. Cuts, if you have them</legend>
+<p class="hint">Left blank, the fluctuation is measured and reported and no verdict is
+reached. Nothing published says how mobile a design may be, so this program will not
+pick a number for you.</p>
+<label class="field">Residue fluctuation that counts as mobile (&Aring;)
+<input type="text" name="{DYNAMICS_RMSF_MAX}" size="8" autocomplete="off" placeholder="2.0"></label>
+<label class="field">Share of the chain allowed to be mobile — needed with the cut above,
+because which residues move cannot decide anything without how much of the chain they are
+<input type="text" name="{DYNAMICS_MOBILE_MAX}" size="8" autocomplete="off" placeholder="0.15"></label>
+<label class="field">Drift from the design the ensemble may sit at (&Aring;)
+<input type="text" name="{DYNAMICS_DRIFT_MAX}" size="8" autocomplete="off" placeholder="3.0"></label>
+</fieldset>
+<p class="results-row"><button type="submit" class="nav" name="__action"
+ value="{RESULTS_DYNAMICS_RUN}" formnovalidate>Generate an ensemble and measure it</button></p>
+<fieldset class="results-retrieve">
+<legend>4. Draw it</legend>
+<p class="hint">The page holds the whole ensemble and takes seconds. The movie takes
+minutes to an hour depending on how many conformers there are, which is why it is a
+separate tick rather than something that happens by default.</p>
+<label><input type="checkbox" name="{DYNAMICS_MOVIE}" value="on"> Render an mp4 as well</label>
+<p class="results-row"><button type="submit" class="nav" name="__action"
+ value="{RESULTS_DYNAMICS_DRAW}" formnovalidate>Draw the ensemble</button></p>
+</fieldset>
+{_dynamics_readout(held)}
+</div>
+"""
+
+
+def _dynamics_tasks() -> str:
+    """The three things the generator can be asked for, each with its purpose."""
+    rows: list[str] = []
+    for index, mode in enumerate(DYNAMICS_TASK_MODES):
+        checked = " checked" if index == 0 else ""
+        rows.append(
+            f'<li><label><input type="radio" name="{DYNAMICS_TASK}" value="{_esc(mode)}"{checked}> '
+            f"<strong>{_esc(mode)}</strong></label> "
+            f'<span class="protocol-why">{_esc(DYNAMICS_TASK_PURPOSE.get(mode, ""))}</span></li>'
+        )
+    return f'<ul class="protocol-picks">{"".join(rows)}</ul>'
+
+
+def _dynamics_readout(record: Mapping[str, object]) -> str:
+    """What the run came to: the numbers, the call, and both caveats.
+
+    The caveats are drawn with the numbers rather than under them. A reader who
+    has just been handed a fluctuation curve is past the point of reading what
+    produced it.
+    """
+    if not record:
+        return ""
+    parts: list[str] = []
+    state = str(record.get("state", "untested"))
+    blocker = record.get("blocker")
+    if blocker:
+        parts.append(f'<p class="hint">{_esc(str(record.get("reason") or blocker))}</p>')
+    measured = record.get("measured")
+    if isinstance(measured, Mapping):
+        rows = [
+            ("Conformers", measured.get("frames")),
+            ("Residues", measured.get("residues")),
+            ("Chain", measured.get("chain")),
+            ("Fluctuation, mean (&Aring;)", measured.get("rmsf_mean_a")),
+            ("Fluctuation, highest (&Aring;)", measured.get("rmsf_max_a")),
+            ("Drift from the design (&Aring;)", measured.get("drift_a")),
+            ("Ensemble spread (&Aring;)", measured.get("spread_a")),
+            ("Radius of gyration (&Aring;)", measured.get("radius_of_gyration_a")),
+        ]
+        cells = "".join(f"<tr><td>{label}</td><td>{_human_cell(value)}</td></tr>" for label, value in rows)
+        parts.append(
+            f'<table class="protocol-readout"><caption>Measured &mdash; '
+            f'<span class="state-{_esc(state)}">{_esc(state)}</span></caption>'
+            f"<tr><th>Term</th><th>Value</th></tr>{cells}</table>"
+        )
+    mobile = record.get("mobile_residues")
+    if isinstance(mobile, list) and mobile:
+        shown = ", ".join(_esc(str(position)) for position in mobile[:24])
+        more = "" if len(mobile) <= 24 else f" and {len(mobile) - 24} more"
+        parts.append(f'<p class="hint">Mobile residues: {shown}{more}.</p>')
+    for key in ("out_of_distribution", "timescale"):
+        said = record.get(key)
+        if isinstance(said, str) and said:
+            parts.append(f'<p class="protocol-limit">{_esc(said)}</p>')
+    sample = record.get("design_sample")
+    if isinstance(sample, str) and sample:
+        parts.append(f'<p class="hint">Measured on {_esc(sample)}.</p>')
+    parts.append(_dynamics_drawn(record.get("drawn")))
+    return "".join(parts)
+
+
+def _dynamics_drawn(drawn: object) -> str:
+    """Where the viewer put the page and the movie.
+
+    The paths are named rather than linked. The page is a self-contained file
+    on disk, outside anything this server offers over a token, and inventing a
+    route to it would be this panel serving arbitrary files to say something it
+    can say in a sentence.
+    """
+    if not isinstance(drawn, Mapping):
+        return ""
+    parts: list[str] = []
+    page = drawn.get("page")
+    if isinstance(page, str) and page:
+        count = drawn.get("conformers_drawn")
+        parts.append(f'<p class="hint">Drew {_esc(count)} conformers. Page: <code>{_esc(page)}</code></p>')
+    movie = drawn.get("movie")
+    if isinstance(movie, str) and movie:
+        parts.append(f'<p class="hint">Movie: <code>{_esc(movie)}</code></p>')
+    said = drawn.get("reason")
+    if isinstance(said, str) and said:
+        parts.append(f'<p class="hint">{_esc(said)}</p>')
+    return "".join(parts)
+
+
+def _human_candidates(record: Mapping[str, object]) -> str:
+    """The tick boxes, when a proposal has filled them.
+
+    Before one has run there are no boxes and the list says so rather than
+    rendering an empty one: an empty list under "what not to bind to" reads as
+    "nothing to avoid", which is the opposite of what it means.
+    """
+    candidates = record.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        return '<p class="hint">No proposal yet. Propose, or name proteins below.</p>'
+    rows: list[str] = []
+    for item in candidates:
+        if not isinstance(item, Mapping):
+            continue
+        accession = str(item.get("accession", ""))
+        if not accession:
+            continue
+        gene = str(item.get("gene") or "")
+        described = str(item.get("description") or "")
+        identity = item.get("identity")
+        why = f"identity {identity}" if identity is not None else "proposed"
+        label = f"{gene} ({accession})" if gene else accession
+        rows.append(
+            f'<li><label><input type="checkbox" name="{HUMAN_PICK}" value="{_esc(accession)}"> '
+            f"<strong>{_esc(label)}</strong> {_esc(described)}</label>"
+            f' <span class="protocol-why">{_esc(why)}</span></li>'
+        )
+    return f'<ul class="protocol-picks">{"".join(rows)}</ul>' if rows else ""
+
+
+def _human_readout(record: Mapping[str, object]) -> str:
+    """The comparison, route by route. Each route states what it does not answer.
+
+    Drawn from the record the action returned rather than from a sentence, so
+    the page shows the same numbers a headless run prints and neither has to be
+    kept in step with the other by hand.
+    """
+    routes = record.get("routes")
+    if not isinstance(routes, list) or not routes:
+        return ""
+    blocks: list[str] = []
+    for route in routes:
+        if not isinstance(route, Mapping):
+            continue
+        blocks.append(_human_route(route))
+    design = record.get("interface_design")
+    if isinstance(design, str) and design:
+        blocks.append(f'<p class="hint">The on-target interface was measured on {_esc(design)}.</p>')
+    missing = record.get("not_in_proteome")
+    if isinstance(missing, list) and missing:
+        named = ", ".join(_esc(str(name)) for name in missing)
+        blocks.append(f'<p class="hint">Not in the reference proteome, so nothing was searched for them: {named}.</p>')
+    return "".join(blocks)
+
+
+def _human_route(route: Mapping[str, object]) -> str:
+    """One route's rows, under what it answers and what it does not."""
+    parts = [
+        f"<h3>{_esc(str(route.get('route', '')).replace('_', ' '))}</h3>",
+        f"<p>{_esc(str(route.get('answers', '')))}</p>",
+        f'<p class="protocol-limit">Does not answer: {_esc(str(route.get("does_not_answer", "")))}</p>',
+    ]
+    blocker = route.get("blocker")
+    if blocker:
+        parts.append(f'<p class="hint">{_esc(str(route.get("reason") or blocker))}</p>')
+    rows = [row for row in (route.get("readings") or []) if isinstance(row, Mapping)]
+    if rows and str(route.get("route")) == HUMAN_SEQUENCE_ROUTE:
+        parts.append(_human_resemblance_rows(rows))
+    margins = [row for row in (route.get("margins") or []) if isinstance(row, Mapping)]
+    if margins:
+        parts.append(_human_interface_tables(route, margins))
+    return "".join(parts)
+
+
+def _human_cell(value: object) -> str:
+    """One number in the readout, or an em-dash where there is none.
+
+    A blank cell and a measured zero look the same in a table, and on this page
+    the difference is "not measured" against "no interface at all".
+    """
+    return "&mdash;" if value is None else _esc(value)
+
+
+def _human_resemblance_rows(rows: Sequence[Mapping[str, object]]) -> str:
+    cells: list[str] = []
+    for row in rows:
+        state = str(row.get("state", "untested"))
+        said = str(row.get("reason") or "")
+        if not said and row.get("alignment") is False:
+            said = "No alignment over the E-value cut."
+        cells.append(
+            f"<tr><td>{_esc(str(row.get('label') or row.get('accession') or ''))}</td>"
+            f'<td class="state-{_esc(state)}">{_esc(state)}</td>'
+            f"<td>{_human_cell(row.get('identity'))}</td>"
+            f"<td>{_human_cell(row.get('coverage'))}</td>"
+            f"<td>{_esc(said)}</td></tr>"
+        )
+    return (
+        '<table class="protocol-readout"><tr><th>Protein</th><th>State</th>'
+        f"<th>Identity</th><th>Coverage</th><th>Note</th></tr>{''.join(cells)}</table>"
+    )
+
+
+#: What each interface term is called on the page. The record keys are the
+#: measuring module's own names; these are the words for a reader.
+_HUMAN_TERM_LABELS = {
+    "dsasa_total_a2": "Buried area (A²)",
+    "interface_atom_contacts": "Atom contacts",
+    "interface_polar_contacts": "Polar contacts",
+    "shape_complementarity": "Shape complementarity",
+}
+
+
+def _human_interface_tables(route: Mapping[str, object], margins: Sequence[Mapping[str, object]]) -> str:
+    """One table per protein: every term on-target, off-target, and the lead.
+
+    A lead on its own is not readable. 213 square angstrom more interface
+    on-target than off-target is a different finding over a 300 square angstrom
+    interface than over a 3000 one, and the lead alone cannot tell the two
+    apart. Both absolutes are already on the route record -- ``on_target`` and
+    ``readings`` -- so this draws them rather than storing a second copy of a
+    number that is free to drift from the first.
+    """
+    on_target = route.get("on_target")
+    on_target = on_target if isinstance(on_target, Mapping) else {}
+    readings = {str(row.get("where")): row for row in (route.get("readings") or []) if isinstance(row, Mapping)}
+    terms = [str(name) for name in (route.get("terms") or [])]
+    blocks: list[str] = []
+    for margin in margins:
+        where = str(margin.get("where") or "")
+        state = str(margin.get("state", "untested"))
+        said = str(margin.get("reason") or "")
+        note = f'<p class="hint">{_esc(said)}</p>' if said else ""
+        caption = f'Against {_esc(where)} &mdash; <span class="state-{_esc(state)}">{_esc(state)}</span>'
+        if not any(margin.get(term) is not None for term in terms):
+            # No table where no margin was taken: every cell would be an
+            # em-dash, and four rows of them under a heading is noise around
+            # the one sentence that says why.
+            #
+            # Tested on the numbers and not on the presence of a reason, which
+            # is a different question: ``margin_threshold_not_set`` measured
+            # both sides perfectly well and is withholding only the verdict,
+            # and drawing no table for it hid the measurement behind "no cut
+            # was named". The text readout makes the same test, and the two
+            # renderings have to agree.
+            blocks.append(f'<p class="protocol-against">{caption}</p>{note}')
+            continue
+        theirs = readings.get(where, {})
+        rows = "".join(
+            f"<tr><td>{_esc(_HUMAN_TERM_LABELS.get(term, term.replace('_', ' ')))}</td>"
+            f"<td>{_human_cell(on_target.get(term))}</td>"
+            f"<td>{_human_cell(theirs.get(term))}</td>"
+            f"<td>{_human_cell(margin.get(term))}</td></tr>"
+            for term in terms
+        )
+        blocks.append(
+            f'<table class="protocol-readout"><caption>{caption}</caption>'
+            "<tr><th>Term</th><th>On-target</th><th>Off-target</th><th>Lead</th></tr>"
+            f"{rows}</table>{note}"
+        )
+    return "".join(blocks)
+
+
+def _retrieve_row(which: str, label: str, action: str, *, accession: bool, label_override: str = "") -> str:
     """One model's retrieval routes: paste, open a file, and for AF2 an accession.
 
     Three routes rather than one because the step already taken differs.
