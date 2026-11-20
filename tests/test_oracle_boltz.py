@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+
+import pytest
 
 from rfproteina.metrics.oracles import boltz_oracle
 from rfproteina.metrics.oracles.boltz_oracle import Boltz2Oracle
@@ -79,3 +82,64 @@ def test_parse_affinity_absent(tmp_path):
     pred = tmp_path / "predictions" / "design"
     pred.mkdir(parents=True)
     assert boltz_oracle.parse_affinity(pred, "design") is None
+
+
+# ------------------------------------------------- the MSA declaration
+#
+# The shipped configuration could not return a refold: no `msa` key was written
+# and `use_msa_server` is false, which Boltz rejects outright. These pin the
+# declaration rather than the symptom, because the symptom was a warning line.
+
+
+def test_the_default_input_declares_an_msa_source():
+    """An omitted `msa` key means "generate one", not "do not use one"."""
+    rendered = Boltz2Oracle.to_yaml({"A": "ACD"})
+    assert "msa: empty" in rendered
+
+
+def test_every_chain_carries_its_own_msa_declaration():
+    """Boltz reads the key per protein entry, so one for the file will not do."""
+    rendered = Boltz2Oracle.to_yaml({"A": "ACD", "B": "EF"})
+    assert rendered.count("msa: empty") == 2
+
+
+def test_opting_into_the_server_leaves_the_msa_key_out():
+    """With --use_msa_server, Boltz builds the alignment and the key must be absent."""
+    rendered = Boltz2Oracle.to_yaml({"A": "ACD"}, single_sequence=False)
+    assert "msa:" not in rendered
+    assert 'sequence: "ACD"' in rendered
+
+
+def test_the_oracle_picks_the_declaration_from_its_own_setting(tmp_path, monkeypatch):
+    """`_predict` must tie the YAML to `use_msa_server`, not to a constant."""
+    seen: dict[str, str] = {}
+
+    class _Done:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, **_kwargs):
+        seen["cmd"] = " ".join(cmd)
+        seen["yaml"] = Path(cmd[2]).read_text(encoding="utf-8")
+        raise RuntimeError("stop after the input is written")
+
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    offline_dir = tmp_path / "offline"
+    offline_dir.mkdir()
+    offline = Boltz2Oracle()
+    with pytest.raises(RuntimeError):
+        offline._predict({"A": "ACD"}, offline_dir)
+    assert "msa: empty" in seen["yaml"]
+    assert "--use_msa_server" not in seen["cmd"]
+
+    online_dir = tmp_path / "online"
+    online_dir.mkdir()
+    online = Boltz2Oracle(use_msa_server=True)
+    with pytest.raises(RuntimeError):
+        online._predict({"A": "ACD"}, online_dir)
+    assert "msa:" not in seen["yaml"]
+    assert "--use_msa_server" in seen["cmd"]

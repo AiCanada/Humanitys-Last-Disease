@@ -1725,15 +1725,23 @@ def _apply_sequence_liability(
     from rfproteina.disease.mhc_tables import prepare_class_i_table
 
     try:
-        class_i_scan = prepare_class_i_table(
-            output_dir, pairs, binder_kind=_canonical_kind(binder_kind)
-        )
+        class_i_scan = prepare_class_i_table(output_dir, pairs, binder_kind=_canonical_kind(binder_kind))
     except (OSError, ValueError) as error:
         class_i_scan = {"state": "predictor_failed", "blocker": str(error)}
     from rfproteina.disease.tepitope import prepare_class_ii_table
 
     with contextlib.suppress(OSError, ValueError):
         prepare_class_ii_table(output_dir, pairs, binder_kind=_canonical_kind(binder_kind))
+        # TEPITOPE has matrices for four of the panel's seven alleles, so the
+        # table it writes is silent on DRB3*01:01, DRB3*02:02 and DRB4*01:01 --
+        # and a design presented only on those reads clear because nothing
+        # looked. The PSSM fitted here from IEDB's CC BY measurements covers
+        # all seven, so it fills the gap at no download. Each row names its own
+        # method, and neither method claims the consensus scale, so the ADA
+        # axis is unaffected. Appends only: an allele already scored is left.
+        from rfproteina.disease.class_ii import fill_missing_alleles
+
+        fill_missing_alleles(output_dir, pairs)
     axes, by_example = measure_sequence_liability(
         pairs,
         directory=output_dir,
@@ -3774,8 +3782,7 @@ def _with_interface_thresholds(quality: object) -> object:
         return quality
     attached = dict(quality)
     attached[PROVENANCE_KEY] = {
-        name: {**record, "bar": _interface_bar(name)}
-        for name, record in describe_interface_thresholds().items()
+        name: {**record, "bar": _interface_bar(name)} for name, record in describe_interface_thresholds().items()
     }
     return attached
 

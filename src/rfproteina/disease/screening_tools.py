@@ -162,6 +162,7 @@ def tool_code_path(tool: str, *relatives: str) -> Path | None:
                 return candidate
     return None
 
+
 #: The twenty standard residues. How a non-standard residue is handled is each
 #: screen's call; the set lives here so the screens agree on what "standard" is.
 STANDARD_RESIDUES = frozenset("ACDEFGHIKLMNPQRSTVWY")
@@ -190,8 +191,53 @@ class ToolResult:
 
 
 def tool_available(name: str) -> bool:
-    """Whether ``name`` is on PATH, checked with :func:`shutil.which`, never assumed."""
+    """Whether ``name`` is on PATH, checked with :func:`shutil.which`, never assumed.
+
+    PATH only. A screen whose tool may also be installed under one of the roots
+    in :func:`_roots` wants :func:`resolve_tool`, which looks in both.
+    """
     return shutil.which(name) is not None
+
+
+def _is_executable(path: Path) -> bool:
+    """A file this process may execute. Both halves matter: a directory named
+    like the binary satisfies the first test and not the second."""
+    return path.is_file() and os.access(path, os.X_OK)
+
+
+def resolve_tool(name: str, env_var: str, *relatives: str) -> str | None:
+    """The executable for ``name``, or ``None`` when this machine has none.
+
+    One precedence for every external-tool screen, the one
+    ``offtarget.mmseqs_command`` established: an explicit ``env_var`` wins, then
+    a copy under one of the roots :func:`tool_code_path` searches --
+    ``DATA_PATH/<name>`` first, then the checkout's ``screening subpackage`` --
+    and ``PATH`` last.
+
+    Here rather than in each screen because PATH-only was not a choice any
+    screen made, it was an omission: an installer that puts a binary under
+    ``DATA_PATH`` leaves a screen that only asks ``shutil.which`` reporting the
+    tool missing while it sits on disk, which is exactly what the novelty screen
+    did. ``relatives`` are the paths to try inside the tool's directory, since a
+    release tarball may unpack to ``<name>`` or to ``bin/<name>``.
+
+    An ``env_var`` naming something unusable falls through to the search rather
+    than failing: it may name a bare command on PATH, which is why
+    :func:`shutil.which` is tried on it before giving up on it.
+    """
+    named = os.environ.get(env_var, "").strip()
+    if named:
+        candidate = Path(named)
+        if _is_executable(candidate):
+            return str(candidate)
+        found = shutil.which(named)
+        if found:
+            return found
+    if relatives:
+        inside = tool_code_path(name, *relatives)
+        if inside is not None and _is_executable(inside):
+            return str(inside)
+    return shutil.which(name)
 
 
 def run_tool(

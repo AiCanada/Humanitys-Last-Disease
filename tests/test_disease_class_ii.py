@@ -455,3 +455,121 @@ def test_the_background_is_drawn_from_the_corpus_composition_and_is_reproducible
     ordered = list(first.alleles[allele].background)
     assert ordered == sorted(ordered), "a quantile grid is ascending by construction"
     assert math.isfinite(ordered[0]) and math.isfinite(ordered[-1])
+
+
+# ------------------------------------ filling the panel alleles TEPITOPE lacks
+
+
+@pytest.fixture
+def fitted_model_path(tmp_path_factory):
+    """A real fitted model, trained once, saved where the fill can load it."""
+    where = tmp_path_factory.mktemp("class_ii_model")
+    corpus = _corpus(where / "c.tsv", _motif_rows(240, alleles=ig.DR_PANEL))
+    model = ci.train(ci.load_corpus(corpus), background=100)
+    return ci.save(model, where / "model")
+
+
+def _mhc_ii_table(directory: Path, alleles, method: str = "tepitope") -> Path:
+    """A class II table in the shape ``tepitope.prepare_class_ii_table`` writes."""
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "mhc_ii.tsv"
+    columns = ["peptide", "allele", "percentile_rank", "method", "start", "tepitope_score"]
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=columns, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        for allele in alleles:
+            writer.writerow(
+                {
+                    "peptide": "EVQLVESGGGLVQPG",
+                    "allele": allele,
+                    "percentile_rank": "4",
+                    "method": method,
+                    "start": "1",
+                    "tepitope_score": "2.6000",
+                }
+            )
+    return path
+
+
+def _rows_of(path: Path) -> list[dict[str, str]]:
+    with path.open(encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle, delimiter="\t"))
+
+
+def test_fill_adds_only_the_panel_alleles_the_table_lacks(tmp_path, fitted_model_path):
+    """TEPITOPE covers four of the seven; the other three are the whole point."""
+    fill_missing_alleles = ci.fill_missing_alleles
+
+    covered = ["DRB1*03:01", "DRB1*07:01", "DRB1*15:01", "DRB5*01:01"]
+    table = _mhc_ii_table(tmp_path, covered)
+    sequences = [("d1", "EVQLVESGGGLVQPGGSLRLSCAASGFNIKDTYIHWVRQAPGKG")]
+
+    record = fill_missing_alleles(tmp_path, sequences, model_path=fitted_model_path)
+    assert record["state"] == "appended"
+    assert sorted(record["alleles"]) == ["DRB3*01:01", "DRB3*02:02", "DRB4*01:01"]
+
+    rows = _rows_of(table)
+    assert {row["allele"] for row in rows} == set(ig.DR_PANEL), "the panel is complete"
+    # The four already there were not rescored.
+    assert sum(1 for row in rows if row["allele"] in covered) == len(covered)
+
+
+def test_filled_rows_declare_their_own_method_not_tepitope(tmp_path, fitted_model_path):
+    """A row claiming a scale it was not computed on is the failure to avoid."""
+    fill_missing_alleles = ci.fill_missing_alleles
+
+    _mhc_ii_table(tmp_path, ["DRB1*03:01"])
+    fill_missing_alleles(tmp_path, [("d1", "EVQLVESGGGLVQPGGSLRLSCAASG")], model_path=fitted_model_path)
+
+    rows = _rows_of(tmp_path / "mhc_ii.tsv")
+    added = [row for row in rows if row["allele"] != "DRB1*03:01"]
+    assert added, "something was added"
+    assert {row["method"] for row in added} == {ci.CLASS_II_METHOD}
+    assert all(row["tepitope_score"] == "" for row in added), "no TEPITOPE score is invented"
+
+
+def test_the_added_rows_never_claim_the_consensus_mark(tmp_path, fitted_model_path):
+    """Paul et al.'s cut belongs to the IEDB consensus rank. Claiming that mark
+    would make the ADA axis apply a published threshold to another scale."""
+    fill_missing_alleles = ci.fill_missing_alleles
+    from rfproteina.disease.liability import _table_methods
+
+    _mhc_ii_table(tmp_path, ["DRB1*03:01"])
+    record = fill_missing_alleles(tmp_path, [("d1", "EVQLVESGGGLVQPGGSLRLSCAASG")], model_path=fitted_model_path)
+    assert record["ada"] == "untested_not_consensus_rank"
+
+    methods = _table_methods(_rows_of(tmp_path / "mhc_ii.tsv"))
+    assert ig.CONSENSUS_MARK.casefold() not in methods
+    assert len(methods) == 2, "both methods are visible to the reader, which is the intended shape"
+
+
+def test_fill_is_idempotent(tmp_path, fitted_model_path):
+    """Run twice over one directory and nothing is rescored or duplicated."""
+    fill_missing_alleles = ci.fill_missing_alleles
+
+    _mhc_ii_table(tmp_path, ["DRB1*03:01"])
+    sequences = [("d1", "EVQLVESGGGLVQPGGSLRLSCAASG")]
+    first = fill_missing_alleles(tmp_path, sequences, model_path=fitted_model_path)
+    after_first = len(_rows_of(tmp_path / "mhc_ii.tsv"))
+
+    second = fill_missing_alleles(tmp_path, sequences, model_path=fitted_model_path)
+    assert first["state"] == "appended"
+    assert second["state"] == "panel_complete"
+    assert len(_rows_of(tmp_path / "mhc_ii.tsv")) == after_first
+
+
+def test_fill_refuses_rather_than_inventing_when_there_is_no_table(tmp_path, fitted_model_path):
+    fill_missing_alleles = ci.fill_missing_alleles
+
+    record = fill_missing_alleles(tmp_path, [("d1", "EVQLVESGGG")], model_path=fitted_model_path)
+    assert record["state"] == "no_table"
+    assert not (tmp_path / "mhc_ii.tsv").exists()
+
+
+def test_fill_reports_a_missing_model_instead_of_failing(tmp_path):
+    fill_missing_alleles = ci.fill_missing_alleles
+
+    _mhc_ii_table(tmp_path, ["DRB1*03:01"])
+    record = fill_missing_alleles(tmp_path, [("d1", "EVQLVESGGG")], model_path=tmp_path / "absent.json")
+    assert record["state"] == "model_missing"
+    assert len(_rows_of(tmp_path / "mhc_ii.tsv")) == 1, "the table is untouched"

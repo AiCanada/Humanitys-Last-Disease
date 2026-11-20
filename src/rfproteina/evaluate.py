@@ -113,7 +113,11 @@ def run_evaluate(cfg: DictConfig) -> None:
     oracle_mm = _mm("refolding_oracles")
     if oracle_mm is not None:
         for oracle in oracle_mm.metrics.values():
-            oracle.output_cif_suffix = cif_suffix
+            # Not onto an oracle whose suffix is its own file format: this sets
+            # the run's compression choice, and an oracle that writes PDB does
+            # not become a CIF by being told the run compresses them.
+            if not getattr(oracle, "output_suffix_is_fixed", False):
+                oracle.output_cif_suffix = cif_suffix
     refold_mm = _mm("refolding_metrics")
     pass_mm = _mm("pass_criteria")
     pre_oracle_filter_mm = _mm("pre_oracle_filters")

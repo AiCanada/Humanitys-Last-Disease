@@ -449,6 +449,55 @@ SOURCES: tuple[Source, ...] = (
         ),
     ),
     Source(
+        name="IUPHAR/BPS Guide to PHARMACOLOGY ligands",
+        url="https://www.guidetopharmacology.org/DATA/ligands.csv",
+        file="ligands.csv",
+        # No axis of its own and nothing to rename it to: it is an input to the
+        # two reductions above, never a table the screen opens.
+        stem=None,
+        handoff="none",
+        axis="companion to interactions.csv; feeds no axis by itself",
+        size=6_880_425,
+        licence="Open Database License (ODbL) 1.0 -- share-alike applies to any redistributed derivative",
+        note=(
+            "Not a table the screen reads, and there is nothing to rename it to: it is an input "
+            "to the two reductions, never an axis. "
+            "The structures, and the reason both GtoPdb reductions take two files: "
+            "interactions.csv carries a Ligand ID and no SMILES, so without this one every row "
+            "is counted under ligand_without_structure and nothing can be fingerprinted. "
+            "gtopdb_panel_subset needs it for the structure; gtopdb_offtarget_subset needs it "
+            "for the structure and for the approved/withdrawn marking that "
+            "ligand_safety.offtarget_profile reports first, an analogue that is a withdrawn drug "
+            "being the loudest thing this release can say. It also publishes its own InChIKey, "
+            "which unlike BindingDB's is not stereo-blind; the subset keeps it beside the "
+            "recomputed key as inchikey_upstream, and carrying both is the only way that "
+            "difference stays visible. Measured on release 2026.3.1 (published 2026-10-12): "
+            "6,880,425 bytes, and over the whole release the reductions resolve structures for "
+            "58 panel ligands and 4,891 off-target compounds."
+        ),
+    ),
+    Source(
+        name="IUPHAR/BPS Guide to PHARMACOLOGY targets and families",
+        url="https://www.guidetopharmacology.org/DATA/targets_and_families.csv",
+        file="targets_and_families.csv",
+        stem=None,
+        handoff="none",
+        axis="companion to interactions.csv; feeds no axis by itself",
+        size=1_896_910,
+        licence="Open Database License (ODbL) 1.0 -- share-alike applies to any redistributed derivative",
+        note=(
+            "Not a table the screen reads, and there is nothing to rename it to: it is an input "
+            "to the off-target reduction, never an axis. "
+            "The family and class each target belongs to, and the third file "
+            "gtopdb_offtarget_subset requires. Without it that reduction returns "
+            "targets_not_found and the secondary-pharmacology path does not run at all; "
+            "gtopdb_panel_subset does not read it. The families are what make the off-target "
+            "profile legible rather than a list of accessions -- on release 2026.3.1 the kept "
+            "rows span 95 channel and GPCR families across 1,477 targets, which is the view a "
+            "panel of ten proteins cannot give. Measured on that release: 1,896,910 bytes."
+        ),
+    ),
+    Source(
         name="BindingDB measured affinities (full TSV)",
         url="https://www.bindingdb.org/rwd/bind/downloads/BindingDB_All_202611_tsv.zip",
         file="BindingDB_All.tsv",
@@ -1001,6 +1050,63 @@ def downloaded_proteome(source_directory: Path | None = None) -> Path | None:
         return None
     path = where / source.file
     return path if path.is_file() else None
+
+
+#: The three GtoPdb files the reductions read, in the order they are passed to
+#: :func:`gtopdb_offtarget_subset`. Recorded once, here, for the reason
+#: :func:`downloaded_name` gives: a name derived separately by the download, the
+#: presence check and the reader is a name they can come to disagree about.
+GTOPDB_FILES: tuple[str, ...] = ("interactions.csv", "ligands.csv", "targets_and_families.csv")
+
+#: What :func:`bindingdb_panel_subset` writes, public so a caller that needs to
+#: *find* that subset -- to merge it, rather than to write it -- does not have to
+#: spell the name a second time.
+BINDINGDB_PANEL_SUBSET_FILE = _BDB_SUBSET_FILE
+
+
+@dataclass(frozen=True)
+class GtoPdbRelease:
+    """The three GtoPdb files, once every one of them is on disk."""
+
+    interactions: Path
+    ligands: Path
+    targets: Path
+
+    def as_arguments(self) -> tuple[Path, Path, Path]:
+        """In the order :func:`gtopdb_offtarget_subset` takes them."""
+        return (self.interactions, self.ligands, self.targets)
+
+
+def missing_gtopdb_files(source_directory: Path | None = None) -> tuple[str, ...]:
+    """Which of :data:`GTOPDB_FILES` are absent or empty, in registry order.
+
+    Empty counts as absent. A zero-byte file is what a transfer that failed
+    without raising leaves behind, and a reduction handed one reports a parse
+    error rather than the plain truth that nothing was downloaded.
+    """
+    where = default_directory() if source_directory is None else source_directory
+    return tuple(name for name in GTOPDB_FILES if not ((where / name).is_file() and (where / name).stat().st_size > 0))
+
+
+def gtopdb_release(source_directory: Path | None = None) -> GtoPdbRelease | None:
+    """The GtoPdb release on disk, or None while any of its three files is absent.
+
+    The companion to :func:`downloaded_proteome`, and it exists for the same
+    reason: the reductions take paths and know nothing about a download
+    registry, so without this a machine that had fetched all three still had to
+    be told where they were. ``None`` rather than a partial release, because
+    two files out of three run neither reduction --
+    :func:`gtopdb_panel_subset` needs the first two and
+    :func:`gtopdb_offtarget_subset` all three.
+
+    Use :func:`missing_gtopdb_files` to report *which* are absent; this answers
+    only whether the release can be reduced.
+    """
+    where = default_directory() if source_directory is None else source_directory
+    if missing_gtopdb_files(where):
+        return None
+    interactions, ligands, targets = (where / name for name in GTOPDB_FILES)
+    return GtoPdbRelease(interactions, ligands, targets)
 
 
 def stage_for_run(
@@ -1565,7 +1671,7 @@ def bindingdb_panel_subset(
       matched, the second block was ``UHFFFAOYSA`` wherever the SMILES carried
       stereochemistry. The join key is recomputed from the SMILES instead, by
       :func:`_inchikey_factory`, and BindingDB's own key is kept beside it as
-      ``inchikey_bindingdb`` for provenance.
+      ``inchikey_upstream`` for provenance.
     * **The accession is not in a fixed column.** BindingDB repeats its UniProt
       block per target chain, 50 chains at the 2026-11 release. Every chain's
       SwissProt and TrEMBL primary-ID column is scanned, because in a

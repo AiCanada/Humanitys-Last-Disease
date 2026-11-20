@@ -14,10 +14,14 @@ an informational axis rather than wired into a pass bar. The 0.5 same-fold cut i
 cited; everything else is labelled a suggestion.
 
 Nothing here downloads a database. Foldseek (GPL-3.0) and its pre-built
-databases (CC-BY-4.0) are fetched by an operator with ``foldseek databases``;
-the sizes are in :data:`FOLDSEEK_DATABASES` and in the handoff. If Foldseek is
-not on PATH, or the database path is absent, the screen returns ``untested`` with
-a blocker that names what is missing.
+databases (CC-BY-4.0) are fetched by an operator -- ``scripts/install_foldseek.py``
+for the binary and for one named database, or ``foldseek databases`` by hand;
+the sizes are in :data:`FOLDSEEK_DATABASES` and in the handoff. If no Foldseek
+can be resolved, or the database path is absent, the screen returns ``untested``
+with a blocker that names what is missing.
+
+The binary is ``FOLDSEEK``, then ``DATA_PATH/foldseek``, then the checkout's
+``screening subpackage/foldseek``, then ``PATH`` -- see :func:`foldseek_command`.
 """
 
 from __future__ import annotations
@@ -32,11 +36,19 @@ from rfproteina.disease.screening_tools import (
     UNTESTED,
     ScreeningInputError,
     axis_record,
+    resolve_tool,
     run_tool,
-    tool_available,
 )
 
 FOLDSEEK = "foldseek"
+
+#: An executable path, or a bare command on PATH. It wins over any installed copy.
+FOLDSEEK_ENV = "FOLDSEEK"
+
+#: Where the binary sits inside ``<root>/foldseek``. The official release tarball
+#: unpacks to ``foldseek/bin/foldseek``; ``scripts/install_foldseek.py`` lifts it
+#: out to ``foldseek/foldseek``, so both spellings are tried.
+FOLDSEEK_RELATIVES = ("foldseek", "bin/foldseek")
 
 #: Structure file extensions Foldseek reads as a query. Compression is handled by
 #: Foldseek itself, so the gzipped forms are listed too.
@@ -110,9 +122,25 @@ class NoveltyUnavailableError(RuntimeError):
         self.blocker = blocker
 
 
+def foldseek_command() -> str | None:
+    """The Foldseek executable, or None when this machine has none.
+
+    ``FOLDSEEK`` wins, then a copy under ``DATA_PATH/foldseek`` (where
+    ``scripts/install_foldseek.py`` puts it) or the checkout's
+    ``screening subpackage/foldseek``, then ``PATH`` -- the precedence
+    :func:`~rfproteina.disease.screening_tools.resolve_tool` holds for every
+    external-tool screen.
+
+    This screen used to ask ``PATH`` alone, which is not the same question: an
+    installed Foldseek that was not also on ``PATH`` left the novelty axis
+    reporting ``foldseek_not_installed`` with the binary on disk.
+    """
+    return resolve_tool(FOLDSEEK, FOLDSEEK_ENV, *FOLDSEEK_RELATIVES)
+
+
 def foldseek_available() -> bool:
-    """Whether ``foldseek`` is on PATH. Checked, never assumed."""
-    return tool_available(FOLDSEEK)
+    """Whether a Foldseek executable can be resolved. Checked, never assumed."""
+    return foldseek_command() is not None
 
 
 def query_structures(query_dir: Path) -> list[Path]:
@@ -243,6 +271,11 @@ def novelty_search(
         raise NoveltyUnavailableError("foldseek_not_installed")
     if not Path(database).exists():
         raise NoveltyUnavailableError("foldseek_database_missing")
+    if foldseek == FOLDSEEK:
+        # Run the binary this machine actually has, which may be an installed
+        # copy that is not on PATH. Falling back to the bare name keeps the
+        # behaviour a caller gets when availability has been stubbed.
+        foldseek = foldseek_command() or FOLDSEEK
     work_dir = Path(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
     alignment_out = work_dir / "novelty.m8"

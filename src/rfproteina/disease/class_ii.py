@@ -710,3 +710,158 @@ def class_ii_report(
         "warnings": warnings,
         "notes": list(model.notes),
     }
+
+
+#: The columns ``tepitope.prepare_class_ii_table`` writes. Repeated here only as
+#: a fallback: the header actually on disk wins, so a table that grows a column
+#: is appended to correctly rather than truncated to this list.
+_TABLE_COLUMNS = ("peptide", "allele", "percentile_rank", "method", "start", "tepitope_score")
+
+
+def fill_missing_alleles(
+    directory: Path,
+    sequences: Sequence[tuple[str, str | None]],
+    *,
+    panel: Sequence[str] = DR_PANEL,
+    model_path: Path | None = None,
+) -> dict[str, object]:
+    """Score the panel alleles ``mhc_ii.tsv`` has no rows for, with this model.
+
+    TEPITOPE ships matrices for four of the seven alleles Paul et al.'s DR panel
+    names, so a table written from it alone is silent on ``DRB3*01:01``,
+    ``DRB3*02:02`` and ``DRB4*01:01``. Those are three of the four DRB3/4/5
+    alleles the paper identifies as what made the scheme work, and a design
+    presented only on them reads as clear because nothing looked. This model
+    was fitted on all seven from IEDB's CC BY measurements, so the three are
+    answerable here at no download and with no licence to clear.
+
+    **Two methods in one table is the intended shape, not a workaround.**
+    ``liability._table_methods`` already returns the *set* of methods a table
+    declares, and every row carries its own ``method``, so a reader can tell
+    which rows came from where. What must not happen is a row claiming a scale
+    it was not computed on: these rows say :data:`CLASS_II_METHOD`, never
+    ``tepitope`` and never the IEDB consensus mark, so the ADA axis goes on
+    reporting ``untested`` rather than applying Paul et al.'s cut to a rank
+    that is not the one the paper calibrated.
+
+    Windows come from :func:`tepitope.windows`, so the peptides and their
+    ``start`` values line up with the rows already in the file instead of
+    being a second, differently-framed scan of the same sequence.
+
+    Appends only; an allele already present is never rescored or replaced.
+    """
+    from rfproteina.disease.tepitope import reference_sequences, windows
+
+    table = Path(directory) / "mhc_ii.tsv"
+    if not table.is_file():
+        return {"state": "no_table", "path": str(table)}
+
+    with table.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        columns = list(reader.fieldnames or _TABLE_COLUMNS)
+        present = {(row.get("allele") or "").strip() for row in reader}
+
+    wanted = [allele for allele in panel if allele not in present]
+    if not wanted:
+        return {"state": "panel_complete", "alleles": sorted(present & set(panel))}
+
+    if model_path is not None:
+        path = Path(model_path)
+    else:
+        try:
+            path = default_model_dir() / _MODEL_FILE
+        except ClassIIModelError:
+            return {"state": "model_missing", "missing_alleles": wanted, "path": None}
+    if not path.is_file():
+        return {"state": "model_missing", "missing_alleles": wanted, "path": str(path)}
+    model = load_model(path)
+
+    answerable = [allele for allele in wanted if allele in model.alleles]
+    unanswerable = [allele for allele in wanted if allele not in model.alleles]
+    if not answerable:
+        return {"state": "alleles_not_in_model", "missing_alleles": unanswerable}
+
+    rows: list[dict[str, str]] = []
+    for _name, sequence in sequences:
+        if not sequence:
+            continue
+        for start, peptide in windows(sequence):
+            clean = peptide.strip().upper()
+            if len(clean) < CORE_WIDTH or set(clean) - STANDARD:
+                continue
+            for allele in answerable:
+                rows.append(
+                    {
+                        "peptide": clean,
+                        "allele": allele,
+                        "percentile_rank": str(percentile_rank(model, clean, allele)),
+                        "method": model.method,
+                        "start": str(start),
+                        "tepitope_score": "",
+                    }
+                )
+    if not rows:
+        return {"state": "no_peptides", "missing_alleles": wanted}
+
+    _append_rows(table, columns, rows)
+
+    # The reference table has to move with the design table, or the axis stops
+    # on ``reference_allele_mismatch``: the reader compares the two allele sets
+    # and will not score a design against a tolerated-protein background
+    # measured over different alleles. Filling one and leaving the other turned
+    # a comparison the reader could make into one it refuses, so both are
+    # filled. It is three proteins and about 1,200 windows an allele.
+    reference_rows = 0
+    reference = Path(directory) / "mhc_ii_reference.tsv"
+    if reference.is_file():
+        status, proteins = reference_sequences()
+        if status == "ready":
+            with reference.open("r", encoding="utf-8", newline="") as handle:
+                reference_columns = list(csv.DictReader(handle, delimiter="\t").fieldnames or ())
+            extra: list[dict[str, str]] = []
+            for accession, protein in proteins.items():
+                for start, peptide in windows(protein):
+                    clean = peptide.strip().upper()
+                    if len(clean) < CORE_WIDTH or set(clean) - STANDARD:
+                        continue
+                    for allele in answerable:
+                        extra.append(
+                            {
+                                "peptide": clean,
+                                "allele": allele,
+                                "percentile_rank": str(percentile_rank(model, clean, allele)),
+                                "method": model.method,
+                                "protein": accession,
+                                "start": str(start),
+                                "length": str(len(protein)),
+                                "tepitope_score": "",
+                            }
+                        )
+            if extra:
+                _append_rows(reference, reference_columns, extra)
+                reference_rows = len(extra)
+
+    return {
+        "state": "appended",
+        "method": model.method,
+        "rows": len(rows),
+        "reference_rows": reference_rows,
+        "alleles": answerable,
+        "still_missing": unanswerable,
+        "path": str(table),
+        "ada": "untested_not_consensus_rank",
+    }
+
+
+def _append_rows(path: Path, columns: Sequence[str], rows: Sequence[Mapping[str, str]]) -> None:
+    """Append to an existing TSV under the header it already has.
+
+    The header on disk wins over any list this module carries, so a table that
+    has grown a column is appended to correctly rather than silently truncated
+    to the shape this module last knew about.
+    """
+    with path.open("a", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle, fieldnames=list(columns), delimiter="\t", lineterminator="\n", extrasaction="ignore"
+        )
+        writer.writerows(rows)

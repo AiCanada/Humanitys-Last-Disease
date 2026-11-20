@@ -11,6 +11,7 @@ from rfproteina.disease.screening_tools import (
     alphabet_of,
     axis_record,
     read_fasta,
+    resolve_tool,
     run_tool,
     tool_available,
     write_fasta,
@@ -68,3 +69,59 @@ def test_axis_record_has_the_three_rollup_keys_plus_extras() -> None:
     assert record["measurement"] == 0.0
     assert record["blocker"] is None
     assert record["off_target"] is None
+
+
+# ------------------------------------------------- the shared tool resolver
+
+
+def _executable(path: Path) -> Path:
+    import stat
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+    return path
+
+
+def test_resolve_prefers_the_environment_variable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    chosen = _executable(tmp_path / "chosen" / "widget")
+    monkeypatch.setenv("WIDGET", str(chosen))
+    monkeypatch.setenv("DATA_PATH", str(tmp_path / "data"))
+    _executable(tmp_path / "data" / "widget" / "widget")
+    assert resolve_tool("widget", "WIDGET", "widget") == str(chosen)
+
+
+def test_resolve_falls_through_an_env_var_that_names_nothing_usable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale variable must not hide a copy that is actually there."""
+    monkeypatch.setenv("WIDGET", str(tmp_path / "gone" / "widget"))
+    monkeypatch.setenv("DATA_PATH", str(tmp_path / "data"))
+    installed = _executable(tmp_path / "data" / "widget" / "widget")
+    assert resolve_tool("widget", "WIDGET", "widget") == str(installed)
+
+
+def test_resolve_finds_the_installed_copy_under_data_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("WIDGET", raising=False)
+    monkeypatch.setenv("DATA_PATH", str(tmp_path / "data"))
+    installed = _executable(tmp_path / "data" / "widget" / "bin" / "widget")
+    assert resolve_tool("widget", "WIDGET", "widget", "bin/widget") == str(installed)
+
+
+def test_resolve_ignores_a_directory_and_a_non_executable_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("WIDGET", raising=False)
+    monkeypatch.setenv("DATA_PATH", str(tmp_path / "data"))
+    (tmp_path / "data" / "widget" / "widget").mkdir(parents=True)
+    assert resolve_tool("widget", "WIDGET", "widget") is None
+
+    plain = tmp_path / "data" / "other" / "other"
+    plain.parent.mkdir(parents=True, exist_ok=True)
+    plain.write_text("text", encoding="utf-8")
+    plain.chmod(0o644)
+    assert resolve_tool("other", "OTHER", "other") is None
+
+
+def test_resolve_returns_none_when_nothing_anywhere_has_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("WIDGET", raising=False)
+    monkeypatch.setenv("DATA_PATH", str(tmp_path / "data"))
+    assert resolve_tool("widget-that-does-not-exist", "WIDGET", "widget") is None

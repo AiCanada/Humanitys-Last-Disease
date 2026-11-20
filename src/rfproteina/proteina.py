@@ -1554,7 +1554,10 @@ class Proteina(L.LightningModule):
 
         if self.oracle_metric_manager is not None:
             for oracle in self.oracle_metric_manager.metrics.values():
-                oracle.output_cif_suffix = self.output_cif_suffix
+                # Skipped for an oracle that declares its own format; see the
+                # same guard in evaluate.py and output_suffix_is_fixed.
+                if not getattr(oracle, "output_suffix_is_fixed", False):
+                    oracle.output_cif_suffix = self.output_cif_suffix
 
         if hasattr(self.cfg_exp, "datasets") and hasattr(self.cfg_exp.datasets, "val"):
             self.val_dataset_tags = _collect_val_metrics_tags(self.cfg_exp.datasets.val)

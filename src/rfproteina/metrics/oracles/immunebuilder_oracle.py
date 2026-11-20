@@ -32,6 +32,7 @@ differently.
 from __future__ import annotations
 
 import importlib.util
+import shutil
 from pathlib import Path
 
 from rfproteina.metrics.oracles.free_oracle_common import (
@@ -69,9 +70,27 @@ class ImmuneBuilderOracle(SequenceRefoldOracle):
         # ImmuneBuilder writes PDB, so the canonical refold file is a .pdb and
         # find_structure_file resolves it. Set here, not pretended to be CIF.
         self.output_cif_suffix = ".pdb"
+        # ...and declared fixed, because both drivers assign the run's own
+        # suffix to every oracle they hold. Without this the PDB above was
+        # saved as ``..._refolded.cif.zst``: a PDB wearing a compressed-CIF
+        # name, which every reader downstream refuses.
+        self.output_suffix_is_fixed = True
 
     def _backend_available(self) -> bool:
-        return importlib.util.find_spec("ImmuneBuilder") is not None
+        """Whether a fold could actually run, not merely whether the name imports.
+
+        ``ImmuneBuilder`` pulls ANARCI at import, which in turn shells out to
+        HMMER's ``hmmscan``. Probing the one package alone reported the backend
+        available on a machine missing either, and the failure then surfaced
+        per design inside ``fold_batch``'s catch-all as "fold failed ...
+        skipping" -- a warning per design instead of one clear refusal for the
+        batch, which is the distinction ``OracleBackendUnavailableError``
+        exists to draw.
+        """
+        for module in ("ImmuneBuilder", "anarci", "openmm", "pdbfixer"):
+            if importlib.util.find_spec(module) is None:
+                return False
+        return shutil.which("hmmscan") is not None
 
     def pick_chains(self, sequences: dict[str, str]) -> tuple[str, str]:
         """Resolve the heavy/light chain ids to fold.

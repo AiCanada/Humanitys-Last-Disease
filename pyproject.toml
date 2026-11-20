@@ -154,6 +154,23 @@ deepviscosity = [
 prolif = [
     "prolif>=2.1,<2.2",
 ]
+# The MM-GBSA tier in rfproteina.disease.rescoring: a single-structure binding
+# free energy from OpenMM (MIT for the API, Reference and CPU platforms) under an
+# implicit Generalized Born solvent, with PDBFixer adding the hydrogens and
+# repairing the residues a generated complex arrives without. Both are imported
+# inside the functions that use them, so every other screen runs without this
+# extra and rescore_complex raises OpenMMUnavailableError until it is installed.
+# They were undeclared before: the tier was written and tested, and nothing in
+# the project said what to install to run it.
+#
+# This is not the FEP tier below it. OpenFE, pmx and alchemlyb stay out on
+# purpose -- plan_rbfe names them, scaffolds the calculation and refuses to
+# fabricate a free energy, because an explicit-solvent MD campaign is not
+# something this install budgets for.
+rescoring = [
+    "openmm>=8.6,<9",
+    "pdbfixer>=1.12,<2",
+]
 # The nanomolar regressors in rfproteina.disease.ligand_regressor, for the
 # three panel axes ADMET-AI has no endpoint for: Nav1.5, BCRP and BSEP. The
 # default backend is a Morgan-fingerprint forest, which measured better than a

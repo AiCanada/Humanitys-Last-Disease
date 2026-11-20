@@ -28,6 +28,8 @@ import pytest
 
 from rfproteina.disease.tables import (
     BINDINGDB_PANEL_ACCESSIONS,
+    BINDINGDB_PANEL_SUBSET_FILE,
+    GTOPDB_FILES,
     GTOPDB_OFFTARGET_COLUMNS,
     GTOPDB_PANEL_GENES,
     PANEL_SUBSET_COLUMNS,
@@ -44,7 +46,9 @@ from rfproteina.disease.tables import (
     fetch,
     gtopdb_offtarget_subset,
     gtopdb_panel_subset,
+    gtopdb_release,
     merge_panel_subsets,
+    missing_gtopdb_files,
     readable,
 )
 
@@ -1067,3 +1071,117 @@ def test_an_offtarget_subset_cannot_be_misread_as_the_panel_table(tmp_path):
     run.mkdir()
     (run / "toxicology.tsv").write_text(result.path.read_text(encoding="utf-8"), encoding="utf-8")
     assert all(record.get("measurement") is None for record in measure_toxicology(run).values())
+
+
+# ------------------------------------- the GtoPdb release, as the three files it is
+
+
+def test_every_gtopdb_file_the_reductions_need_is_registered():
+    """The defect this closes: two of the three were reachable only by hand.
+
+    ``gtopdb_panel_subset`` takes interactions and ligands, and
+    ``gtopdb_offtarget_subset`` takes a third. Only ``interactions.csv`` was in
+    the registry, so ``scripts/fetch_screening_tables.py`` could not fetch the
+    other two and neither reduction could run on a machine stocked by it --
+    the functions shipped, and nothing in the repository could feed them.
+    """
+    assert set(GTOPDB_FILES) <= {source.file for source in SOURCES}
+
+
+def test_the_gtopdb_companions_are_odbl_and_feed_no_axis_on_their_own():
+    for name in ("ligands.csv", "targets_and_families.csv"):
+        source = next(item for item in SOURCES if item.file == name)
+        assert "ODbL" in source.licence, f"{name} must carry the share-alike obligation"
+        assert source.handoff == "none"
+        assert source.stem is None, "a stem reads as 'rename the download to this', and these are inputs"
+        assert source.size, "the size is pinned so a new quarterly release is noticed"
+
+
+def test_interactions_stays_the_first_guide_to_pharmacology_source():
+    """Pins an ordering another test in this file depends on.
+
+    ``test_gtopdb_is_registered_and_closes_no_gap_by_itself`` takes the *first*
+    source whose name mentions the Guide to PHARMACOLOGY and asserts a stem and
+    a hazard. Three sources match that name now and only ``interactions.csv``
+    carries either, so the order is load-bearing rather than cosmetic.
+    """
+    guide = [item for item in SOURCES if "Guide to PHARMACOLOGY" in item.name]
+    assert len(guide) == 3
+    assert guide[0].file == "interactions.csv"
+
+
+def test_the_release_lookup_answers_only_once_every_file_is_there(tmp_path):
+    """Partial is the same as absent: two files out of three run no reduction."""
+    assert gtopdb_release(tmp_path) is None
+    assert missing_gtopdb_files(tmp_path) == GTOPDB_FILES
+
+    _gtopdb_pair(tmp_path, [_gtopdb_row()])
+    assert gtopdb_release(tmp_path) is None
+    assert missing_gtopdb_files(tmp_path) == ("targets_and_families.csv",)
+
+    _gtopdb_targets(tmp_path / "targets_and_families.csv")
+    release = gtopdb_release(tmp_path)
+    assert release is not None
+    assert missing_gtopdb_files(tmp_path) == ()
+    assert release.as_arguments() == (
+        tmp_path / "interactions.csv",
+        tmp_path / "ligands.csv",
+        tmp_path / "targets_and_families.csv",
+    )
+
+
+def test_the_release_lookup_takes_the_files_in_the_order_the_reduction_wants(tmp_path):
+    """``as_arguments`` is positional, and the wrong order is a silent misread:
+    every one of the three parses as CSV, so nothing would raise."""
+    _gtopdb_interactions_wide(tmp_path / "interactions.csv", [_wide_row()])
+    _gtopdb_ligands_status(tmp_path / "ligands.csv")
+    _gtopdb_targets(tmp_path / "targets_and_families.csv")
+    release = gtopdb_release(tmp_path)
+    result = gtopdb_offtarget_subset(*release.as_arguments(), tmp_path / "out")
+    assert result.blocker is None, "the three files reached the reduction in the order it takes them"
+    assert result.rows == 1
+
+
+def test_an_empty_gtopdb_file_counts_as_absent(tmp_path):
+    """What a transfer that failed without raising leaves behind. Handed one, a
+    reduction reports a parse error rather than the plain truth."""
+    _gtopdb_pair(tmp_path, [_gtopdb_row()])
+    (tmp_path / "targets_and_families.csv").write_text("", encoding="utf-8")
+    assert missing_gtopdb_files(tmp_path) == ("targets_and_families.csv",)
+    assert gtopdb_release(tmp_path) is None
+
+
+def test_the_public_bindingdb_subset_name_is_the_name_that_gets_written(tmp_path):
+    """Spelled once, for the reason ``downloaded_name`` records: a name derived
+    separately by the writer and by the reader is one they can come to disagree
+    about. The merge step looks the subset up by this constant."""
+    result = bindingdb_panel_subset(_bdb_tsv(tmp_path / "bdb.tsv", [_bdb_row()]), tmp_path / "out")
+    assert result.blocker is None
+    assert result.path.name == BINDINGDB_PANEL_SUBSET_FILE
+
+
+def test_a_subset_written_before_the_column_was_renamed_is_refused_not_coerced(tmp_path):
+    """The state found on the installed machine, pinned.
+
+    A ``bindingdb_panel_subset.tsv`` written by an older build carries
+    ``inchikey_bindingdb`` where the contract now says ``inchikey_upstream``.
+    The merge has to refuse it and name the column: the alternative is a
+    silently short merged table, or a rewrite of a derived file whose other
+    drift nobody has checked.
+    """
+    import csv as _csv
+
+    stale_columns = ["inchikey_bindingdb" if name == "inchikey_upstream" else name for name in PANEL_SUBSET_COLUMNS]
+    stale = tmp_path / BINDINGDB_PANEL_SUBSET_FILE
+    with stale.open("w", encoding="utf-8", newline="") as handle:
+        writer = _csv.writer(handle, delimiter="\t", lineterminator="\n")
+        writer.writerow(stale_columns)
+        writer.writerow(["KEY-N", "KEY-N", "CCO", "herg", "Q12809", "40.0", "=", "IC50", "1", "x", "y"])
+
+    interactions, ligands = _gtopdb_pair(tmp_path, [_gtopdb_row()])
+    fresh = gtopdb_panel_subset(interactions, ligands, tmp_path / "out")
+    assert fresh.blocker is None
+
+    merged = merge_panel_subsets([stale, fresh.path], tmp_path / "merged")
+    assert merged.blocker == "column_absent:inchikey_upstream"
+    assert not (tmp_path / "merged").exists(), "a refused merge writes nothing"

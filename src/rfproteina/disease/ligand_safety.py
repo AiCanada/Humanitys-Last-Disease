@@ -1207,8 +1207,17 @@ def bayesherg_probability(smiles: str) -> PanelProbabilities:
     BayeshERG (Kim et al., Brief Bioinform 23(4) 2022,
     doi:10.1093/bib/bbac211) returns a calibrated probability, not a
     concentration. It is stored under ``herg_prob`` with ``unit="probability"``
-    and never written into an ``*_nm`` column. Its licence has not been read at
-    source; read it before installing this backend.
+    and never written into an ``*_nm`` column.
+
+    **The licence has since been read at source, and it is not one licence.**
+    The repository is MIT for the code, but it also ships a CC-BY-SA-4.0 file,
+    and its README puts the trained weights -- and any compound found with them
+    -- under CC-BY-NC-4.0, "freely available for academic purposes or
+    individual research but restricted for commercial use" (read 2026-11-18).
+    The weights are the part that predicts, so this backend is non-commercial
+    whatever the code licence says. It is also not pip-installable: there is no
+    ``setup.py`` or ``pyproject.toml``, and upstream expects ``main.py`` to run
+    inside a supplied conda environment on Python 3.6 with dgl.
     """
     text = (smiles or "").strip()
     if not text:

@@ -220,15 +220,16 @@ def _openmm_implicit_energy(pdb_path: Path, implicit_solvent: str, forcefield: s
     import openmm
     from openmm import app, unit
 
-    implicit_map = {
-        "GBn2": app.GBn2,
-        "GBn": app.GBn,
-        "OBC1": app.OBC1,
-        "OBC2": app.OBC2,
-        "HCT": app.HCT,
-    }
-    if implicit_solvent not in implicit_map:
-        raise ValueError(f"unknown implicit solvent {implicit_solvent!r}; expected one of {sorted(implicit_map)}")
+    # The model is chosen by the XML loaded below and by nothing else. The
+    # ``implicitSolvent=`` keyword belongs to ``AmberPrmtopFile.createSystem``,
+    # which takes a prmtop and has no force field to read it from;
+    # ``ForceField.createSystem`` has never accepted it, and OpenMM 8 refuses
+    # the call outright rather than ignoring it ("the argument 'implicitSolvent'
+    # was specified ... but was never used"). Passing it here made every real
+    # run raise, which the injected ``energy_fn`` in the tests stepped around.
+    implicit_models = ("GBn2", "GBn", "OBC1", "OBC2", "HCT")
+    if implicit_solvent not in implicit_models:
+        raise ValueError(f"unknown implicit solvent {implicit_solvent!r}; expected one of {sorted(implicit_models)}")
 
     pdb = app.PDBFile(str(pdb_path))
     topology, positions = pdb.topology, pdb.positions
@@ -249,7 +250,6 @@ def _openmm_implicit_energy(pdb_path: Path, implicit_solvent: str, forcefield: s
         constraints=app.HBonds,
         soluteDielectric=1.0,
         solventDielectric=78.5,
-        implicitSolvent=implicit_map[implicit_solvent],
     )
     integrator = openmm.LangevinMiddleIntegrator(300 * unit.kelvin, 1 / unit.picosecond, 0.002 * unit.picoseconds)
     context = openmm.Context(system, integrator, openmm.Platform.getPlatformByName("CPU"))

@@ -266,6 +266,15 @@ class OracleMetric(Metric):
         self.template_query = template_query
         self.frac_under_thresholds = frac_under_thresholds or {}
         self.output_cif_suffix = ".cif"
+        #: Whether :attr:`output_cif_suffix` is this oracle's own file format
+        #: rather than a run-wide preference a driver may retarget.
+        #:
+        #: False for every predictor that emits mmCIF, which is all of them bar
+        #: one: the drivers set the run's compression choice on each oracle, and
+        #: an oracle that writes PDB had that choice written over its own
+        #: format, so its PDB was persisted under a ``.cif.zst`` name and no
+        #: downstream reader could parse it.
+        self.output_suffix_is_fixed = False
 
     def aggregate(self, column: str, values: pd.Series) -> dict[str, float]:
         """Default reductions plus per-column ``frac_under_<T>`` rows.

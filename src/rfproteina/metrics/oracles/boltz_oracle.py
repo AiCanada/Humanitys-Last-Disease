@@ -66,7 +66,10 @@ class Boltz2Oracle(SequenceRefoldOracle):
         diffusion_samples: Number of diffusion samples (``--diffusion_samples``).
         use_msa_server: Pass ``--use_msa_server`` so Boltz builds MSAs itself.
             Off by default: the server is an external dependency the caller opts
-            into, not a silent network call.
+            into, not a silent network call. With it off the input declares
+            ``msa: empty`` and every chain is folded single-sequence -- see
+            :meth:`to_yaml`, which explains why omitting the key instead made
+            the oracle return nothing at all.
         extra_args: Extra CLI tokens appended verbatim.
         **kwargs: Forwarded to :class:`OracleMetric`.
     """
@@ -86,19 +89,36 @@ class Boltz2Oracle(SequenceRefoldOracle):
         self.diffusion_samples = diffusion_samples
         self.use_msa_server = use_msa_server
         self.extra_args = tuple(extra_args)
+        #: Said once per oracle, not once per design: the caveat is about the
+        #: configuration, and a batch of five hundred designs would repeat it.
+        self._warned_single_sequence = False
 
     def _backend_available(self) -> bool:
         return importlib.util.find_spec("boltz") is not None or shutil.which(self.executable) is not None
 
     @staticmethod
-    def to_yaml(sequences: dict[str, str]) -> str:
+    def to_yaml(sequences: dict[str, str], *, single_sequence: bool = True) -> str:
         """Render per-chain protein sequences as a Boltz v1 input YAML.
 
         Written by hand (no PyYAML dependency added) in Boltz's documented schema.
+
+        ``single_sequence`` writes ``msa: empty`` on each protein, which is how
+        Boltz's schema spells "do not look for an alignment". **An omitted
+        ``msa`` key does not mean that.** Boltz reads a missing key as "generate
+        one for me", and then refuses the whole input with "Missing MSA's in
+        input and --use_msa_server flag not set" unless that flag is passed.
+
+        This emitted no ``msa`` key at all while :attr:`use_msa_server` defaulted
+        to false, so Boltz rejected every input, ``check=True`` turned the
+        rejection into an exception, and ``free_oracle_common`` logged it per
+        design and moved on. The oracle could not return a single refold in its
+        shipped configuration, and said so only in a warning line.
         """
         lines = ["version: 1", "sequences:"]
         for chain, seq in sequences.items():
             lines += ["  - protein:", f"      id: {chain}", f'      sequence: "{seq}"']
+            if single_sequence:
+                lines.append("      msa: empty")
         return "\n".join(lines) + "\n"
 
     def _predict(self, sequences: dict[str, str], work_dir: Path) -> PredictOutput:
@@ -106,7 +126,15 @@ class Boltz2Oracle(SequenceRefoldOracle):
 
         stem = "design"
         input_yaml = work_dir / f"{stem}.yaml"
-        input_yaml.write_text(self.to_yaml(sequences))
+        single_sequence = not self.use_msa_server
+        if single_sequence and not self._warned_single_sequence:
+            logger.warning(
+                f"{self.oracle_name}: no MSA source is configured, so every chain is folded "
+                f"single-sequence (msa: empty). Upstream calls that its weaker mode. Set "
+                f"use_msa_server=true to let Boltz build alignments over the network instead."
+            )
+            self._warned_single_sequence = True
+        input_yaml.write_text(self.to_yaml(sequences, single_sequence=single_sequence))
         out_dir = work_dir / "boltz_out"
 
         cmd = [
@@ -148,9 +176,7 @@ class Boltz2Oracle(SequenceRefoldOracle):
 
         chains_ptm = conf.get("chains_ptm", {}) or {}
         pair_iptm = conf.get("pair_chains_iptm", {}) or {}
-        chain_ptm_list = [
-            float(_chain_key(chains_ptm, chain, i) or 0.0) for i, chain in enumerate(chain_ids)
-        ]
+        chain_ptm_list = [float(_chain_key(chains_ptm, chain, i) or 0.0) for i, chain in enumerate(chain_ids)]
         matrix: list[list[float | None]] = []
         for i, chain_i in enumerate(chain_ids):
             row_src = _chain_key(pair_iptm, chain_i, i) or {}
