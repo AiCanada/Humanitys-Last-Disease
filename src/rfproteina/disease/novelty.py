@@ -53,7 +53,16 @@ FOLDSEEK_RELATIVES = ("foldseek", "bin/foldseek")
 
 #: Structure file extensions Foldseek reads as a query. Compression is handled by
 #: Foldseek itself, so the gzipped forms are listed too.
-STRUCTURE_SUFFIXES = (".pdb", ".cif", ".mmcif", ".pdb.gz", ".cif.gz", ".mmcif.gz", ".bcif")
+STRUCTURE_SUFFIXES = (".pdb", ".cif", ".mmcif", ".pdb.gz", ".cif.gz", ".mmcif.gz")
+
+#: Binary CIF is deliberately **not** in the list above, although
+#: ``combinations._STRUCTURE_SUFFIXES`` accepts it elsewhere: Foldseek cannot
+#: read it. ``createdb`` on a directory holding one readable ``.cif`` and one
+#: ``.bcif`` exits 0 and writes a lookup naming only the ``.cif``, so the
+#: ``.bcif`` design drew no rows and the axis reported it structurally novel
+#: because it had never been searched. :func:`query_structures` refuses it by
+#: name instead, so the design is recorded untested with a blocker.
+BCIF_SUFFIX = ".bcif"
 
 #: The columns requested from Foldseek, in order. ``qtmscore`` and ``ttmscore``
 #: are the novelty signal: TM-scores normalised by the query chain's own length
@@ -169,14 +178,26 @@ def foldseek_available() -> bool:
 
 
 def query_structures(query_dir: Path) -> list[Path]:
-    """Every structure file under ``query_dir`` Foldseek can read, sorted by name."""
+    """Every structure file under ``query_dir`` Foldseek can read, sorted by name.
+
+    A binary CIF among them raises rather than being skipped. Foldseek drops it
+    without an error, and a dropped query draws no rows, which this axis would
+    otherwise read as a novel design. Refusing by name turns that into a
+    blocker naming the files, so the caller records the axis untested instead of
+    publishing a verdict for a design nothing looked at.
+    """
     found: list[Path] = []
+    unreadable: list[str] = []
     for path in sorted(query_dir.rglob("*")):
         if not path.is_file():
             continue
         name = path.name.lower()
-        if any(name.endswith(suffix) for suffix in STRUCTURE_SUFFIXES):
+        if name.endswith(BCIF_SUFFIX):
+            unreadable.append(path.name)
+        elif any(name.endswith(suffix) for suffix in STRUCTURE_SUFFIXES):
             found.append(path)
+    if unreadable:
+        raise ScreeningInputError(f"foldseek_cannot_read_bcif:{','.join(sorted(unreadable))}")
     return found
 
 

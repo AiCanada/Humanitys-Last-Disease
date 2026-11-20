@@ -41,6 +41,9 @@ _POLY_LEU = "LLLLLLLLLL"
 #: designed sequence ever appears in one. HA 306-318 is the canonical
 #: promiscuous class II binder; OVA 323-339 is the published DR-restricted one.
 _HA_306_318 = "PKYVKQNTLKLAT"
+
+#: The panel in the order liability.py declares it, for building a table by hand.
+_DR_PANEL_NAMES = _DR_PANEL
 _OVA_323_339 = "ISQAVHAAHAEINEAGR"
 #: Constructed, not from the literature: a stand-in for a peptide binding nothing.
 _NON_BINDER = "EEEEEEEEEEEEE"
@@ -2160,3 +2163,69 @@ def test_a_reference_row_ending_beyond_the_protein_is_refused(tmp_path: Path) ->
     assert record["state"] == "untested"
     assert record["blocker"] == "reference_rows_exceed_protein"
     assert record["reference_proteins_pooled"] == ["P02768"]
+
+
+def test_a_mixed_scale_table_does_not_lend_consensus_to_foreign_rows(tmp_path: Path) -> None:
+    """`_declares_consensus` answers for the whole table; the Paul median must not.
+
+    A file merged from two exports -- four rows naming the IEDB consensus and
+    three naming NetMHCIIpan EL -- published a Paul 2015 hit three sevenths of
+    which sat on a scale that rule is not defined on. NetMHCIIpan's 5 is not the
+    paper's 5, and the paper's median is over seven consensus ranks.
+
+    Confining the median to the rows that declare the scale leaves the panel
+    short, which is reported as the gap it is, naming the alleles missing.
+    """
+    lines = ["allele\tpeptide\tmethod\tpercentile_rank"]
+    for allele in ("DRB1*03:01", "DRB1*07:01", "DRB1*15:01", "DRB3*01:01"):
+        lines.append(f"{allele}\t{_HA_306_318}\tconsensus\t5.0")
+    for allele in ("DRB3*02:02", "DRB4*01:01", "DRB5*01:01"):
+        lines.append(f"{allele}\t{_HA_306_318}\tnetmhciipan_el\t5.0")
+    (tmp_path / "mhc_ii.tsv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    axes, _by_example = measure_sequence_liability(_ada_design(), directory=tmp_path)
+    record = axes["ada"]
+    assert record["state"] == "untested", "a median across two scales is not a measurement"
+    assert record["blocker"] == "allele_panel_incomplete"
+    assert record["measurement"] is None, "the misattributed 5.0 must be withdrawn, not published"
+
+
+def test_a_single_method_table_reads_exactly_as_before(tmp_path: Path) -> None:
+    """The row filter must be inert unless a row names a different method.
+
+    Two tables have to behave exactly as they did before the filter existed. One
+    declares consensus in every method cell. The other declares the scale by its
+    rank column alone and carries no method column at all, which is how the
+    export writes it -- that is the case the filter could silently have emptied,
+    because every row of it answers ``_declares_consensus`` false on its own and
+    is kept only by having no method cell to contradict the table.
+    """
+    ranks = [2.0, 5.0, 8.0, 12.0, 15.0, 18.0, 19.0]
+    _write_dr_panel(tmp_path, _panel_rows(_HA_306_318, ranks))
+    declared = measure_sequence_liability(_ada_design(), directory=tmp_path)[0]["ada"]
+    assert declared["state"] == "hit"
+    assert declared["measurement"] == 12.0
+
+    by_column = ["allele\tpeptide\tconsensus_percentile_rank"]
+    by_column += [f"{a}\t{_HA_306_318}\t{r}" for a, r in zip(_DR_PANEL_NAMES, ranks, strict=True)]
+    (tmp_path / "mhc_ii.tsv").write_text("\n".join(by_column) + "\n", encoding="utf-8")
+    column_only = measure_sequence_liability(_ada_design(), directory=tmp_path)[0]["ada"]
+    assert column_only["state"] == declared["state"], "a table with no method column is not foreign"
+    assert column_only["measurement"] == declared["measurement"]
+
+
+def test_a_table_declaring_no_scale_is_still_refused_before_the_filter(tmp_path: Path) -> None:
+    """Blank method cells against a plain rank column declare nothing, so the
+    axis refuses at ``rank_scale_unknown`` and never reaches the row filter.
+
+    Pinned because it is what makes the filter safe: a table that does not say
+    what scale its numbers are on is already untested, so the filter can only
+    ever see a table that has declared one.
+    """
+    ranks = [2.0, 5.0, 8.0, 12.0, 15.0, 18.0, 19.0]
+    lines = ["allele\tpeptide\tmethod\tpercentile_rank"]
+    lines += [f"{a}\t{_HA_306_318}\t\t{r}" for a, r in zip(_DR_PANEL_NAMES, ranks, strict=True)]
+    (tmp_path / "mhc_ii.tsv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    record = measure_sequence_liability(_ada_design(), directory=tmp_path)[0]["ada"]
+    assert record["state"] == "untested"
+    assert record["blocker"] == "rank_scale_unknown"

@@ -1238,6 +1238,22 @@ def _ada_record(directory: Path, samples: list[tuple[str, str | None]]) -> dict[
         return _axis("untested", None, "peptide_column_absent")
     if not _declares_consensus(rows):
         return _axis("untested", None, "rank_scale_unknown")
+    # ``_declares_consensus`` above is a table-level ``any()``, so in a file
+    # merged from two exports one row saying consensus licensed the median over
+    # rows another tool scored, whose 20 is not the paper's 20. Keep only the
+    # rows that declare the scale themselves. A row naming no method at all is
+    # left where the table-level answer put it, so a single-method table, a
+    # table with blank method cells, and a table declaring the scale by its
+    # rank column alone all read exactly as before; only a row naming a
+    # different method is dropped, and a mixed table then reports
+    # ``allele_panel_incomplete`` or ``rank_absent`` and names what is missing
+    # instead of publishing a median across two scales.
+    #
+    # What makes that safe is the refusal immediately above: a table that
+    # declares no scale is already untested, so this filter only ever sees a
+    # table that declared one, and the rows it keeps for having no method cell
+    # are rows that table already vouched for.
+    rows = [row for row in rows if _declares_consensus([row]) or not _cell(row, _METHOD_COLUMNS)]
     wanted = {_allele_key(name) for name in _DR_PANEL}
     by_peptide: dict[str, dict[str, float]] = {}
     for row in rows:

@@ -181,3 +181,18 @@ def test_the_record_names_the_chain_that_answered() -> None:
     assert record["matched_entry"] == "design_E"
     assert record["best_target"] == "4kc3-assembly1_A"
     assert novelty.verdict(None)["matched_entry"] is None
+
+
+def test_a_binary_cif_is_refused_rather_than_silently_unscreened(tmp_path: Path) -> None:
+    """Foldseek drops a .bcif without an error, and a dropped query reads novel.
+
+    Measured: `createdb` on a directory holding one readable .cif and one .bcif
+    exits 0 and writes a lookup naming only the .cif. The .bcif design then drew
+    no rows, and the axis called it structurally novel because nothing had ever
+    looked at it.
+    """
+    (tmp_path / "readable.cif").write_text("x", encoding="utf-8")
+    (tmp_path / "design.bcif").write_bytes(b"\x00binary")
+    with pytest.raises(ScreeningInputError, match="foldseek_cannot_read_bcif"):
+        novelty.query_structures(tmp_path)
+    assert ".bcif" not in novelty.STRUCTURE_SUFFIXES
