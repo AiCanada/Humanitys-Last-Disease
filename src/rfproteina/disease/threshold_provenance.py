@@ -325,7 +325,14 @@ SCREEN_BAR_PROVENANCE: dict[str, Provenance] = {
     "novelty.evalue_max": Provenance(
         kind=CONVENTION,
         source="program_default_pending_calibration",
-        caveat="Foldseek's own default E-value is 10. This program uses 1e-3 and has not calibrated it.",
+        caveat=(
+            "Deliberately permissive at 1e6, and not calibrated. With --alignment-type 1 Foldseek "
+            "applies -e at its structurealign stage, which runs before TMalign, so a tight cut "
+            "decides this axis instead of the TM-score. At the former 1e-3 an atom-exact copy of a "
+            "PDB entry returned no rows and read novel, and Foldseek's own default of 10 is still "
+            "too tight for that case. The off-target axis keeps 1e-3: there the E-value is the "
+            "reading, not a prefilter in front of one."
+        ),
     ),
     # --- offtarget.OFFTARGET_THRESHOLDS ---------------------------------
     "offtarget.identity_min": Provenance(
@@ -420,8 +427,7 @@ UNRECORDED_PROVENANCE = Provenance(
     kind=UNRECORDED,
     source="unrecorded",
     caveat=(
-        "This threshold has no entry in threshold_provenance.CUT_PROVENANCE. Treat the pass "
-        "it decides as unsourced."
+        "This threshold has no entry in threshold_provenance.CUT_PROVENANCE. Treat the pass " "it decides as unsourced."
     ),
 )
 
@@ -438,11 +444,7 @@ def provenance_of(cut: str) -> Provenance:
 
 def cut_names(cuts: Mapping[str, object]) -> list[str]:
     """The cut names in ``cuts``: not the ``*_source`` strings, not the provenance block."""
-    return sorted(
-        name
-        for name in cuts
-        if not name.endswith("_source") and name != PROVENANCE_KEY
-    )
+    return sorted(name for name in cuts if not name.endswith("_source") and name != PROVENANCE_KEY)
 
 
 def describe_cuts(cuts: Mapping[str, object]) -> dict[str, dict[str, str]]:

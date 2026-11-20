@@ -412,7 +412,7 @@ SOURCES: tuple[Source, ...] = (
             "9,365 interactions over 1,477 targets and 4,891 compounds -- 136 times the rows of "
             "the tox-panel narrowing -- spanning ten family classes and 95 channel and GPCR "
             "families a panel of ten cannot see. It carries what a bare affinity throws away: the "
-            "action, the curator's selectivity call, Primary Target (false on 7,409 of them, so "
+            "action, the curator's selectivity call, Primary Target (false on 7,330 of them, so "
             "this is a curated OFF-target set), and whether the compound is an approved or a "
             "withdrawn drug. Driven on a novel analogue of terfenadine it returned H1 as the "
             "primary target, Kv11.1 at 56 nM marked off-target -- the hERG block terfenadine was "
@@ -424,7 +424,7 @@ SOURCES: tuple[Source, ...] = (
             "point of it: merge_panel_subsets concatenates the two, and GtoPdb's rows then reach "
             "ligand_safety's per-ligand lookup and similarity read-across instead of sitting in "
             "a reference table nobody opens. Take the volume literally -- this is curation, not "
-            "scale: at 2026.3.1 the usable Human counts are hERG 16, CYP3A4 12, Nav1.5 10, P-gp "
+            "scale: at 2026.3.1 the usable Human counts are hERG 17, CYP3A4 13, Nav1.5 10, P-gp "
             "9, BCRP 5, CYP2D6 and CYP2C9 4 each, CYP1A2 and CYP2C19 3 each, and BSEP 1. Ten "
             "compounds cannot calibrate a cut and one cannot anchor anything, so what it adds "
             "beside BindingDB's 29,393 compounds is a hand-checked, PubMed-cited second opinion "
@@ -1894,7 +1894,7 @@ def gtopdb_panel_subset(
     :func:`~rfproteina.disease.ligand_safety.nearest_measured_neighbours`
     instead of sitting in a reference table with no reader.
 
-    What it adds is curation, not coverage. Seventy usable rows against
+    What it adds is curation, not coverage. Sixty-nine usable rows against
     BindingDB's 60,095 will not widen the panel; every one of them is
     hand-checked against the primary literature with a PubMed id attached,
     which is worth having as a second opinion on the same compounds.
@@ -2208,18 +2208,18 @@ def gtopdb_offtarget_subset(
     ligand-safety axes and gets 69 rows, which is too few to do anything with.
     That narrowing was the mistake: GtoPdb is a secondary-pharmacology database
     and its own catalogue entry says so. Across **all** targets the same filters
-    keep 9,457 interactions over 1,484 targets and 4,955 compounds -- 137 times
-    the interactions and 148 times the targets -- spanning 95 channel and GPCR
-    families that a panel of ten cannot see: Na_v, TRP, opioid, 5-HT, dopamine,
-    muscarinic, histamine, cannabinoid.
+    keep, at release 2026.3.1, 9,365 interactions over 1,477 targets and 4,891
+    compounds -- 136 times the interactions and 148 times the targets --
+    spanning 95 channel and GPCR families that a panel of ten cannot see: Na_v,
+    TRP, opioid, 5-HT, dopamine, muscarinic, histamine, cannabinoid.
 
     Three columns a bare affinity throws away, all kept here:
 
     * **What it does.** ``Type`` and ``Action``: inhibitor, antagonist, agonist,
       channel blocker, allosteric modulator. An agonist and a blocker at the
       same potency are different liabilities.
-    * **Whether it was the point.** ``Primary Target`` is ``false`` on 7,409 of
-      the 9,457, so GtoPdb ships a curated *off*-target set by its own marking,
+    * **Whether it was the point.** ``Primary Target`` is ``false`` on 7,330 of
+      the 9,365, so GtoPdb ships a curated *off*-target set by its own marking,
       and ``Selectivity`` says whether the curator judged the ligand selective.
     * **Whether it ended a drug.** ``ligands.csv`` marks 1,942 approved and 109
       withdrawn compounds that have structures. An analogue that is a withdrawn

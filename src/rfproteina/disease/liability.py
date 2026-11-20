@@ -315,9 +315,33 @@ _SCAN_COVER_SHARE = 0.9
 #: calibrated for it -- a column of dipeptides is not a scan of anything.
 _SCORED_WIDTHS = frozenset(range(8, 12)) | frozenset(range(13, 26))
 #: The largest share of a reference protein's windows that may be called
-#: binding before the table is the problem. Albumin at these cutoffs measures
-#: 0.49 binders per 100 residues; a quarter of all windows is two orders above
-#: anything a tolerated protein carries.
+#: binding before the table is the problem.
+#:
+#: **The 0.49-binders-per-100-residues figure this comment used to cite is not a
+#: measurement.** It is ``3 * 100 / 609`` -- the three hand-written rows of the
+#: fixture in ``test_a_filtered_reference_export_cannot_set_the_bar`` over
+#: albumin's length, the same three that give its companion ``6.25`` as
+#: ``3 * 100 / 48``. Measured instead on this machine (2026-11-20): albumin runs
+#: at **10.28** binders per 100 windows under the installed class I predictor,
+#: twenty-one times the figure quoted, and the old corollary that a quarter of
+#: all windows is "two orders above anything a tolerated protein carries" is
+#: false in both classes.
+#:
+#: **0.25 is below the floor any honest class II panel scan can reach**, so this
+#: guard refuses every class II protein scan and the axis cannot report. The
+#: cause is not unselective predictors: both installed scorers are calibrated on
+#: their own scale, and the share compounds twice -- TEPITOPE's bins are
+#: per-9-mer-core while ``_best_core`` takes the max over the seven cores in each
+#: 15-mer, so one allele alone covers 31-42% of albumin's windows before the
+#: any-of-seven union. Measured unions: TEPITOPE 0.716 albumin / 0.704 IgG1 /
+#: 0.265 ubiquitin; a pure seven-allele PSSM table 0.338 / 0.296 / 0.065.
+#:
+#: The constant is deliberately left alone, because the right repair is contested
+#: and raising the ceiling loses real protection: at rank 10 over seven alleles
+#: albumin is 72% of its windows, so the reference stops representing depletion
+#: and starts representing what any 600-residue protein looks like at that cut.
+#: Tightening the class II cut, or scoring breadth per window as the ADA axis
+#: does, are the alternatives. That is a calibration decision, not a repair.
 _BAR_MAX_WINDOW_SHARE = 0.25
 #: A number read from a table the user supplied, rather than one this module
 #: computed. It is tagged separately because naming it after a formula the code
@@ -1918,11 +1942,15 @@ def _reference_density(
             counts.setdefault(accession, set()).add(peptide)
             by_width.setdefault((accession, len(peptide)), set()).add(peptide)
     # A bar far above what the cutoff can produce is a bad table, not a high
-    # bar. Percentile rank <= 1 is the top one per cent of peptides for an
-    # allele, so a complete scan yields binders of that order; albumin's real
-    # measured density is 0.49 per 100 residues. A file claiming every one of
-    # ubiquitin's 68 windows binds gives 89 per 100 and clears almost any
-    # design. Judged as a share of the windows, so it is scale-free.
+    # bar. A file claiming every one of ubiquitin's 68 windows binds gives 89 per
+    # 100 and clears almost any design. Judged as a share of the windows, so it
+    # is scale-free.
+    #
+    # The share is taken per (protein, width). For class I that is stricter than
+    # pooling: albumin pools to 10.3 binders per 100 windows but reaches 20.6%
+    # at width 9 alone, because a per-allele rank budget is spent within one
+    # width. See _BAR_MAX_WINDOW_SHARE for why the class II path cannot clear
+    # this guard at all, and for the figure the old comment here misattributed.
     implausible = sorted(
         {
             accession

@@ -1086,7 +1086,7 @@ def offtarget_profile(
 
     The ten-axis tox panel asks whether a ligand hits hERG, the CYPs and three
     transporters. This asks the question that actually ends programmes: *what
-    else does it hit?* GtoPdb's curated interactions cover 1,484 targets across
+    else does it hit?* GtoPdb's curated interactions cover 1,477 targets across
     95 channel and GPCR families, so a design's close analogues can be looked up
     across all of them at once -- Na_v, TRP, 5-HT, dopamine, muscarinic,
     opioid, the kinases, the nuclear receptors.
