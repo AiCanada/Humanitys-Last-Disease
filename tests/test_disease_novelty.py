@@ -45,8 +45,18 @@ def test_verdict_hits_at_same_fold_and_clears_below_it() -> None:
     assert novelty.verdict(known)["state"] == "hit"
     assert novelty.verdict(known)["novel"] is False
     assert novelty.verdict(novel)["state"] == "clear"
-    assert novelty.verdict(None)["state"] == "clear"
-    assert novelty.verdict(None)["reason"] == "no_match_within_evalue"
+
+    # No rows at all used to read clear and novel, and that was defensible while
+    # evalue_max was 1e-3: an empty result then plausibly meant nothing similar.
+    # At 1e6 against a whole-PDB database a chain that was read returns
+    # something, so an empty result means the query never reached the search --
+    # Foldseek drops a file it cannot parse at exit 0, silently. The axis cannot
+    # tell the two apart from here, so it reports neither. The expectation here
+    # changed because its premise did, and only ever towards withholding.
+    assert novelty.verdict(None)["state"] == "untested"
+    assert novelty.verdict(None)["blocker"] == "no_rows_query_may_not_have_been_read"
+    assert novelty.verdict(None)["novel"] is None
+    assert novelty.verdict(None)["measurement"] is None
 
 
 def test_search_raises_when_there_is_nothing_to_search(tmp_path: Path) -> None:
@@ -85,9 +95,13 @@ def test_search_builds_a_record_per_design_from_mocked_foldseek(
     monkeypatch.setattr(novelty, "run_tool", fake_run_tool)
     records = novelty.novelty_search(tmp_path, database, tmp_path / "work")
     assert records["d1"]["state"] == "hit"
-    # d2 had no row in the table, so it is the honest novel-and-clear case.
-    assert records["d2"]["state"] == "clear"
-    assert records["d2"]["novel"] is True
+    # d2 had no row in the table. That is not a novel design: at evalue_max 1e6
+    # a query that was read comes back with something, so an empty result says
+    # the file never reached the search -- which is how a biotite-written
+    # chain-only CIF, dropped by createdb at exit 0, was published as novel.
+    assert records["d2"]["state"] == "untested"
+    assert records["d2"]["blocker"] == "no_rows_query_may_not_have_been_read"
+    assert records["d2"]["novel"] is None
 
 
 def test_rollup_is_a_hit_when_any_design_is_not_novel() -> None:
@@ -196,3 +210,45 @@ def test_a_binary_cif_is_refused_rather_than_silently_unscreened(tmp_path: Path)
     with pytest.raises(ScreeningInputError, match="foldseek_cannot_read_bcif"):
         novelty.query_structures(tmp_path)
     assert ".bcif" not in novelty.STRUCTURE_SUFFIXES
+
+
+def test_designs_sharing_a_basename_are_refused_not_merged() -> None:
+    """Seven real designs collapsed into one record, and one target answered for all.
+
+    `query_structures` recurses and the generation pipeline writes one
+    `binder_0_generated.cif` per target, so a run tree hands Foldseek several
+    files with one basename. Foldseek names an entry after the file, not its
+    folder: on the seven asthma designs its `db.lookup` listed
+    `binder_0_generated_A` seven times against a single `db.source` line, so the
+    rows cannot be attributed back even in principle. Refusing is the only
+    honest answer available.
+    """
+    paths = [
+        Path("asthma/IL33/inference_samples/binder_0/binder_0_generated.cif"),
+        Path("asthma/IL5/inference_samples/binder_0/binder_0_generated.cif"),
+        Path("asthma/P24394/inference_samples/binder_0/binder_0_generated.cif"),
+    ]
+    collisions = novelty.colliding_design_ids(paths)
+    assert list(collisions) == ["binder_0_generated"]
+    assert len(collisions["binder_0_generated"]) == 3
+
+    # Distinct names are not a collision, and neither is a single design.
+    assert novelty.colliding_design_ids(paths[:1]) == {}
+    assert novelty.colliding_design_ids([Path("a/d1.cif"), Path("b/d2.cif")]) == {}
+
+
+def test_every_spelling_foldseek_reads_is_a_spelling_the_list_admits() -> None:
+    """A `.cif.zst` was read by Foldseek but missing from the suffix list.
+
+    Leaving it out did not hide it from the search -- `createdb` recurses and
+    read it anyway -- it hid it from this list, so its rows arrived under an id
+    no design claimed and `best_per_design` raised, destroying the axis for the
+    designs that had searched perfectly well.
+    """
+    for stem in ("pdb", "cif", "mmcif"):
+        for packing in ("", ".gz", ".zst"):
+            assert f".{stem}{packing}" in novelty.STRUCTURE_SUFFIXES
+
+    # And the id strips both suffixes, which is what makes the rows match up.
+    assert novelty._query_id(Path("zst_design.cif.zst")) == "zst_design"
+    assert novelty._query_id(Path("gz_design.cif.gz")) == "gz_design"

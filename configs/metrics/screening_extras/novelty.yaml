@@ -12,8 +12,9 @@ axis: structural_novelty
 tool:
   name: foldseek
   licence: GPL-3.0
-  install: "conda install -c bioconda foldseek  OR static binary from foldseek.com (free)"
-  on_path_only: true  # used only when `foldseek` is already on PATH; nothing is installed by code
+  install: "python scripts/install_foldseek.py  OR conda install -c bioconda foldseek  OR static binary from foldseek.com (free)"
+  on_path_only: false  # resolve_tool order: $FOLDSEEK, then DATA_PATH/foldseek, then this checkout, then PATH
+  fetched_by: "scripts/install_foldseek.py, on request; the screen itself downloads nothing"
 
 thresholds:
   same_fold_tmscore:
@@ -22,9 +23,14 @@ thresholds:
     source: "Xu & Zhang, Bioinformatics 26(7):889-895 (2010): same-fold TM-score > 0.5"
     meaning: "at or above this, a known structure of this fold exists (design is not novel)"
   evalue_max:
-    value: 0.001
+    value: 1000000.0
     status: suggested
-    source: "program default pending calibration; Foldseek's own default E-value is 10"
+    source: >-
+      deliberately permissive and not calibrated. With --alignment-type 1 Foldseek applies -e at
+      its structurealign stage, which runs before TMalign, so a tight cut decides this axis instead
+      of the TM-score that is meant to: at the former 1e-3 an atom-exact copy of a PDB entry
+      returned no rows at all and read novel, and Foldseek's own default of 10 is still too tight
+      for that case. metrics/foldseek_novelty.py searches at 1000000 for the same reason.
 
 databases:  # CC-BY-4.0; operator-fetched with `foldseek databases ...`; nothing downloaded by code
   pdb: "pdb100.tar.gz 2.2 GB"

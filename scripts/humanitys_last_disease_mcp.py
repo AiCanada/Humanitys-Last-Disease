@@ -705,7 +705,10 @@ _VERDICT_SCHEMA: dict[str, object] = {
                 "all three are present and no table is there, the screen writes mhc_i.tsv "
                 "itself and the mhc_i axis reads it, so what scan says the write did, and "
                 "scan_blocker says about a predictor that failed, is what that axis rests on. "
-                "The reference table's path stays in screen.json."
+                "reference_reused true means the tolerated-protein reference table was already "
+                "beside the run and was not rescanned, which is the ordinary case after the "
+                "first screen of a directory. The reference table's path stays in screen.json, "
+                "so whether it exists travels under scan and reference_reused and not as a path."
             ),
         },
         "synthesis": {
@@ -734,6 +737,73 @@ _VERDICT_SCHEMA: dict[str, object] = {
                     },
                 },
             },
+        },
+        "inputs": {
+            "type": "array",
+            "description": (
+                "Every file supplied beside the run, read or refused, each with its size in bytes "
+                "and a digest, and link true when the name is a symlink. A verdict rests on these: "
+                "the predictor tables, the toxicology panel, the co-evolution notes, the solubility "
+                "scores, the curated evidence. A verdict that cannot name its inputs cannot be "
+                "checked against them, and replaced.changed_inputs names only the ones that MOVED, "
+                "on a re-screen whose verdict changed -- a first screen has no replaced at all. "
+                "Two sentinel forms, both a list of one entry: file inputs_not_listed means the "
+                "folder refused to be listed, and file inputs_truncated with files set means there "
+                "were more files than the writer will record. Both are withheld whole rather than "
+                "cut short, because a truncated list reads as a complete one and every file past "
+                "the cut would look absent. Only the run folder's own files; the designs and the "
+                "metrics table are named elsewhere in this record. A symlink's target is not "
+                "written down -- it is a path outside the run and often a personal one, and the "
+                "digest already says whether the bytes moved."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "file": {"type": "string", "description": "The file's own name, never a path."},
+                    "bytes": {"type": "integer"},
+                    "digest": {
+                        "type": "string",
+                        "description": (
+                            "file_too_large when the file was past the digest limit, so a swapped "
+                            "table is still visible by size."
+                        ),
+                    },
+                    "link": {"type": "boolean"},
+                    "files": {
+                        "type": "integer",
+                        "description": "Only on the inputs_truncated sentinel: how many files were found.",
+                    },
+                },
+            },
+        },
+        "chemical_liability": {
+            "type": "object",
+            "description": (
+                "The first design's motif counts, free cysteine, isoelectric point and net charge "
+                "at pH 7.4, with pka_set naming the scale the charge was computed on. Counts come "
+                "with the residue positions behind them: deamidation, isomerization, glycosylation "
+                "sequons, methionines and tryptophans. A report recorded beside the verdict -- it "
+                "carries no state and no axis clears on it, and a chain with a non-standard residue "
+                "has none of it. isoelectric_point_blocker stands in where the charge never crosses "
+                "zero between pH 0 and 14. read_results omits this block for size."
+            ),
+        },
+        "modality_screen": {
+            "type": "object",
+            "description": (
+                "The drug-type report for this binder kind, and the largest block here that moves "
+                "no call. A protein or peptide carries the furin and Asp-Pro motif counts, "
+                "N-terminal glutamine, non-standard letters, the aliphatic index, the molecular "
+                "weight, the Pace 1995 extinction and absorbance at 280 nm for the reduced and "
+                "cystine forms, the N-end rule half-life in three organisms, the residue and atom "
+                "composition, sequence entropy, a Kyte-Doolittle transmembrane span count and an "
+                "AGGRESCAN 2007 normalized sum. A nucleic binder carries GC fraction, CpG count "
+                "and positions, and the longest G run. A ligand carries one formula weight and the "
+                "component composition. Each measurement names its own source where it has one "
+                "(extinction_source, half_life_source, molecular_weight_source, "
+                "transmembrane_method). A weight is left out rather than guessed when a letter has "
+                "no residue mass. read_results omits this block for size."
+            ),
         },
         "sequence_liability": _AXIS_SCHEMA,
         "target_liability": _AXIS_SCHEMA,
@@ -1117,6 +1187,38 @@ _TOOLS: tuple[dict[str, object], ...] = (
         "inputSchema": _directory_schema(required=False),
         "outputSchema": _stored_schema(directory=False, tree=True),
     },
+    {
+        "name": "declare_corpora",
+        "description": (
+            "Declare what every embedded model was trained on, and this program's coverage of the "
+            "DDD Benchmark. Pass 'against' to name a dataset or assay and get each model's overlap "
+            "with it; overlap is a property of the (model, dataset) pair, not of the model. "
+            "Reads nothing from disk and contacts nothing."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "against": {
+                    "type": "string",
+                    "description": (
+                        "A dataset or assay name to report overlap against, such as 'HIC'. "
+                        "Omit it to get the declarations without a pairing."
+                    ),
+                }
+            },
+            "additionalProperties": False,
+        },
+        "outputSchema": {
+            "type": "object",
+            "properties": {
+                "models": {"type": "array", "items": {"type": "object"}},
+                "corpora": {"type": "object"},
+                "benchmark_coverage": {"type": "object"},
+            },
+            "required": ["models", "corpora", "benchmark_coverage"],
+            "additionalProperties": False,
+        },
+    },
 )
 
 #: What each tool does to the world, in the terms a client shows a person
@@ -1149,6 +1251,7 @@ _ANNOTATIONS: dict[str, dict[str, object]] = {
     "read_sequence_measures": {"title": "Read stored sequence measurements", **_READS_ONLY},
     "read_results": {"title": "Read stored results", **_READS_ONLY},
     "backend_status": {"title": "Report the computational backend", **_READS_ONLY},
+    "declare_corpora": {"title": "Declare what the models were trained on", **_READS_ONLY},
 }
 for _tool in _TOOLS:
     _tool["annotations"] = dict(_ANNOTATIONS[str(_tool["name"])])

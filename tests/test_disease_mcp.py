@@ -26,6 +26,7 @@ _TOOL_NAMES = (
     "read_sequence_measures",
     "read_results",
     "backend_status",
+    "declare_corpora",
 )
 
 

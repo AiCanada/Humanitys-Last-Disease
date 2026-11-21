@@ -116,6 +116,25 @@ _VERDICT_FIELDS = (
     "ligand_alerts",
     "mhc_class_i",
     "synthesis",
+    # The last three were excluded by name and the reasons did not survive review.
+    #
+    # ``chemical_liability`` and ``modality_screen`` were kept out as "no state,
+    # enters no call". That is the rule the four reports above it already
+    # override, and for the same reason: a report recorded beside a verdict is
+    # read by a client that has no cause to ask for the whole record. Returning
+    # six no-call blocks and withholding two more on the ground that they are
+    # no-call was the list disagreeing with itself.
+    #
+    # ``inputs`` was kept out because ``replaced.changed_inputs`` already names
+    # the supplied files that moved. It names them only on a re-screen whose
+    # verdict changed: a first screen writes no ``replaced`` at all, so the
+    # predictor tables, panels and curated evidence a verdict rested on could
+    # not be read back by any client at any time. ``screen.py`` puts it plainly
+    # where it builds the block -- a verdict that cannot name its inputs cannot
+    # be checked against them.
+    "inputs",
+    "chemical_liability",
+    "modality_screen",
 )
 #: Keys a returned block leaves in screen.json. ``repeat_sequence`` is a verbatim
 #: slice of the designed construct, and ``_redact`` removes a DNA slice but not an
@@ -310,6 +329,13 @@ _AXIS_FIELDS = (
     "ic50",
     "binding_peptides",
     "reference_method_undeclared",
+    # Which predictor produced a measured class I or immunogenicity verdict.
+    # The undeclared and mismatched paths were disclosed here and the standing
+    # verdict was not, so the only record carrying a measurement was the only
+    # one that did not say what measured it.
+    "design_method",
+    "reference_method",
+    "restricting_method",
     "proteome_kmers",
     "proteome_digest",
     "seed_width",
@@ -382,6 +408,7 @@ _LAYER_TOOLS = (
     "read_sequence_measures",
     "read_results",
     "backend_status",
+    "declare_corpora",
 )
 TOOL_NAMES = ("list_options", "run", "screen_directory", "read_verdict", *_LAYER_TOOLS)
 #: Called with each finished line the program prints, as it is printed rather
@@ -1232,6 +1259,18 @@ def _is_names(value: object) -> bool:
     return isinstance(value, list) and all(isinstance(item, str) for item in value)
 
 
+def _is_records(value: object) -> bool:
+    """A list of objects, which is what ``inputs`` is.
+
+    Its two sentinel forms are lists of one object as well -- the folder that
+    could not be listed and the folder with more files than the writer will
+    record both arrive as ``[{...}]`` -- so this admits them without a special
+    case, and a reader tells them apart by the ``file`` value rather than by
+    the shape.
+    """
+    return isinstance(value, list) and all(isinstance(item, Mapping) for item in value)
+
+
 def _is_states(value: object) -> bool:
     return isinstance(value, Mapping) and all(isinstance(item, str) for item in value.values())
 
@@ -1364,6 +1403,9 @@ _VERDICT_TYPES: dict[str, Callable[[object], bool]] = {
     "ligand_alerts": _is_object,
     "mhc_class_i": _is_object,
     "synthesis": _is_object,
+    "inputs": _is_records,
+    "chemical_liability": _is_object,
+    "modality_screen": _is_object,
 }
 
 

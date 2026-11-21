@@ -234,3 +234,50 @@ def test_a_file_past_the_limit_is_still_refused(tmp_path: Path, monkeypatch: pyt
     monkeypatch.setattr(oligo, "TRANSCRIPTOME_FILE_LIMIT", 10)
     axes, _by_example = measure_nucleic_liability([("e0", "ACGT" * 10)], directory=tmp_path, transcriptome=reference)
     assert axes["off_target_hybridization"]["blocker"] == "transcriptome_too_large"
+
+
+# ------------- what the screening review of 2026-11-21 found in the reference scan
+
+
+def test_a_seed_is_not_read_across_a_record_junction(tmp_path: Path) -> None:
+    """The scan joined every record to the next and matched seeds that span them.
+
+    `_letter_blocks` dropped the header lines and concatenated the sequence
+    letters of the whole file, so the last bases of one entry were neighbours of
+    the first bases of the following one -- doing to records exactly what the
+    function's own docstring forbids for letters. On the input shape
+    `TRANSCRIPTOME_FILE_LIMIT` names as expected, ten thousand entries of a
+    hundred bases, fourteen per cent of searched windows were invented by the
+    join and every one reported matched.
+    """
+    width = oligo.SEED_WIDTH
+    left, right = "ACGTACGT", "T" * 8
+    junction = (left + right)[:width]
+
+    fasta = tmp_path / "ref.fa"
+    fasta.write_text(f">rec1\nAAAA{left}\n>rec2\n{right}CCCC\n", encoding="utf-8")
+    blocks = list(oligo._letter_blocks(fasta.read_text(encoding="utf-8").splitlines()))
+
+    assert all(fresh for _text, fresh in blocks), "each record must begin a block"
+    assert not any(
+        junction in text for text, _fresh in blocks
+    ), "the junction seed exists only in the concatenation, so it is not in the reference"
+
+
+def test_a_legacy_comment_line_does_not_split_a_record(tmp_path: Path) -> None:
+    """`;` holds no sequence but starts no record either.
+
+    Treating it as a separator would cut a record in two and lose a seed that
+    genuinely spans the comment -- which is a real match, not an invented one.
+    """
+    width = oligo.SEED_WIDTH
+    inside = ("GGCCAATT" * 4)[:width]
+    half = width // 2
+
+    fasta = tmp_path / "ref.fa"
+    fasta.write_text(
+        f">rec1 split by a comment\n{inside[:half]}\n; a legacy FASTA comment\n{inside[half:]}\n",
+        encoding="utf-8",
+    )
+    blocks = list(oligo._letter_blocks(fasta.read_text(encoding="utf-8").splitlines()))
+    assert any(inside in text for text, _fresh in blocks), "a comment must not break the record"

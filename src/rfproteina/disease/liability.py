@@ -2,8 +2,12 @@
 
 Immunogenicity is the Calis et al. 2013 class I 9-mer score used by the IEDB
 immunogenicity tool. A sample is clear only when every scored 9-mer is at most
-0. A positive 9-mer is stored and stays untested: that sign was fit on
-predicted MHC ligands, not on every window of a protein, so it is not a hit.
+0. A positive window is a **hit**, not an untested record, and only when it is
+one of the ligands the class I table says is presented: the Calis sign was fit
+on predicted MHC ligands rather than on every window of a protein, so an
+unrestricted scan of all windows is what cannot reach a verdict. This
+paragraph said the opposite until 2026-11-21, while
+``test_a_presented_ligand_above_zero_is_a_hit`` pinned the behaviour it denied.
 
 ADA is class II allele breadth: a peptide that binds across the DR panel is the
 accepted computational anti-drug-antibody risk signal, because a promiscuous
@@ -688,7 +692,7 @@ def _mhc_record(
     would mark every design and could never clear -- and a clear defined as "no
     binding window anywhere" would be a claim no human protein satisfies.
 
-    So for a protein the measurement is binding peptides per 100 residues,
+    So for a protein the measurement is binding peptides per 100 windows,
     compared with the same count over the reference proteins scored by the same
     tool. Without that reference there is no bar, and the density is recorded
     while the axis stays untested rather than guessing which side of it to fall.
@@ -979,6 +983,11 @@ def _immunogenicity_record(directory: Path, samples: list[tuple[str, str | None]
                 found["state"] = "untested"
                 found["blocker"] = "ic50_not_nm"
         found.update(_coverage_fields(named, samples))
+        # Which predictor called these 9-mers presented. The Calis verdict is
+        # two-sided only because a class I table restricted the scan, so that
+        # table's tool is part of the claim: without it a hit from one predictor
+        # and a hit from another are the same record.
+        found["restricting_method"] = sorted(_table_methods(rows or []))
         return found
     scored_max: float | None = None
     positive = 0
@@ -1139,9 +1148,19 @@ def _presented_immunogenicity(
     # A presented 9-mer that is not a window of any sample was not scored.
     # Clearing on the ones that were would say every presented 9-mer is at most 0.
     if set(presented) - covered:
+        # Untested, because clearing on the windows that were scored would claim
+        # every presented 9-mer is at most 0 when one of them was never scored.
+        #
+        # The counts stay TRUE, though. Overwriting them with 0 and [] used to
+        # say none of the scored windows reached the cut while
+        # ``presented_ligands`` said one had been scored and it had in fact
+        # scored 0.272 -- one record contradicting itself, against the meaning
+        # ``mcp_api`` publishes for these two keys. ``presented_complete`` is
+        # what says the set is short; the counts say what was actually found,
+        # and a reader needs them precisely because the scan is incomplete.
         record = _axis("untested", None, "presented_not_in_design")
-        record["positive_windows"] = 0
-        record["positive_examples"] = []
+        record["positive_windows"] = positive
+        record["positive_examples"] = sorted(set(positive_examples))
         record["presented_complete"] = False
     elif scored_max is None:
         # Three different reasons there was nothing to score, and one blocker
@@ -2007,6 +2026,15 @@ def _reference_density(
     detail = {
         "reference_proteins": sorted(densities),
         "reference_densities": {name: _round4(value) for name, value in sorted(densities.items())},
+        # Which predictor produced each side. Every refusal above already names
+        # them, and the standing verdict did not -- so the one record carrying a
+        # measurement was the one that could not say what measured it. Two
+        # predictors over the same windows wrote byte-identical records: two run
+        # directories differing only in the method cell compared equal under
+        # json.dumps(sort_keys=True). Both keys are in mcp_api._AXIS_FIELDS, so a
+        # consumer sees them rather than their sitting unread in the file.
+        "design_method": sorted(design_methods),
+        "reference_method": sorted(reference_methods),
     }
     if too_short:
         # Some candidates set the bar and others were too short for the widths

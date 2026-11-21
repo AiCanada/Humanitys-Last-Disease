@@ -2229,3 +2229,36 @@ def test_a_table_declaring_no_scale_is_still_refused_before_the_filter(tmp_path:
     record = measure_sequence_liability(_ada_design(), directory=tmp_path)[0]["ada"]
     assert record["state"] == "untested"
     assert record["blocker"] == "rank_scale_unknown"
+
+
+def test_an_incomplete_presented_set_still_counts_what_it_scored(tmp_path: Path) -> None:
+    """The record contradicted itself: one window scored, and none positive.
+
+    When a presented 9-mer is not a window of any sample the axis cannot clear,
+    because clearing would say every presented 9-mer is at most 0 while one of
+    them was never scored. That part is right. Overwriting the counts with 0 and
+    [] was not: `presented_ligands` said one window had been scored and
+    `positive_windows` said none of the scored ones reached the cut, while the
+    scored window was FIAGLIAIV at 0.272 and it is in the design.
+
+    `presented_complete` is what says the set is short. The counts say what was
+    actually found, and a reader needs them precisely because the scan is short.
+    """
+    in_design = "FIAGLIAIV"
+    not_in_design = "SIINFEKLV"
+    design = [("binder_0", "LLLLLLLLL" + in_design)]
+
+    rows = ["allele\tpeptide\tmethod\tpercentile_rank"]
+    for peptide in (in_design, not_in_design):
+        rows.append(f"HLA-A*02:01\t{peptide}\tmhcflurry\t0.4")
+    (tmp_path / "mhc_i.tsv").write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    axes, _by_example = measure_sequence_liability(design, directory=tmp_path)
+    record = axes["immunogenicity"]
+
+    assert record["state"] == "untested", "a short presented set cannot clear"
+    assert record["blocker"] == "presented_not_in_design"
+    assert record["presented_complete"] is False
+    assert record["presented_ligands"] == 1, "one presented 9-mer is a window of the design"
+    assert record["positive_windows"] == 1, "and it scores above zero, so the count is one"
+    assert record["positive_examples"] == ["binder_0"]

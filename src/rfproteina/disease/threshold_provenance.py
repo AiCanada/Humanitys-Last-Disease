@@ -36,9 +36,18 @@ matching strings:
 ``reported_only``
     Measured and recorded with no cut adopted, so a reader does not go looking
     for a pass that was deliberately not taken.
+``borrowed``
+    Another project's default, carried across. Not a published value, and the
+    definition or the scale it was fitted against may differ from the one it is
+    applied to here. Every such entry says which.
+``reported_only``
+    Measured and recorded with no cut adopted, so a reader does not go looking
+    for a pass that was deliberately not taken.
 ``measurement_parameter``
     Not a pass bar at all: a constant that shapes a measurement. Recorded so
     the number stays reproducible, and classified so nobody reads it as a cut.
+``unrecorded``
+    No entry in :data:`ALL_PROVENANCE`. A defect, not a kind.
 ``unrecorded``
     No entry in :data:`ALL_PROVENANCE`. A defect, not a kind.
 

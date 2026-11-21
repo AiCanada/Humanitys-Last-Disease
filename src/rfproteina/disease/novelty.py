@@ -53,7 +53,25 @@ FOLDSEEK_RELATIVES = ("foldseek", "bin/foldseek")
 
 #: Structure file extensions Foldseek reads as a query. Compression is handled by
 #: Foldseek itself, so the gzipped forms are listed too.
-STRUCTURE_SUFFIXES = (".pdb", ".cif", ".mmcif", ".pdb.gz", ".cif.gz", ".mmcif.gz")
+STRUCTURE_SUFFIXES = (
+    ".pdb",
+    ".cif",
+    ".mmcif",
+    ".pdb.gz",
+    ".cif.gz",
+    ".mmcif.gz",
+    # Zstandard too. Foldseek reads all nine of these spellings and names each
+    # entry by stripping both suffixes, verified one file per spelling through
+    # ``createdb``. Leaving the ``.zst`` forms out did not hide them from the
+    # search -- ``createdb`` recurses over the directory and read them anyway --
+    # it only hid them from this list, so their rows came back under an id no
+    # design claimed and :func:`best_per_design` raised, destroying the axis for
+    # the designs that had searched perfectly well. A spelling the tool reads
+    # must be a spelling this list admits.
+    ".pdb.zst",
+    ".cif.zst",
+    ".mmcif.zst",
+)
 
 #: Binary CIF is deliberately **not** in the list above, although
 #: ``combinations._STRUCTURE_SUFFIXES`` accepts it elsewhere: Foldseek cannot
@@ -146,6 +164,13 @@ class StructureHit:
     tmscore: float
     evalue: float
     bits: float
+    #: The two chain normalisations behind ``tmscore``, which is the larger of
+    #: them. They are different scales -- one divides by the design's own
+    #: length, the other by the matched entry's -- so a record publishing only
+    #: the larger does not say which one was read against the same-fold cut.
+    #: ``None`` where a caller built the hit without them.
+    qtmscore: float | None = None
+    ttmscore: float | None = None
 
 
 class NoveltyUnavailableError(RuntimeError):
@@ -245,13 +270,17 @@ def parse_search_table(text: str, columns: tuple[str, ...] = SEARCH_COLUMNS) -> 
             continue
         query = fields[index["query"]]
         try:
+            qtmscore = float(fields[index["qtmscore"]])
+            ttmscore = float(fields[index["ttmscore"]])
             hit = StructureHit(
                 query=query,
                 target=fields[index["target"]],
                 fident=float(fields[index["fident"]]),
-                tmscore=max(float(fields[index["qtmscore"]]), float(fields[index["ttmscore"]])),
+                tmscore=max(qtmscore, ttmscore),
                 evalue=float(fields[index["evalue"]]),
                 bits=float(fields[index["bits"]]),
+                qtmscore=qtmscore,
+                ttmscore=ttmscore,
             )
         except (KeyError, ValueError):
             continue
@@ -275,6 +304,28 @@ def _query_id(path: Path) -> str:
         if name.lower().endswith(suffix):
             return name[: -len(suffix)]
     return path.stem
+
+
+def colliding_design_ids(structures: Sequence[Path]) -> dict[str, list[Path]]:
+    """Query files that Foldseek would report under one entry name, by that name.
+
+    :func:`query_structures` recurses, and the generation pipeline writes one
+    ``binder_0_generated.cif`` per target, so a run tree hands Foldseek several
+    files sharing a basename. Foldseek names an entry after the file and not
+    after its folder: on seven real asthma designs its ``db.lookup`` listed
+    ``binder_0_generated_A`` seven times while ``db.source`` held a single line,
+    so the rows cannot be attributed back to a file even in principle. Those
+    seven collapsed into one record, and the verdict left standing for all of
+    them was one target's own PDB chain at identity 1.0.
+
+    Nothing available here can separate them, so the axis refuses instead of
+    publishing one design's answer as another's. Splitting such a tree into one
+    search per folder, or naming the designs apart, both make it answerable.
+    """
+    by_id: dict[str, list[Path]] = {}
+    for path in structures:
+        by_id.setdefault(_query_id(path), []).append(path)
+    return {design_id: paths for design_id, paths in sorted(by_id.items()) if len(paths) > 1}
 
 
 def best_per_design(best: dict[str, StructureHit], design_ids: Sequence[str]) -> dict[str, StructureHit | None]:
@@ -313,6 +364,12 @@ def verdict(best: StructureHit | None, *, same_fold_tm: float = SAME_FOLD_TM) ->
     weaker best match, or none, is clear meaning *structurally novel*. The
     measurement is the best TM-score so a roll-up reads the least-novel design.
 
+    ``tm_normalisation`` names the scale ``measurement`` is on. The two chain
+    normalisations are not interchangeable and the larger of them answers, so
+    the number alone does not say what was measured: on a real 66-residue binder
+    the winner was a 1102-residue entry at 0.1% identity, query-normalised
+    0.595 and target-normalised 0.053. ``qtmscore``/``ttmscore`` carry both.
+
     ``matched_entry`` names the Foldseek query entry the match came from, which
     for a multi-chain file carries the chain. **Read it before reading the
     state.** A file holding a binder and its target is answered by whichever
@@ -323,10 +380,30 @@ def verdict(best: StructureHit | None, *, same_fold_tm: float = SAME_FOLD_TM) ->
     answered, so that distinction is visible rather than implied.
     """
     if best is None:
+        # No rows at all is NOT a novel design. At ``evalue_max`` 1e6 against a
+        # whole-PDB database a chain that was read returns something, so an
+        # empty result means the query never reached the search -- and Foldseek
+        # drops a file it cannot parse at exit 0 with no counter and no mention
+        # in its own output. Measured: a chain-only CIF written by plain biotite,
+        # lacking ``_atom_site.occupancy`` and ``_atom_site.B_iso_or_equiv``,
+        # was dropped silently and this axis called it structurally novel. This
+        # repository already knew that parser requirement --
+        # ``metrics/utils/metrics_utils.py`` adds both fields deliberately.
+        #
+        # The axis cannot tell "nothing similar" from "nothing searched" from
+        # here, so it reports neither. Untested with the ambiguity named is the
+        # honest answer, and it can only withhold a clear, never grant one.
         return axis_record(
-            CLEAR, 0.0, None, novel=True, best_target=None, matched_entry=None, reason="no_match_within_evalue"
+            UNTESTED,
+            None,
+            "no_rows_query_may_not_have_been_read",
+            novel=None,
+            best_target=None,
+            matched_entry=None,
+            tm_normalisation=None,
         )
     state = HIT if best.tmscore >= same_fold_tm else CLEAR
+    known_pair = best.qtmscore is not None and best.ttmscore is not None
     return axis_record(
         state,
         round(best.tmscore, 4),
@@ -337,6 +414,9 @@ def verdict(best: StructureHit | None, *, same_fold_tm: float = SAME_FOLD_TM) ->
         fident=round(best.fident, 4),
         evalue=best.evalue,
         bits=best.bits,
+        tm_normalisation=(("design" if best.qtmscore >= best.ttmscore else "matched_entry") if known_pair else None),
+        qtmscore=round(best.qtmscore, 4) if best.qtmscore is not None else None,
+        ttmscore=round(best.ttmscore, 4) if best.ttmscore is not None else None,
     )
 
 
@@ -352,7 +432,9 @@ def novelty_search(
 ) -> dict[str, dict[str, object]]:
     """A novelty record per design structure under ``query_dir``.
 
-    Raises :class:`ScreeningInputError` when there is no structure to search.
+    Raises :class:`ScreeningInputError` when there is no structure to search, and
+    when two query files would be reported under one Foldseek entry name, which
+    is unanswerable rather than merely awkward -- see :func:`colliding_design_ids`.
     Raises :class:`NoveltyUnavailableError` when Foldseek is not installed or the
     database path does not exist, so a caller records every design ``untested``
     with that one blocker instead of a made-up score.
@@ -361,6 +443,10 @@ def novelty_search(
     structures = query_structures(query_dir)
     if not structures:
         raise ScreeningInputError("no_query_structures")
+    collisions = colliding_design_ids(structures)
+    if collisions:
+        shared = ",".join(sorted(collisions))
+        raise ScreeningInputError(f"foldseek_query_id_collision:{shared}")
     if not foldseek_available():
         raise NoveltyUnavailableError("foldseek_not_installed")
     if not Path(database).exists():

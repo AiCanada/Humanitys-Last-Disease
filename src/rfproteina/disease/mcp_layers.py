@@ -116,21 +116,53 @@ _JOB_FIELDS = ("class_name", "binder_kind", "target_id", "generation_started")
 #: directory, ``USERPROFILE`` and the checkout root. It is bounded and it is
 #: scrubbed, so it travels, but it is a publication decision rather than a size
 #: one and it is recorded here as such.
-_SCREEN_OMITTED = frozenset({"refold", "designed_interface_quality", "synthesis", "ligand_alerts"})
+#: ``modality_screen`` and ``chemical_liability`` join them on the same ground.
+#: Measured: the drug-type report is 1,403 bytes on a protein design and 1,316
+#: on a peptide, of which the residue composition, the atom counts and the
+#: AGGRESCAN sub-record are two thirds; the motif block is 376 bytes, or 433
+#: when the CIF named bonds and the free-cysteine listing appears. Together
+#: that is about the size of ``synthesis`` and ``ligand_alerts``, which are
+#: already out. Neither moves a call, and a reader walking a tree is looking
+#: for which runs to open rather than for one design's atom counts.
+#: ``read_verdict`` returns both whole, with nothing held back: there is no
+#: sequence, no molecule and no path in either -- a residue composition is a
+#: count per letter and a site list is residue numbers.
+_SCREEN_OMITTED = frozenset(
+    {
+        "refold",
+        "designed_interface_quality",
+        "synthesis",
+        "ligand_alerts",
+        "modality_screen",
+        "chemical_liability",
+    }
+)
 #: The same judgement at key granularity, for a block that has to travel whole
 #: except for one part of it. ``cuts`` cannot be omitted: the numbers a verdict
 #: was taken against are what the verdict means, and they differ between runs.
 #: ``cuts["provenance"]`` does not differ between runs -- it is the same twelve
-#: accounts of where this program's thresholds come from, measured at 2,908
-#: bytes on a protein screen, which is more than ``synthesis`` and
-#: ``ligand_alerts`` at about 2 KB each and close to ``designed_interface_quality``
-#: at 3 KB, and all three of those are dropped here outright. Repeating it once
-#: per run would make the prose the larger half of a tree-wide answer while
-#: saying nothing about any particular run. ``read_verdict`` returns it in full
-#: for one run, which is where a reader goes when a number is in question.
+#: accounts of where this program's thresholds come from, measured at 4,602
+#: bytes on a protein screen. That is larger than every block already dropped
+#: here: ``synthesis`` and ``ligand_alerts`` at about 2 KB each,
+#: ``designed_interface_quality`` at 3 KB, ``refold`` at 4 KB. It was 2,908
+#: bytes when this rule was written and grew when four of the caveats were
+#: filled in with what their numbers actually rest on, which is the direction
+#: this block will keep moving: a caveat earns its place by being long enough
+#: to be useful. Repeating it once per run would make the prose the larger half
+#: of a tree-wide answer while saying nothing about any particular run.
+#: ``read_verdict`` returns it in full for one run, which is where a reader
+#: goes when a number is in question.
 #:
 #: ``designed_interface_quality`` carries a provenance record too, and needs no
 #: entry here because the whole block is already omitted above.
+#:
+#: ``inputs`` is deliberately in neither set, although it is a list and could
+#: grow. It is the one new field whose content differs from run to run and is
+#: about that run: which predictor tables, panels and curated evidence it was
+#: handed, each with a size and a digest. Comparing two runs in a tree is
+#: exactly the question it answers, so dropping it here would remove it from
+#: the tool it is most useful in. The writer caps it at 64 files and withholds
+#: the whole list past that, so the worst case is bounded rather than open.
 _SCREEN_TRIMMED: dict[str, frozenset[str]] = {"cuts": frozenset({"provenance"})}
 #: The fields of that summary, in the order ``refold_report`` writes them.
 _REFOLD_SUMMARY = ("declared", "evaluated", "criteria_file", "refold_blocker")
@@ -194,7 +226,31 @@ def call_layer(name: str, arguments: Mapping[str, object]) -> dict[str, object]:
         return read_sequence_measures(arguments)
     if name == "read_results":
         return read_results(arguments)
+    if name == "declare_corpora":
+        return declare_corpora(arguments)
     return backend_status(arguments)
+
+
+def declare_corpora(arguments: Mapping[str, object]) -> dict[str, object]:
+    """What every embedded model was trained on, and the benchmark coverage that follows.
+
+    Reads nothing from disk and contacts nothing. The answer is the registry in
+    :mod:`rfproteina.disease.corpus_provenance` plus, when ``against`` names a
+    dataset, the overlap each model has with it -- which is a property of the
+    pair and so cannot be precomputed into the registry.
+    """
+    from rfproteina.disease import corpus_provenance, ddd_benchmark
+
+    _reject(arguments, {"against"})
+    against = arguments.get("against")
+    if against is not None and not isinstance(against, str):
+        raise ValueError("against must be a string.")
+    models = sorted(corpus_provenance.TRAINED_ON)
+    return {
+        "models": [corpus_provenance.declare(model, against=against) for model in models],
+        "corpora": corpus_provenance.describe_corpora(),
+        "benchmark_coverage": ddd_benchmark.coverage(),
+    }
 
 
 def describe_architecture() -> dict[str, object]:
@@ -263,6 +319,15 @@ def describe_architecture() -> dict[str, object]:
                         ),
                     },
                     {"name": "Results retrieval", "tool": "read_results"},
+                    {
+                        "name": "Training-corpus declaration",
+                        "tool": "declare_corpora",
+                        "note": (
+                            "What each embedded model was fitted on. Overlap is reported for a "
+                            "(model, dataset) pair, because contamination is a property of the "
+                            "pair and not of the model."
+                        ),
+                    },
                 ],
             },
             {

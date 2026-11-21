@@ -911,7 +911,7 @@ def _guidance(axis: str, record: Mapping[str, object]) -> tuple[str, str, str]:
         ),
         "mhc_i": (
             (
-                "For a protein, fewer binders per 100 residues than the tolerated proteins is the clear side. "
+                "For a protein, fewer binders per 100 windows than the tolerated proteins is the clear side. "
                 f"A peptide is clear when nothing binds at rank {rank_i} or IC50 {ic50_i} nM."
             ),
             "More binders than the tolerated proteins is a hit. A strong rank or a tight IC50 is a predicted binder.",
@@ -1107,7 +1107,7 @@ def _detail_lines(axis: str, record: Mapping[str, object]) -> list[str]:
     if record.get("method") == SUPPLIED_METHOD:
         lines.append("The number came from a table you supplied. A supplied score does not clear or hit.")
     if record.get("method") == _DENSITY_METHOD and _as_float(record.get("measurement")) is not None:
-        lines.append("The number is binding peptides per 100 residues.")
+        lines.append("The number is binding peptides per 100 windows.")
     binding = record.get("binding_peptides")
     if isinstance(binding, int) and not isinstance(binding, bool):
         lines.append(f"{binding} peptides in the table were counted as binding.")

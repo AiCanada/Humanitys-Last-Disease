@@ -126,6 +126,7 @@ def test_a_screen_that_records_no_source_does_not_claim_nothing_was_curated(tmp_
 
 def test_every_axis_group_reaches_the_verdict(tmp_path):
     """A nucleic or a ligand run used to arrive with a call and no axis record at all."""
+    from rfproteina.disease import mcp_api
     from rfproteina.disease.mcp_api import read_verdict
 
     record = {
@@ -160,8 +161,15 @@ def test_every_axis_group_reaches_the_verdict(tmp_path):
     assert verdict["toxicology"]["herg"]["measurement"] == 25000.0
     assert verdict["curated_axes"] == ["innate_immune"]
     # Motif counts and charge for the first design. It has no state, so it is
-    # not shown as a group of axes; it stays in the record.
-    assert "chemical_liability" not in verdict
+    # not an axis GROUP -- the thing this test is about -- and must not be
+    # summarised as one or counted among the curated axes. It is now returned
+    # as a plain report field, the way the other no-call reports are, so the
+    # assertion pins the property rather than the absence: the earlier
+    # `"chemical_liability" not in verdict` conflated "not a group of axes"
+    # with "not returned at all", and only the first is what this test guards.
+    assert "chemical_liability" not in mcp_api._AXIS_GROUPS
+    assert verdict["chemical_liability"] == {"deamidation_count": 2, "isoelectric_point": 6.1}
+    assert "chemical_liability" not in verdict["curated_axes"]
 
 
 def test_the_schema_declares_every_group_and_field_the_verdict_returns():

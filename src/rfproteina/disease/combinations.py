@@ -345,7 +345,8 @@ def rollup_axis(
     and anything else stays untested carrying the first undecided design's
     own blocker rather than a new one invented here. The measurement on a hit
     is the worst of the hits, so a rollup cannot read milder than the designs
-    it summarizes.
+    it summarizes, and the rest of the record is that same design's, so a count
+    and its own denominator never come from two different designs.
 
     This is the rule the proteome axis has always applied by hand. It lives
     here because three more axes now need the same one, and a safety rule
@@ -359,11 +360,18 @@ def rollup_axis(
     states = {name: _rolled_state(by_example.get(name)) for name in names}
     failed = [name for name in names if states[name] == HIT]
     if failed:
-        record = dict(by_example.get(failed[0]) or empty)
-        numbers = [value for value in (_rolled_number(by_example.get(name)) for name in failed) if value is not None]
+        numbers = {name: _rolled_number(by_example.get(name)) for name in failed}
+        measured = [name for name in failed if numbers[name] is not None]
+        # The worst hit's own record, not the first hit's with another design's
+        # number written over it. Every other field here is a fact about one
+        # design -- which entry it matched, at what identity, against which
+        # file -- so pairing them with a measurement from a different design
+        # describes a design that does not exist.
+        worst = max(measured, key=lambda name: numbers[name]) if measured else failed[0]
+        record = dict(by_example.get(worst) or empty)
         record["state"] = HIT
         record["blocker"] = None
-        record["measurement"] = max(numbers) if numbers else None
+        record["measurement"] = numbers[worst]
         record["failed"] = failed
         return record
     if all(states[name] == CLEAR for name in names):

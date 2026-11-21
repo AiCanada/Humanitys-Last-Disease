@@ -31,15 +31,21 @@ _NOT_IN_THE_VERDICT = {
     "samples": "read_sequence_measures returns the per-design measurements",
     "sequence_developability": "read_sequence_measures returns the first design's sequence block",
     "designed_interface": "read_sequence_measures and backend_status return the interface block",
-    # Every supplied file with its size and digest. The entries that moved
-    # between two verdicts already arrive under ``replaced.changed_inputs``,
-    # which is the part that qualifies a verdict rather than describing a folder.
-    "inputs": "replaced.changed_inputs already names the supplied files that moved",
-    # Counts and charges for the first design, and the drug-type report. Neither
-    # carries a state and neither enters the call.
-    "chemical_liability": "motif counts and charge, no state, enters no call",
-    "modality_screen": "the drug-type report, no state, enters no call",
 }
+#: Three exclusions were retired rather than kept, and the reasons are recorded
+#: here so the decision is not made twice.
+#:
+#: ``inputs`` was excluded because ``replaced.changed_inputs`` already named the
+#: supplied files that moved. It does, but only on a re-screen whose verdict
+#: changed; a first screen writes no ``replaced``, so no client could read what
+#: a fresh verdict rested on. It is now returned.
+#:
+#: ``chemical_liability`` and ``modality_screen`` were excluded as "no state,
+#: enters no call". Six blocks above them in ``_VERDICT_FIELDS`` are no-call
+#: reports returned by decision, so that reason excluded two blocks on exactly
+#: the ground the same list had already set aside. Both are now returned, and
+#: ``mcp_layers._SCREEN_OMITTED`` keeps them out of the tree walk for size the
+#: way it keeps the other reports out.
 
 
 def _screen_keys() -> set[str]:
@@ -384,6 +390,110 @@ def test_the_version_four_reports_arrive_without_the_design_slice_or_the_molecul
     assert "mhc_class_i" in mcp_layers.screen_fields()
 
 
+def test_a_fresh_verdict_names_the_files_it_rested_on(tmp_path: Path) -> None:
+    """``replaced.changed_inputs`` cannot answer this: a first screen has no ``replaced``.
+
+    The size and the digest are the point. A swapped or rebuilt predictor table
+    is otherwise invisible between two runs, and the screen it changed could
+    say only that the verdict changed.
+    """
+    from rfproteina.disease import mcp_api
+
+    record = _version_three_record()
+    record["inputs"] = [
+        {"file": "mhc_i.tsv", "bytes": 4096, "digest": "a" * 64},
+        {"file": "toxicology.tsv", "bytes": 512, "digest": "b" * 64, "link": True},
+    ]
+    assert "replaced" not in record, "the case this field exists for"
+    _screened(tmp_path, record)
+    answer = mcp_api.read_verdict({"directory": str(tmp_path)})
+    verdict = answer["runs"][0]["verdict"]
+    assert [entry["file"] for entry in verdict["inputs"]] == ["mhc_i.tsv", "toxicology.tsv"]
+    assert verdict["inputs"][1]["link"] is True
+    assert "malformed" not in verdict
+    schema = {str(tool["name"]): tool.get("outputSchema") for tool in _server()._TOOLS}["read_verdict"]
+    jsonschema.validate(answer, schema)
+
+
+def test_the_two_sentinel_input_lists_are_returned_as_they_are_stored(tmp_path: Path) -> None:
+    """Withheld whole, both of them: a truncated list would read as a complete one."""
+    from rfproteina.disease import mcp_api
+
+    for stored, expected in (
+        ([{"file": "inputs_not_listed"}], "inputs_not_listed"),
+        ([{"file": "inputs_truncated", "files": 91}], "inputs_truncated"),
+    ):
+        folder = tmp_path / expected
+        folder.mkdir()
+        record = _version_three_record()
+        record["inputs"] = stored
+        _screened(folder, record)
+        verdict = mcp_api.read_verdict({"directory": str(folder)})["runs"][0]["verdict"]
+        assert verdict["inputs"][0]["file"] == expected
+        assert "inputs" not in verdict.get("malformed", [])
+
+
+def test_an_inputs_list_of_the_wrong_shape_is_named_rather_than_returned(tmp_path: Path) -> None:
+    """It is the one new field that is a list, so the list check has to hold."""
+    from rfproteina.disease import mcp_api
+
+    record = _version_three_record()
+    record["inputs"] = ["mhc_i.tsv", "toxicology.tsv"]
+    _screened(tmp_path, record)
+    verdict = mcp_api.read_verdict({"directory": str(tmp_path)})["runs"][0]["verdict"]
+    assert "inputs" not in verdict
+    assert "inputs" in verdict["malformed"]
+
+
+def test_the_two_no_call_reports_reach_a_client_without_the_whole_record(tmp_path: Path) -> None:
+    """They were excluded as no-call beside six no-call blocks that are returned.
+
+    Returned whole, with nothing held back: neither carries a sequence, a
+    molecule or a path. A residue composition is a count per letter and a site
+    list is residue numbers. The tree walk drops both for size, as it does the
+    other reports.
+    """
+    from rfproteina.disease import mcp_api, mcp_layers
+
+    record = _version_three_record()
+    record["chemical_liability"] = {
+        "deamidation_count": 1,
+        "deamidation_sites": [{"residue": 35, "motif": "NG"}],
+        "net_charge_ph74": 1.2994,
+        "isoelectric_point": 8.7386,
+        "pka_set": "bjellqvist_1994",
+        "free_cysteine": "untested",
+    }
+    record["modality_screen"] = {
+        "binder_kind": "protein",
+        "length": 68,
+        "aliphatic_index": 81.6176,
+        "molecular_weight": 8004.0886,
+        "extinction_280_reduced": 8480,
+        "extinction_source": "pace_1995",
+        "half_life_mammalian": "30 hour",
+        "residue_composition": {"A": 2, "C": 2},
+        "atom_counts": {"C": 353, "H": 557},
+        "furin_count": 0,
+        "transmembrane_spans": [],
+    }
+    _screened(tmp_path, record)
+    answer = mcp_api.read_verdict({"directory": str(tmp_path)})
+    verdict = answer["runs"][0]["verdict"]
+    assert verdict["chemical_liability"]["pka_set"] == "bjellqvist_1994", "what the charge rests on"
+    assert verdict["chemical_liability"]["deamidation_sites"] == [{"residue": 35, "motif": "NG"}]
+    assert verdict["modality_screen"]["extinction_source"] == "pace_1995"
+    assert verdict["modality_screen"]["residue_composition"] == {"A": 2, "C": 2}
+    assert "malformed" not in verdict
+    jsonschema.validate(
+        answer, {str(tool["name"]): tool.get("outputSchema") for tool in _server()._TOOLS}["read_verdict"]
+    )
+    assert {"chemical_liability", "modality_screen"} <= mcp_layers._SCREEN_OMITTED
+    assert "inputs" in mcp_layers.screen_fields(), "the one new field a tree reader compares between runs"
+    walked = mcp_layers.read_results({"directory": str(tmp_path)})["screens"][0]
+    assert "modality_screen" not in walked and "chemical_liability" not in walked
+
+
 def _with_provenance() -> dict:
     """A screen carrying the nested provenance both blocks that have one now write.
 
@@ -504,9 +614,9 @@ def test_a_kind_this_program_does_not_declare_is_named_rather_than_returned(tmp_
 def test_a_tree_of_runs_does_not_repeat_the_threshold_prose(tmp_path: Path) -> None:
     """The accounts are the same on every run; the numbers are not.
 
-    Measured at 2,908 bytes on a protein screen, which is more than two of the
-    blocks the walk already drops outright. ``cuts`` itself has to stay: the
-    numbers a verdict was taken against are what the verdict means.
+    Measured at 4,602 bytes on a protein screen, which is more than any block
+    the walk already drops outright. ``cuts`` itself has to stay: the numbers a
+    verdict was taken against are what the verdict means.
     """
     from rfproteina.disease import mcp_api, mcp_layers
 

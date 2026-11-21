@@ -18,7 +18,7 @@ import json
 from pathlib import Path
 
 from rfproteina.disease import biosecurity, novelty, offtarget
-from rfproteina.disease.screening_tools import read_fasta
+from rfproteina.disease.screening_tools import ScreeningInputError, read_fasta
 
 
 def _emit(payload: dict[str, object]) -> None:
@@ -44,6 +44,14 @@ def _cmd_novelty(args: argparse.Namespace) -> int:
         records = novelty.novelty_search(Path(args.query_dir), Path(args.db), Path(args.work))
     except novelty.NoveltyUnavailableError as error:
         _emit({"axis": "structural_novelty", "unavailable": novelty.unavailable_axis(error.blocker)})
+        return 0
+    except ScreeningInputError as error:
+        # The query set is one Foldseek would mangle silently: a .bcif it cannot
+        # read, two files sharing a design id, nothing to search at all.
+        # query_structures' docstring promises the caller records the axis
+        # untested; without this the CLI dies with a traceback and emits no
+        # record for any design in the batch.
+        _emit({"axis": "structural_novelty", "unavailable": novelty.unavailable_axis(str(error))})
         return 0
     _emit({"axis": "structural_novelty", "per_design": records, "rollup": novelty.rollup(records)})
     return 0
