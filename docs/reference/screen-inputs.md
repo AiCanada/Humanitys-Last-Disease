@@ -1070,8 +1070,10 @@ because that clear is a statement about one file the file's base count, digest a
 are stored beside it. A reference under 1,000,000 bases is `transcriptome_too_small` —
 the same guard the proteome reader applies, because a clear against a two-record FASTA
 would read like a clear against a reference. A file whose letters do not read as bases is
-`transcriptome_not_nucleic`, the mirror of `proteome_not_protein`: a protein FASTA holds
-no fifteen consecutive ACGT letters, so searching one would clear the axis against a file
+`transcriptome_not_nucleic`, the mirror of `proteome_not_protein`: a protein FASTA is a
+quarter ACGTN letters and holds only 423 windows of fifteen consecutive ACGT letters (in
+105 low-complexity tracts of UP000005640_9606), so searching one would clear every
+design but a poly-A, poly-G or poly-T one, against a file
 that cannot hold a transcript.
 
 The seed is 15 bases rather than 7, but 15 does not make a perfect match rare. 4^15 is

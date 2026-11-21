@@ -29,10 +29,12 @@ so an RNA design and a DNA reference compare.
 
 The reference has to read as nucleotide before it is searched. The leading
 letters of the stream are sampled, and a file that is not mostly bases is
-refused as ``transcriptome_not_nucleic``: a protein FASTA holds effectively no
-window of fifteen consecutive ACGT letters -- 0.25**15 is 9.3e-10 a position,
-about one hundredth of a window across a whole proteome -- so searching one
-answers every seed "no match" and would read as a clear against a file that
+refused as ``transcriptome_not_nucleic``: a protein FASTA is about a quarter
+ACGTN letters -- 0.2484 of UP000005640_9606, 0.2553 over the first 100,000 the
+guard samples -- and holds few windows of fifteen consecutive ACGT letters: 423
+of that proteome's 11,166,108 windows, in 105 low-complexity tracts. So it
+answers "no match" to every seed but a poly-A, poly-G or poly-T one, which is
+still no transcript, and a clear against it would be a clear against a file that
 cannot hold a transcript. The file-size limit is set above a whole human
 transcriptome rather than below it (see ``TRANSCRIPTOME_FILE_LIMIT``), because
 the scan is streaming and the reference the seed width is argued against is the
@@ -510,10 +512,11 @@ def _scan(path: Path | None, needles: set[int]) -> Reference:
     if sampled >= _ALPHABET_MIN and base_letters < _BASE_SHARE * sampled:
         # pep.all.fa where cds.all.fa was meant, or $HUMAN_PROTEOME copied into
         # $HUMAN_TRANSCRIPTOME. This is the mirror of the protein reader's
-        # ``proteome_not_protein``: a protein FASTA holds effectively no window
-        # of fifteen consecutive ACGT letters, so it answers every seed "no
-        # match" and the axis read clear against a file that cannot hold a
-        # transcript.
+        # ``proteome_not_protein``: a protein FASTA is about a quarter ACGTN
+        # letters (0.2484 of UP000005640_9606), and the 423 windows of fifteen
+        # consecutive ACGT letters it does hold are low-complexity tracts, so it
+        # answers "no match" to all but a poly-A, poly-G or poly-T design and
+        # the axis read clear against a file that cannot hold a transcript.
         return Reference(
             blocker="transcriptome_not_nucleic",
             bases=bases,
