@@ -122,6 +122,18 @@ class Corpus:
     rows: int | None = None
     unit: str = ""
     licence: str = ""
+    #: The corpus this one was built from, when it was. Two corpora with
+    #: different names are not thereby different data: the OASis 9-mer set is
+    #: cut from Observed Antibody Space, so ``ablang2_pseudo_log_likelihood``
+    #: declaring ``OAS`` and ``oasis_identity_10pct_subjects`` declaring
+    #: ``OASis-peptides`` shared nothing by name while resting on one body of
+    #: antibodies -- and the pair read as two independent humanness opinions,
+    #: which is the case the house rule names outright. Declared here so the
+    #: file stops implying an independence it cannot support. **Nothing reads
+    #: this yet**: ``overlap_with`` compares a model against a dataset, not a
+    #: model against a model, so the pairwise check this would feed does not
+    #: exist. A reader of the record can see it; a guard cannot.
+    derived_from: str = ""
 
     def family_of(self, label: str) -> tuple[str, ...]:
         """The labels measuring the same quantity as ``label``, including it."""
@@ -144,6 +156,10 @@ class Corpus:
             record["unit"] = self.unit
         if self.licence:
             record["licence"] = self.licence
+        if self.derived_from:
+            # On the record, not only in the table: a reader weighing two
+            # opinions needs to see that one corpus was cut from the other.
+            record["derived_from"] = self.derived_from
         return record
 
 
@@ -278,6 +294,7 @@ CORPORA: dict[str, Corpus] = {
         locator="OASis v1, packaged",
         read_from="humanness.OASIS_METHOD and its packaged table, 2026-11-18",
         labels=("humanness_identity",),
+        derived_from="OAS",
     ),
     "UniRef": Corpus(
         name="UniRef-family protein sequences",
