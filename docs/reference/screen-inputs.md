@@ -1074,12 +1074,20 @@ would read like a clear against a reference. A file whose letters do not read as
 no fifteen consecutive ACGT letters, so searching one would clear the axis against a file
 that cannot hold a transcript.
 
-The seed is 15 bases because that is the width at which a perfect match stops being an
-accident. 4^15 is 1.07e9, past the roughly 3e8 bases of a human transcriptome read on
-both strands, while 4^7 is 16384 and every 7-mer occurs in such a file thousands of times
+The seed is 15 bases rather than 7, but 15 does not make a perfect match rare. 4^15 is
+1.07e9 against the roughly 3e8 bases of a human transcriptome, so any one 15-mer occurs
+0.28 times in it by chance, while 4^7 is 16384 and every 7-mer occurs thousands of times
 over. This is the same arithmetic behind the >= 15-nt perfect-complementarity rule used
 for antisense off-target triage, and it is why a seed-region match alone is not screened
 here. A design shorter than one seed is `chain_shorter_than_seed`.
+
+Measured against a 3e8-base reference, fifteen random designs of 18 to 80 nt and the
+published ODN 2006 each matched at least one seed by chance -- 0.18 to 0.42 of their own
+seeds -- and only a poly-A design cleared. So a hit is a pointer into the reference for
+someone to read rather than a count of off-targets, and only a clear is a statement
+about the whole file. The 1,000,000-base floor is the proteome reader's, and a clear
+against a file that size is a clear against 0.3% of a transcriptome, which is why the
+record stores that file's base count and digest.
 
 A gzipped reference is read directly, which matters because that is the only form
 Ensembl and GENCODE distribute cDNA in — without it the file this seed width is argued

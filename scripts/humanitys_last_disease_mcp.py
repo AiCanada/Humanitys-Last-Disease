@@ -90,7 +90,9 @@ _INSTRUCTIONS = (
     "describe_architecture names the AI interface, the MCP tools, and the computational backend. "
     "run takes one mode per call: the disease pipeline, a screen, or a refold. "
     "Do not shell out to the program or parse its printed lines. "
-    "A verdict for a run marked archived is a copy of another run's in the same tree. "
+    "A run marked archived is a copy the generation archive made of another run's files. The "
+    "copy is screened in place like any other run, so the verdict beside it is the copy's own "
+    "and can differ from the verdict beside the run it was taken from. "
     "In a verdict, an axis whose source is axis_evidence was declared by a person and not measured; "
     "curated_axes names those axes beside the call. "
     "A relative path is inside this checkout and cannot leave it. "
@@ -949,7 +951,11 @@ def _screens_schema(*, ran: bool) -> dict[str, object]:
                 "description": (
                     "True when this run is a copy the generation archive made under the output "
                     "directory, not the run it was taken from. A walk returns both, so counting "
-                    "an archived copy as a second run counts one run twice."
+                    "an archived copy as a second run counts one run's designs twice. Only the "
+                    "files are a copy: the copy is screened in place like any other run, so the "
+                    "verdict here is the copy's own and can differ from the one beside the run it "
+                    "was taken from. Dropping every archived row can therefore drop the only "
+                    "measured verdict for that target."
                 ),
             },
             "archive_run_id": {
@@ -1116,8 +1122,11 @@ _TOOLS: tuple[dict[str, object], ...] = (
             "Read stored screen verdicts under a directory. Does not rescreen, write, generate, or start a shell. "
             "screened_clear means every axis in the named bar is clear. "
             "An axis whose source is axis_evidence was declared by a person, not measured. "
-            "A run marked archived is a copy the generation archive made of another run in the same tree, "
-            "so a tally that counts it separately counts that run twice."
+            "A run marked archived is a copy the generation archive made of another run's files in the "
+            "same tree, so a tally that counts its designs separately counts that run's designs twice. "
+            "Its verdict is the one last screened inside the copy, which can differ from the verdict "
+            "beside the run it was taken from, so dropping every archived run can drop the only "
+            "measured verdict for that target."
         ),
         "inputSchema": {
             "type": "object",
