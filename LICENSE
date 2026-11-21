@@ -26,3 +26,30 @@ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
 CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Cite these when a screen is reported
+Cite the tools whose screens you report. Author lists, journals and DOIs below were verified against PubMed on 2026-11-18, except ANARCII's, which is a preprint and is quoted from the citation block in the installed package's own metadata.
+
+DeepSP — Kalejaye LA, Wu I-E, Terry T, Lai P-K. DeepSP: Deep learning-based spatial properties to predict monoclonal antibody stability. Comput Struct Biotechnol J 23:2220–2229 (2024). 10.1016/j.csbj.2024.05.029
+DeepViscosity — Kalejaye LA, Chu J-M, Wu I-E, et al., Lai P-K. Accelerating high-concentration monoclonal antibody development with large-scale viscosity data and ensemble deep learning. mAbs 17(1):2483944 (2025). 10.1080/19420862.2025.2483944
+ANARCII — Greenshields-Watson A, Agarwal P, Robinson SA, et al., Deane CM. ANARCII: A generalised language model for antigen receptor numbering. bioRxiv 2025.04.16.648720. 10.1101/2025.04.16.648720
+AbLang-2 — Olsen TH, Moal IH, Deane CM. Addressing the antibody germline bias and its effect on language models for improved antibody design. Bioinformatics 40(11) (2024). 10.1093/bioinformatics/btae618
+BioPhi and OASis — Prihoda D, Maamary J, Waight A, et al., Bitton DA. BioPhi: A platform for antibody design, humanization, and humanness evaluation based on natural antibody repertoires and deep learning. mAbs 14(1):2020203 (2022). 10.1080/19420862.2021.2020203
+MHCflurry 2.0 — O'Donnell TJ, Rubinsteyn A, Laserson U. MHCflurry 2.0: Improved pan-allele prediction of MHC class I-presented peptides by incorporating antigen processing. Cell Syst 11(1):42–48.e7 (2020). 10.1016/j.cels.2020.06.010
+IEDB — Vita R, Mahajan S, Overton JA, et al., Peters B. The Immune Epitope Database (IEDB): 2018 update. Nucleic Acids Res 47(D1):D339–D343 (2019). 10.1093/nar/gky1006
+TEPITOPE — Sturniolo T, Bono E, Ding J, et al., Hammer J. Generation of tissue-specific and promiscuous HLA ligand databases using DNA microarrays and virtual HLA class II matrices. Nat Biotechnol 17(6):555–561 (1999). 10.1038/9858
+DockQ v2 — Mirabello C, Wallner B. DockQ v2: improved automatic quality measure for protein multimers, nucleic acids, and small molecules. Bioinformatics 40(10) (2024). 10.1093/bioinformatics/btae586
+ProLIF — Bouysset C, Fiorucci S. ProLIF: a library to encode molecular interactions as fingerprints. J Cheminform 13(1):72 (2021). 10.1186/s13321-021-00548-6
+PoseBusters — Buttenschoen M, Morris GM, Deane CM. PoseBusters: AI-based docking methods fail to generate physically valid poses or generalise to novel sequences. Chem Sci 15(9):3130–3139 (2024). 10.1039/d3sc04185a
+ADMET-AI — Swanson K, Walther P, Leitz J, et al., Zou J. ADMET-AI: a machine learning ADMET platform for evaluation of large-scale chemical libraries. Bioinformatics 40(7) (2024). 10.1093/bioinformatics/btae416
+Chemprop — Heid E, Greenman KP, Chung Y, et al., McGill CJ. Chemprop: A machine learning package for chemical property prediction. J Chem Inf Model 64(1):9–17 (2024). 10.1021/acs.jcim.3c01250
+ThermoMPNN — Dieckhaus H, Brocidiacono M, Randolph NZ, Kuhlman B. Transfer learning to leverage larger datasets for improved prediction of protein stability changes. Proc Natl Acad Sci USA 121(6):e2314853121 (2024). 10.1073/pnas.2314853121
+MMseqs2 — Steinegger M, Söding J. MMseqs2 enables sensitive protein sequence searching for the analysis of massive data sets. Nat Biotechnol 35(11):1026–1028 (2017). 10.1038/nbt.3988
+Foldseek — van Kempen M, Kim SS, Tumescheit C, et al., Steinegger M. Fast and accurate protein structure search with Foldseek. Nat Biotechnol 42(2):243–246 (2024). 10.1038/s41587-023-01773-0
+@article{confrover2025,
+  title={Simultaneous Modeling of Protein Conformation and Dynamics via Autoregression},
+  author={Shen, Yuning and Wang, Lihao and Yuan, Huizhuo and Wang, Yan and Yang, Bangji and Gu, Quanquan},
+  journal={arXiv preprint arXiv:2505.17478},
+  year={2025}
+}
+BayeshERG — Kim H, Park M, Lee I, Nam H. BayeshERG: a robust, reliable and interpretable deep learning model for predicting hERG channel blockers. Brief Bioinform 23(4) (2022). 10.1093/bib/bbac211
