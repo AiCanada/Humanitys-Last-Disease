@@ -73,6 +73,16 @@ _HUMAN = "9606"
 #: theirs and not ours. Suzek et al., Bioinformatics 31:926-932 (2015).
 _UNIREF_IDENTITY = "0.5"
 _CLUSTER_FIELD = "uniref_cluster_50"
+#: What the UniRef50 side of this axis measures by, and what its measurement
+#: counts. This axis has two methods on two scales -- a count of human cluster
+#: members here, a percent identity on the Compara path -- and only the second
+#: named itself, so a stored ``measurement`` of 2 could not be told from an
+#: identity of 2 per cent, which is the clear side of the cut the other method
+#: is judged against. Which of the two answers is decided by the UniProt
+#: release the query reached, so the record has to say.
+_UNIREF_METHOD = "uniref50_cluster_human_members"
+_UNIREF_UNITS = "human_cluster_members"
+_COMPARA_UNITS = "percent_identity"
 _MEMBER_LIMIT = 25
 #: STRING's published high-confidence band. Below it a partner count is mostly
 #: text-mining and the number means much less.
@@ -255,11 +265,16 @@ def _paralog_record(target_id: str, read: ReadJson, limit: float | None = None) 
         # list is not evidence of being the only paralog.
         return _axis("untested", None, "members_not_listed")
     if len(members) >= _MEMBER_LIMIT:
-        return _axis("untested", len(members), "members_truncated")
+        truncated = _axis("untested", len(members), "members_truncated")
+        truncated["method"] = _UNIREF_METHOD
+        truncated["units"] = _UNIREF_UNITS
+        return truncated
     others = {name: symbol for name, symbol in members.items() if name != accession}
     named = sorted(symbol or name for name, symbol in others.items())
     if others:
         record = _axis("hit", len(others), None)
+        record["method"] = _UNIREF_METHOD
+        record["units"] = _UNIREF_UNITS
         record["cluster"] = cluster
         record["paralogs"] = named
         return record
@@ -276,6 +291,8 @@ def _paralog_record(target_id: str, read: ReadJson, limit: float | None = None) 
     # UniRef50 hit above keeps precedence: it is positive evidence of a family
     # and nothing here can downgrade it.
     singleton = _axis("untested", 0, "cluster_singleton_not_evidence")
+    singleton["method"] = _UNIREF_METHOD
+    singleton["units"] = _UNIREF_UNITS
     singleton["cluster"] = cluster
     singleton["paralogs"] = named
     if limit is None:
@@ -328,6 +345,7 @@ def _compara_record(singleton: dict[str, object], read: ReadJson, accession: str
     record["paralogs"] = singleton["paralogs"]
     record["compara_examined"] = examined
     record["method"] = "ensembl_compara_paralogues_identity"
+    record["units"] = _COMPARA_UNITS
     if closest is not None:
         record["closest_paralog"] = closest[1]
     record["threshold"] = limit

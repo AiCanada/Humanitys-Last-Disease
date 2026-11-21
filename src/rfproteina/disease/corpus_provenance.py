@@ -405,6 +405,11 @@ TRAINED_ON: dict[str, TrainedOn] = {
         role="Humanness as the fraction of 9-mers seen in 10% of subjects.",
         declared_from="humanness.OASIS_METHOD and its packaged peptide table",
         heads=("humanness_identity",),
+        # Nothing is fitted: humanness.oasis_identity counts a design's 9-mers against a
+        # packaged table, which is the RUNTIME_LOOKUP mechanism octant already declares.
+        # The public-corpus default denied exactly the risk this kind warns about -- a
+        # humanness gold set drawn from the same table this screen reads.
+        unaligned_kind=RUNTIME_LOOKUP,
     ),
     "anarcii": TrainedOn(
         model="anarcii",

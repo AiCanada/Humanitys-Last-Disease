@@ -48,7 +48,12 @@ PROPERTY_BARS: dict[str, dict[str, object]] = {
     },
     "clogp": {
         "max": 5.0,
-        "source": "Lipinski et al. 1997 rule of five, ClogP <= 5",
+        "source": (
+            "Lipinski et al. 1997 rule of five, ClogP <= 5. METHOD DIFFERS: the number in this "
+            "record is RDKit's Wildman-Crippen atom-based logP (JCICS 39:868-873, 1999), not the "
+            "CLOGP the rule was stated on; Lipinski's own cut for a different estimator is "
+            "MLogP > 4.15, not 5, so which calculator produced the number matters here"
+        ),
     },
     # Lipinski states both of these as atom counts, not as a SMARTS perception:
     # donors are "the sum of OHs and NHs" and acceptors "the sum of Ns and Os".
@@ -56,6 +61,17 @@ PROPERTY_BARS: dict[str, dict[str, object]] = {
     # published 5 and 10 against them let ritonavir clear the acceptor bar its
     # own count fails -- 11 Ns and Os, which RDKit perceives as 9 acceptors.
     # NHOHCount and NOCount are the counts the rule was stated on.
+    #
+    # THE TWO SCALES CROSS, so this is not a tightening. RDKit's donor and
+    # acceptor SMARTS include sulfur; Lipinski's counts see only N and O, and
+    # the rule of five is blind to a thiol or a thioether however well it
+    # hydrogen-bonds. Measured on this build: polythiophene-11 goes from 11
+    # acceptors to 0 and hexathiophenol from 6 donors to 0, both hit to clear,
+    # while captopril moves in both directions at once -- acceptors 3 to 4,
+    # donors 2 to 1. A sulfur-rich ligand therefore passes these two bars on
+    # the published scale and must not be read as having been checked for
+    # hydrogen bonding; nothing in this module screens sulfur donors.
+    # This records a limit of the cited rule, not a cut of ours to move.
     "h_bond_donors": {
         "max": 5,
         "source": "Lipinski et al. 1997 rule of five, sum of OHs and NHs <= 5 (RDKit NHOHCount)",

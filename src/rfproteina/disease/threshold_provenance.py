@@ -29,9 +29,18 @@ matching strings:
 ``caller_supplied``
     The operator passes it, and it is ``None`` until they do. An axis with one
     of these unset reports ``threshold_not_set`` rather than guessing.
+``borrowed``
+    Another project's default, carried across. Not a published value, and the
+    definition or the scale it was fitted against may differ from the one it is
+    applied to here. Every such entry says which.
+``reported_only``
+    Measured and recorded with no cut adopted, so a reader does not go looking
+    for a pass that was deliberately not taken.
 ``measurement_parameter``
     Not a pass bar at all: a constant that shapes a measurement. Recorded so
     the number stays reproducible, and classified so nobody reads it as a cut.
+``unrecorded``
+    No entry in :data:`ALL_PROVENANCE`. A defect, not a kind.
 
 Every classification is taken from what the defining constant already says
 about itself in ``liability.py``, ``screen.py`` or ``combinations.py``. None is
@@ -173,8 +182,9 @@ CUT_PROVENANCE: dict[str, Provenance] = {
         source="iedb_class_ii_recommended_rank",
         caveat=(
             "IEDB's recommended class II percentile rank. It assumes a continuous rank: the "
-            "installed TEPITOPE scorer emits only the bins 1, 10 and 100, so at a cut of 10 "
-            "two of its three bins pass and the reference density is refused as implausible."
+            "installed TEPITOPE scorer emits only the integer bins 1 through 10, plus 100 for a "
+            "score under every published threshold, so at a cut of 10 ten of its eleven bins "
+            "pass and the reference density is refused as implausible."
         ),
     ),
     "mhc_ii_ic50_nm_max": Provenance(
@@ -386,6 +396,12 @@ SCREEN_BAR_PROVENANCE: dict[str, Provenance] = {
         kind=PUBLISHED,
         source="lipinski_1997_rule_of_five",
         citation="Lipinski et al. 1997, rule of five: ClogP at or below 5.",
+        caveat=(
+            "METHOD DIFFERS: the measured number is RDKit's Wildman-Crippen atom-based logP "
+            "(``Crippen.MolLogP``, JCICS 39:868-873 (1999)), not CLOGP. The rule of five quotes "
+            "a different cut for a different estimator -- MLogP > 4.15 against CLogP > 5 -- so "
+            "the 5 is not estimator-independent. No cut on a Wildman-Crippen logP is published."
+        ),
     ),
     "ligand_alerts.h_bond_donors": Provenance(
         kind=PUBLISHED,
@@ -433,7 +449,8 @@ UNRECORDED_PROVENANCE = Provenance(
     kind=UNRECORDED,
     source="unrecorded",
     caveat=(
-        "This threshold has no entry in threshold_provenance.CUT_PROVENANCE. Treat the pass " "it decides as unsourced."
+        "This threshold has no entry in threshold_provenance.ALL_PROVENANCE, which is the "
+        "three families together. Treat the pass it decides as unsourced."
     ),
 )
 

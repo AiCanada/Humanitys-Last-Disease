@@ -1863,8 +1863,8 @@ and the record now says that where a reader will see it.
 
 `mhc_ii_rank_max` carries the related note: IEDB's recommended rank of 10
 assumes a continuous scale, and the installed TEPITOPE scorer emits only the
-bins 1, 10 and 100, so at a cut of 10 two of its three bins pass and the
-reference density is refused as implausible.
+integer bins 1 through 10 plus 100, so at a cut of 10 ten of its eleven bins
+pass and the reference density is refused as implausible.
 
 ## The terminal line
 

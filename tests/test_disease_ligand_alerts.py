@@ -97,3 +97,28 @@ def test_both_rule_of_five_cuts_name_the_scale_they_are_counted_on() -> None:
         source = PROPERTY_BARS[field]["source"]
         assert descriptor in source, f"{field} does not say it is counted as {descriptor}"
         assert "Lipinski" in source
+
+
+def test_the_rule_of_five_is_blind_to_sulfur_and_says_so() -> None:
+    """Reading the cited cut on the cited scale is not a tightening.
+
+    RDKit's donor and acceptor SMARTS include sulfur; Lipinski's counts see only
+    N and O. The two scales therefore cross, and a sulfur-rich ligand that the
+    SMARTS scale flagged now clears these two bars. That is a limit of the rule
+    of five, not a cut of ours to move, so it is pinned here rather than fixed:
+    a reader must not take a clear on these bars as a hydrogen-bonding check.
+    """
+    polythiophene = "c1ccc(s1)" + "c1ccc(s1)" * 10
+    screened = screen_smiles(polythiophene)
+    assert screened.h_bond_acceptors == 0, "N+O sees no sulfur; the SMARTS scale counted 11"
+    assert verdicts(screened)["h_bond_acceptors"]["state"] == "clear"
+
+    hexathiophenol = "Sc1c(S)c(S)c(S)c(S)c1S"
+    thiols = screen_smiles(hexathiophenol)
+    assert thiols.h_bond_donors == 0, "six thiols, and the rule of five counts none of them"
+    assert verdicts(thiols)["h_bond_donors"]["state"] == "clear"
+
+    # The bars must admit this in their own text, or a reader takes the clear
+    # above for a hydrogen-bonding verdict it is not.
+    joined = " ".join(str(PROPERTY_BARS[f]["source"]) for f in ("h_bond_donors", "h_bond_acceptors"))
+    assert "NHOHCount" in joined and "NOCount" in joined
