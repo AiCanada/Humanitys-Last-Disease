@@ -485,8 +485,11 @@ from the citation block in the installed package's own metadata.
 - **Foldseek** — van Kempen M, Kim SS, Tumescheit C, et al., Steinegger M. *Fast and accurate protein structure search with Foldseek.* Nat Biotechnol 42(2):243–246 (2024). [10.1038/s41587-023-01773-0](https://doi.org/10.1038/s41587-023-01773-0)
 - **BayeshERG** — Kim H, Park M, Lee I, Nam H. *BayeshERG: a robust, reliable and interpretable deep learning model for predicting hERG channel blockers.* Brief Bioinform 23(4) (2022). [10.1093/bib/bbac211](https://doi.org/10.1093/bib/bbac211)
 
-Commec and the Octant CYP release have no paper recorded here; cite the repository and the
-dataset card linked above.
+@article{confrover2025,
+  title={Simultaneous Modeling of Protein Conformation and Dynamics via Autoregression},
+  author={Shen, Yuning and Wang, Lihao and Yuan, Huizhuo and Wang, Yan and Yang, Bangji and Gu, Quanquan},
+  journal={arXiv preprint arXiv:2505.17478},
+  year={2025}
 
 Published thresholds carry their own citations, and are reported as their authors defined
 them: the same-fold TM-score cut of 0.5 (Xu & Zhang, Bioinformatics 26(7):889–895, 2010),
@@ -513,11 +516,6 @@ If you use RFD4-Proteina in your research, please cite
   url          = {https://www.biorxiv.org/content/10.64898/2026.11.12.766037v1}
 }
 ```
-@article{confrover2025,
-  title={Simultaneous Modeling of Protein Conformation and Dynamics via Autoregression},
-  author={Shen, Yuning and Wang, Lihao and Yuan, Huizhuo and Wang, Yan and Yang, Bangji and Gu, Quanquan},
-  journal={arXiv preprint arXiv:2505.17478},
-  year={2025}
 }
 See the [project page](https://rfd4-proteina.org/#citations) for citation updates.
 
