@@ -513,7 +513,12 @@ If you use RFD4-Proteina in your research, please cite
   url          = {https://www.biorxiv.org/content/10.64898/2026.11.12.766037v1}
 }
 ```
-
+@article{confrover2025,
+  title={Simultaneous Modeling of Protein Conformation and Dynamics via Autoregression},
+  author={Shen, Yuning and Wang, Lihao and Yuan, Huizhuo and Wang, Yan and Yang, Bangji and Gu, Quanquan},
+  journal={arXiv preprint arXiv:2505.17478},
+  year={2025}
+}
 See the [project page](https://rfd4-proteina.org/#citations) for citation updates.
 
 [Documentation](https://rfd4-proteina.org/latest/) · [Contributing](https://rfd4-proteina.org/latest/contributing/index.html) · [BSD 3-Clause license](https://github.com/RosettaCommons/RFD4-Proteina/blob/main/LICENSE)
