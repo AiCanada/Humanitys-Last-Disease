@@ -2497,11 +2497,6 @@ def _sample_measurements(
     # one that was read. The readable ids stay exactly what ``sample_cifs``
     # gives them, because everything joining onto this screen uses those.
     refused = _sample_ids(output_dir, [*paths, *_refused_designs(output_dir, paths)])[len(paths) :]
-    # Names for the designs that could not be decoded, taken from the same
-    # function over both lists so a refused design cannot be given the name of
-    # one that was read. The readable ids stay exactly what ``sample_cifs``
-    # gives them, because everything joining onto this screen uses those.
-    refused = _sample_ids(output_dir, [*paths, *_refused_designs(output_dir, paths)])[len(paths) :]
     for index, path in enumerate(paths):
         row, row_reason = _row_for_cif_with_reason(rows, path)
         interest, chain_reason = _interest_for_row(row, rows)
@@ -2673,43 +2668,6 @@ def _generated_cifs(output_dir: Path) -> list[Path]:
         # decompress-in-place leaves both spellings of one design side by side,
         # which would otherwise be measured as two designs.
         if kept is None or _DESIGN_SUFFIXES.index(suffix) > _DESIGN_SUFFIXES.index(_design_suffix(kept)):
-            found[key] = path
-    return [found[key] for key in sorted(found)]
-
-
-def _refused_designs(output_dir: Path, measured: list[Path]) -> list[Path]:
-    """Designs in this folder that could not be decoded, so nothing measured them.
-
-    ``_generated_cifs`` lists the designs this screen can read and drops the
-    rest, and every axis then rolls up over the designs it did read. A run whose
-    second design is a ``.bcif``, a ``.cif.zst`` on a machine without
-    ``zstandard``, or an archive that does not open therefore reported the
-    readable design's state as the run's, and named no reason either:
-    ``_designs_blocker`` is asked only when nothing at all was read, so the one
-    run that says "no design measured" is the run that measured none of them.
-    A clear over the survivors is not a clear for the run -- the rule
-    ``rollup_axis`` states and ``liability`` pins, that a design which could not
-    be scored is not evidence it would have passed.
-
-    A second spelling of a design that *was* read is not refused: that is one
-    molecule written twice, which ``_generated_cifs`` already settles by stem.
-    The spellings looked for are ``_PACKED_DESIGNS``, the same set the blocker
-    names.
-    """
-    root = output_dir / "inference_samples"
-    if not root.is_dir():
-        return []
-    read = {(str(path.parent), path.name.split("_generated.")[0]) for path in measured}
-    found: dict[tuple[str, str], Path] = {}
-    for pattern in _PACKED_DESIGNS:
-        try:
-            packed = sorted(root.rglob(pattern))
-        except OSError:
-            return []
-        for path in packed:
-            key = (str(path.parent), path.name.split("_generated.")[0])
-            if key in read or key in found or not path.is_file():
-                continue
             found[key] = path
     return [found[key] for key in sorted(found)]
 

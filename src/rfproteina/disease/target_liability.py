@@ -293,8 +293,6 @@ def _paralog_record(target_id: str, read: ReadJson, limit: float | None = None) 
     singleton = _axis("untested", 0, "cluster_singleton_not_evidence")
     singleton["method"] = _UNIREF_METHOD
     singleton["units"] = _UNIREF_UNITS
-    singleton["method"] = _UNIREF_METHOD
-    singleton["units"] = _UNIREF_UNITS
     singleton["cluster"] = cluster
     singleton["paralogs"] = named
     if limit is None:
@@ -347,7 +345,6 @@ def _compara_record(singleton: dict[str, object], read: ReadJson, accession: str
     record["paralogs"] = singleton["paralogs"]
     record["compara_examined"] = examined
     record["method"] = "ensembl_compara_paralogues_identity"
-    record["units"] = _COMPARA_UNITS
     record["units"] = _COMPARA_UNITS
     if closest is not None:
         record["closest_paralog"] = closest[1]

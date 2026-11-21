@@ -720,13 +720,6 @@ def _bdb_tsv(path: Path, rows: list[dict[str, str]]) -> Path:
     return path
 
 
-def _subset_rows(path: Path) -> list[dict[str, str]]:
-    import csv as _csv
-
-    with path.open("r", encoding="utf-8", newline="") as handle:
-        return list(_csv.DictReader(handle, delimiter="\t"))
-
-
 def test_bindingdb_is_registered_and_closes_no_gap_by_itself():
     """Its path to an axis runs through a per-ligand lookup, so a download alone closes nothing."""
     source = next(item for item in SOURCES if item.name.startswith("BindingDB"))

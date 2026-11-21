@@ -110,6 +110,10 @@ _BLOCKERS = {
     "peptide_column_absent": "The table carries ranks with no peptide named.",
     "allele_column_absent": "The class II table has no allele column.",
     "allele_panel_incomplete": "The seven-allele DR panel is not fully covered.",
+    "no_background_for_allele": (
+        "The fitted class II model carries this allele with no background scores, so a peptide cannot be "
+        "placed on a percentile rank and the missing alleles were not scored."
+    ),
     "rank_absent": "The panel is covered, but no row carries a rank.",
     "rank_scale_unknown": "The table does not declare a consensus method.",
     "score_absent": "The table holds no usable number.",
@@ -246,6 +250,10 @@ _BLOCKERS = {
     ),
     "oracle_truncated": "The developability oracle's table holds more rows than this screen will judge.",
     "oracle_not_reported": "The developability oracle's table holds no row carrying a usable score.",
+    "no_rows_query_may_not_have_been_read": (
+        "Foldseek returned nothing for this design. At this E-value a chain that was searched comes back with "
+        "something, so the file was most likely never read, and nothing similar cannot be told from nothing searched."
+    ),
     "no_scorable_peptides": "The domain yields no 9-mer of standard residues, so no human peptide was looked up.",
     "no_paired_chains_supplied": "Antibody-likeness is scored over a heavy and light pair, and none was supplied.",
 }
@@ -261,6 +269,12 @@ _ACTIONS = {
     "peptide_column_absent": "Add a peptide column.",
     "allele_column_absent": "Add an allele column.",
     "allele_panel_incomplete": "Score the alleles named below.",
+    "no_background_for_allele": (
+        "Re-fit the class II model so every allele carries a background, or set RFD4_CLASS_II_MODEL to one that does."
+    ),
+    "no_rows_query_may_not_have_been_read": (
+        "Check the design file parses: a chain-only CIF without occupancy and B-factor columns is dropped silently."
+    ),
     "rank_absent": "The median is a percentile, so an affinity cannot stand in for it. Add a rank column.",
     "rank_scale_unknown": "Re-run with the IEDB consensus method, or add a method column.",
     "score_absent": "Check the rank or affinity column.",
