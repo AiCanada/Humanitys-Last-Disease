@@ -65,3 +65,35 @@ def test_no_probability_is_dressed_up_as_a_concentration() -> None:
     record = screen_smiles(_ASPIRIN).as_record()
     assert not [key for key in record if key.endswith("_nm")]
     assert "no predicted probability is converted into a concentration" in " ".join(record["notes"])
+
+
+# ------------- what the screening review of 2026-11-20 found in the rule of five
+
+
+def test_the_rule_of_five_is_read_on_the_scale_lipinski_stated_it_on() -> None:
+    """The published 5 and 10 are atom counts, not a SMARTS perception.
+
+    Lipinski states donors as "the sum of OHs and NHs" and acceptors as "the sum
+    of Ns and Os". RDKit's NumHDonors/NumHAcceptors are a different scale, and
+    reading the cited cuts against them let ritonavir clear the acceptor bar its
+    own count fails: 11 Ns and Os, which RDKit perceives as 9 acceptors.
+
+    RDKit ships both scales, so this pins the cited cut against the cited scale
+    rather than inventing a threshold.
+    """
+    ritonavir = "CC(C)c1nc(CN(C)C(=O)NC(C(=O)NC(Cc2ccccc2)CC(O)C(Cc2ccccc2)" "NC(=O)OCc2cncs2)C(C)C)cs1"
+    screened = screen_smiles(ritonavir)
+    assert screened.h_bond_acceptors == 11, "the sum of Ns and Os, not the SMARTS count of 9"
+    assert screened.h_bond_donors == 4
+
+    calls = verdicts(screened)
+    assert calls["h_bond_acceptors"]["state"] == "hit", "11 is above the published 10"
+    assert calls["h_bond_donors"]["state"] == "clear"
+
+
+def test_both_rule_of_five_cuts_name_the_scale_they_are_counted_on() -> None:
+    """A cut that does not name its scale is how the wrong scale got used."""
+    for field, descriptor in (("h_bond_donors", "NHOHCount"), ("h_bond_acceptors", "NOCount")):
+        source = PROPERTY_BARS[field]["source"]
+        assert descriptor in source, f"{field} does not say it is counted as {descriptor}"
+        assert "Lipinski" in source

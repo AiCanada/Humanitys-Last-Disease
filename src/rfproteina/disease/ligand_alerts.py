@@ -50,8 +50,20 @@ PROPERTY_BARS: dict[str, dict[str, object]] = {
         "max": 5.0,
         "source": "Lipinski et al. 1997 rule of five, ClogP <= 5",
     },
-    "h_bond_donors": {"max": 5, "source": "Lipinski et al. 1997 rule of five"},
-    "h_bond_acceptors": {"max": 10, "source": "Lipinski et al. 1997 rule of five"},
+    # Lipinski states both of these as atom counts, not as a SMARTS perception:
+    # donors are "the sum of OHs and NHs" and acceptors "the sum of Ns and Os".
+    # RDKit's NumHDonors/NumHAcceptors are a different scale, and reading the
+    # published 5 and 10 against them let ritonavir clear the acceptor bar its
+    # own count fails -- 11 Ns and Os, which RDKit perceives as 9 acceptors.
+    # NHOHCount and NOCount are the counts the rule was stated on.
+    "h_bond_donors": {
+        "max": 5,
+        "source": "Lipinski et al. 1997 rule of five, sum of OHs and NHs <= 5 (RDKit NHOHCount)",
+    },
+    "h_bond_acceptors": {
+        "max": 10,
+        "source": "Lipinski et al. 1997 rule of five, sum of Ns and Os <= 10 (RDKit NOCount)",
+    },
     "qed": {
         "min": 0.5,
         "source": "suggested default pending calibration; Bickerton et al. 2012 define QED but publish no pass mark",
@@ -162,8 +174,9 @@ def screen_smiles(smiles: str) -> LigandAlerts:
         mol_weight=round(float(Descriptors.MolWt(mol)), 3),
         clogp=round(float(Crippen.MolLogP(mol)), 3),
         tpsa=round(float(Descriptors.TPSA(mol)), 3),
-        h_bond_donors=int(Descriptors.NumHDonors(mol)),
-        h_bond_acceptors=int(Descriptors.NumHAcceptors(mol)),
+        # NHOHCount / NOCount, not NumHDonors / NumHAcceptors: see the cuts above.
+        h_bond_donors=int(Descriptors.NHOHCount(mol)),
+        h_bond_acceptors=int(Descriptors.NOCount(mol)),
         rotatable_bonds=int(Descriptors.NumRotatableBonds(mol)),
         heavy_atoms=int(mol.GetNumHeavyAtoms()),
         qed=round(float(QED.qed(mol)), 4),

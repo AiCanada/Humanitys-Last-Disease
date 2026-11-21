@@ -348,7 +348,13 @@ SCREEN_BAR_PROVENANCE: dict[str, Provenance] = {
     "offtarget.evalue_max": Provenance(
         kind=CONVENTION,
         source="program_default_pending_calibration",
-        caveat="Same number as the novelty E-value cut and a separate decision; neither is calibrated.",
+        caveat=(
+            "Not calibrated. This was the same number as the novelty E-value cut until 2026-11-20, "
+            "when novelty moved to 1e6; the two now differ by nine orders of magnitude and are "
+            "separate decisions. Here the E-value is the reading itself, so a tight cut is the "
+            "measurement. In novelty it sat in front of TMalign as a prefilter and decided that "
+            "axis instead of the TM-score, which is why only that side was relaxed."
+        ),
     ),
     # --- stability.STABILITY_BARS ---------------------------------------
     "stability.fraction_positions_improvable": Provenance(
