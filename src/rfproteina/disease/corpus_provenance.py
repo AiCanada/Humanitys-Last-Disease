@@ -208,6 +208,73 @@ _GDPA1_LABELS = (
 )
 
 CORPORA: dict[str, Corpus] = {
+    "SyGMa-Metabolite-Database": Corpus(
+        name="Human biotransformations in the Metabolite Database used by Ridder and Wagener",
+        publisher="Ridder and Wagener",
+        locator="https://pubmed.ncbi.nlm.nih.gov/18311745/",
+        read_from="The authors derived the rules and empirical success rates from reported human reactions. "
+        "The public release contains the per-rule weights. Compound-level membership is unavailable.",
+        labels=("human_metabolite_hypotheses",),
+    ),
+    "TNP-clinical-VHH-36": Corpus(
+        name="TNP clinical-stage VHH descriptor reference",
+        publisher="Oxford Protein Informatics Group and Twist Bioscience",
+        locator="https://doi.org/10.1038/s42003-026-09594-y",
+        read_from="Six descriptor ranges calibrated on 36 clinical domains. The 108-domain assay study included "
+                  "36 clinical domains and 72 additional proprietary domains, assayed as Fc fusions.",
+        rows=36,
+        unit="VHH domain",
+    ),
+    "NanoBodyBuilder2-SAbDab": Corpus(
+        name="SAbDab nanobody structures used in NanoBodyBuilder2 development",
+        publisher="Oxford Protein Informatics Group",
+        locator="https://doi.org/10.1038/s42003-023-04927-7",
+        read_from="ImmuneBuilder paper and Supplementary Note 1. Per-domain training overlap is unverified.",
+        unit="structure",
+    ),
+    "PDBbind-refined-Vina": Corpus(
+        name="PDBbind refined set used to fit the original Vina function",
+        publisher="PDBbind",
+        locator="https://doi.org/10.1002/jcc.21334",
+        read_from="Trott and Olson describe fitting their empirical function to structures and affinity measurements.",
+        labels=("protein_ligand_binding_affinity",),
+        unit="complex",
+    ),
+    "PRODIGY-affinity-benchmark": Corpus(
+        name="Kastritis protein-protein binding affinity benchmark, curated PRODIGY subset",
+        publisher="Vangone and Bonvin",
+        locator="https://doi.org/10.7554/eLife.07454",
+        read_from="The 2015 contact and non-interacting surface regression used the 81-complex subset.",
+        labels=("protein_protein_binding_delta_g",),
+        rows=81,
+        unit="complex",
+    ),
+    "Niwa-Protein-Sol": Corpus(
+        name="Niwa cell-free solubility reference subset",
+        publisher="University of Manchester",
+        locator="https://protein-sol.manchester.ac.uk/software",
+        read_from="October 2017 release, seq_reference_data.txt. Population statistics use 2,396 E. coli proteins.",
+        labels=("cell_free_solubility",),
+        rows=2396,
+        unit="protein",
+    ),
+    "CATH-S95-v4.4": Corpus(
+        name="CATH S95 v4.4.0 labelled structural domains",
+        publisher="CATH",
+        locator="https://github.com/UCLOrengoGroup/domain-annotation-pipeline",
+        read_from="CathDomainList.S95.v4.4.0 paired with the authors' Foldseek S95 index.",
+        rows=73535,
+        unit="domain",
+    ),
+    "GearNet-PDB-CATH": Corpus(
+        name="PDB chains with CATH fold labels used for the Proteina GearNet classifier",
+        publisher="NVIDIA",
+        locator="https://arxiv.org/html/2503.00710v1#A7.SS3",
+        read_from="Appendix G.3.1 reports 214,564 structures before the train, validation and test split.",
+        labels=("cath_class", "cath_architecture", "cath_topology"),
+        rows=214564,
+        unit="structure",
+    ),
     "GDPa1": Corpus(
         name="GDPa1",
         publisher="Ginkgo Bioworks",
@@ -231,6 +298,45 @@ CORPORA: dict[str, Corpus] = {
         locator="https://tdcommons.ai/single_pred_tasks/adme/",
         read_from="docs/screening-implementation-handoff.md and the ADMET-AI model card, 2026-11-18",
         labels=("Caco2", "HIA", "Pgp", "BBB", "PPBR", "VDss", "CYP", "Half_Life", "CL", "hERG", "AMES", "DILI"),
+    ),
+    "TDC-AqSolDB": Corpus(
+        name="AqSolDB aqueous solubility in Therapeutics Data Commons",
+        publisher="Sorkun, Khetan and Er. Distributed by Therapeutics Data Commons.",
+        locator="https://doi.org/10.1038/s41597-019-0151-1",
+        read_from="ADMET-AI 2.0.1 resources/data/admet.csv lists 9,980 compounds for this task. "
+        "The original AqSolDB publication reports 9,982 compounds from nine sources. "
+        "Individual training split membership is unverified.",
+        labels=("Solubility_AqSolDB",),
+        rows=9980,
+        unit="compounds in the provider task metadata",
+    ),
+    "QupKake-ChEMBL-CREST": Corpus(
+        name="QupKake ChEMBL structures with CREST site assignments and ChemAxon pKa estimates",
+        publisher="Abarbanel and Hutchison",
+        locator="https://github.com/Shualdon/QupKake/tree/f7a294e91929e4e4f0a7100ad5cf5a64a34a7d4f/data",
+        read_from="The released compressed CSV contains 1,551,870 rows with CREST site indices and ChemAxon "
+        "macro-pKa estimates attributed to the lowest-energy protomer or deprotomer. The assignment is "
+        "ambiguous for some multisite compounds.",
+        labels=("protonation_site", "deprotonation_site", "simulated_pKa"),
+        rows=1551870,
+        unit="released rows",
+    ),
+    "QupKake-experimental-pKa": Corpus(
+        name="QupKake experimental pKa transfer-learning corpus",
+        publisher="Abarbanel and Hutchison, adapted from Machine-learning-meets-pKa",
+        locator="https://doi.org/10.1021/acs.jctc.4c00328",
+        read_from="The release contains 5,637 curated experimental records before the 80:20 split. Marvin "
+        "assigned reaction sites in the source data. Literature, Novartis and SAMPL were separate evaluations.",
+        labels=("aqueous_microscopic_pKa",),
+        rows=5637,
+        unit="records before splitting",
+    ),
+    "BayeshERG-release": Corpus(
+        name="BayeshERG MLSMR pretraining and hERG fine-tuning partitions",
+        publisher="Kim, Park and Nam",
+        locator="https://github.com/GIST-CSBL/BayeshERG/tree/25e9466499905a952f9d41cc6bc6886c3f247acb/data",
+        read_from="Published Pretraining and Finetuning folders, including 11,457 fine-tuning training rows.",
+        labels=("hERG",),
     ),
     "BindingDB": Corpus(
         name="BindingDB",
@@ -359,6 +465,29 @@ TRAINED_ON: dict[str, TrainedOn] = {
         heads=("viscosity_class",),
         weights_installed=True,
     ),
+    "sygma_1_1_0_empirical_rules": TrainedOn(
+        model="sygma_1_1_0_empirical_rules",
+        corpora=("SyGMa-Metabolite-Database",),
+        role="Rank individual metabolite structures using empirically weighted human biotransformation rules.",
+        declared_from="Ridder and Wagener (2008) and the phase I and II tables in the SyGMa 1.1.0 release.",
+        heads=("human_metabolite_hypotheses",),
+    ),
+    "qupkake_gfn2_xtb_micro_pka": TrainedOn(
+        model="qupkake_gfn2_xtb_micro_pka",
+        corpora=("QupKake-ChEMBL-CREST", "QupKake-experimental-pKa"),
+        role="Site enumeration and aqueous microscopic pKa regression for a single proton transfer.",
+        declared_from="Pinned QupKake release datasets and Abarbanel and Hutchison, JCTC (2024).",
+        heads=("protonation_site", "deprotonation_site", "simulated_pKa", "aqueous_microscopic_pKa"),
+        weights_installed=True,
+    ),
+    "admet_ai_aqsoldb_v2": TrainedOn(
+        model="admet_ai_aqsoldb_v2",
+        corpora=("TDC-AqSolDB",),
+        role="Small-molecule aqueous log10 molar solubility regression.",
+        declared_from="ADMET-AI v2 release checkpoint head and TDC AqSolDB task, reviewed 2026-11-22.",
+        heads=("Solubility_AqSolDB",),
+        weights_installed=True,
+    ),
     "admet_ai_classification_v1": TrainedOn(
         model="admet_ai_classification_v1",
         corpora=("TDC-ADMET",),
@@ -366,11 +495,60 @@ TRAINED_ON: dict[str, TrainedOn] = {
         declared_from="the ADMET-AI publication and docs/ddd-benchmark-readiness.md's contamination audit",
         heads=("Caco2", "HIA", "Pgp", "BBB", "PPBR", "VDss", "CYP", "Half_Life", "CL", "hERG", "AMES", "DILI"),
     ),
+    "therapeutic_nanobody_profiler_0.1.0": TrainedOn(
+        model="therapeutic_nanobody_profiler_0.1.0",
+        corpora=("TNP-clinical-VHH-36", "NanoBodyBuilder2-SAbDab"),
+        role="Clinical reference flags for six computed descriptors on the submitted VHH and its modeled structure.",
+        declared_from="Gordon et al. (2026) and TNP 0.1.0, with the NanoBodyBuilder2 structure-model corpus.",
+        unaligned_kind=SIMULATED_LABELS,
+    ),
+    "autodock_vina_fixed_pose": TrainedOn(
+        model="autodock_vina_fixed_pose",
+        corpora=("PDBbind-refined-Vina",),
+        role="Empirical score of one supplied rigid-receptor protein-ligand pose in kcal/mol.",
+        declared_from="Trott and Olson (2010), original Vina scoring function",
+        heads=("protein_ligand_binding_affinity",),
+    ),
+    "prodigy_ic_nis": TrainedOn(
+        model="prodigy_ic_nis",
+        corpora=("PRODIGY-affinity-benchmark",),
+        role="Empirical estimate of binding free energy from a protein-protein complex.",
+        declared_from="Vangone and Bonvin (2015), contact and non-interacting surface model",
+        heads=("protein_protein_binding_delta_g",),
+    ),
+    "Protein-Sol": TrainedOn(
+        model="Protein-Sol",
+        corpora=("Niwa-Protein-Sol",),
+        role="Sequence-based estimation of cell-free solubility.",
+        declared_from="Hebditch et al. 2017 and the authors' October 2017 reference file",
+        heads=("cell_free_solubility",),
+    ),
+    "cath_s95_foldseek": TrainedOn(
+        model="cath_s95_foldseek",
+        corpora=("CATH-S95-v4.4",),
+        role="Reports the classification depth supported by a CATH structural-domain match.",
+        declared_from="CATH S95 domain list and UCL Orengo Group domain-annotation-pipeline",
+        unaligned_kind=RUNTIME_LOOKUP,
+    ),
+    "proteina_classifier": TrainedOn(
+        model="proteina_classifier",
+        corpora=("GearNet-PDB-CATH",),
+        role="CATH fold classification with separate learned heads.",
+        declared_from="Proteina Appendix G.3.1 and NVIDIA NGC proteina_additional_files 1.0",
+        heads=("cath_class", "cath_architecture", "cath_topology"),
+    ),
+    "bayesherg_mc30_cpu_v1": TrainedOn(
+        model="bayesherg_mc30_cpu_v1",
+        corpora=("BayeshERG-release",),
+        role="Small-molecule hERG blocker classifier with Monte Carlo uncertainty components.",
+        declared_from="GIST-CSBL/BayeshERG checkpoint and released training partitions, doi:10.1093/bib/bbac211",
+        heads=("hERG",),
+    ),
     "bindingdb_morgan_extratrees_v1": TrainedOn(
         model="bindingdb_morgan_extratrees_v1",
         corpora=("BindingDB",),
         role="In-repo regressor for the three axes ADMET-AI does not cover.",
-        declared_from="ligand_regressor.train()'s manifest notes: 'trained on N pairs from BindingDB'",
+        declared_from="ligand_regressor.load_corpus and the BindingDB subset recorded for training",
         heads=("nav1_5", "bcrp", "bsep"),
         unaligned_kind=FITTED_IN_REPO,
     ),
@@ -378,7 +556,7 @@ TRAINED_ON: dict[str, TrainedOn] = {
         model="bindingdb_chemprop_dmpnn_v1",
         corpora=("BindingDB",),
         role="The same three axes, D-MPNN backend.",
-        declared_from="ligand_regressor.train()'s manifest notes: 'trained on N pairs from BindingDB'",
+        declared_from="ligand_regressor.load_corpus and the BindingDB subset recorded for training",
         heads=("nav1_5", "bcrp", "bsep"),
         unaligned_kind=FITTED_IN_REPO,
     ),
@@ -514,7 +692,8 @@ def overlap_with(model: str | None, dataset: str | None) -> str:
             if dataset in corpus.labels:
                 return BENCHMARK_LABEL_CORPUS if dataset in found.heads else BENCHMARK_LABEL_CORPUS_UNMODELLED
         for corpus in corpora:
-            family = set(corpus.family_of(dataset))
+            # A sibling requires another label from the same declared assay family.
+            family = set(corpus.family_of(dataset)) - {dataset}
             if family & set(found.heads):
                 return BENCHMARK_LABEL_CORPUS_SIBLING
     return found.unaligned_kind

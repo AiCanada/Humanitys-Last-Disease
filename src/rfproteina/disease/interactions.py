@@ -13,7 +13,7 @@ Two things live here, kept apart:
   bonds. The preferred engine is **ProLIF** (Bouysset and Fiorucci, *J.
   Cheminformatics* 2021, Apache-2.0); when ProLIF is not installed a native
   geometric fingerprint is computed instead, with distance cutoffs taken from
-  ProLIF's published defaults and every count labelled a heavy-atom proxy.
+  the project configuration and every count labelled a heavy-atom proxy.
 
 * A **complex-quality comparison** against a reference pose, when one exists.
   The native reading is **Fnat**, the fraction of the reference's interface
@@ -50,8 +50,14 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from biotite.structure import AtomArray
     from rdkit.Chem import Mol
 
-METHOD_NATIVE = "native_geometric_ifp_v1"
-METHOD_PROLIF = "prolif_ifp_v1"
+METHOD_NATIVE = "native_geometric_ifp_v2"
+METHOD_PROLIF = "prolif_ifp_v2"
+_PROLIF_TYPES = {
+    "Hydrophobic": "hydrophobic", "PiStacking": "pi_stacking",
+    "HBDonor": "hbond", "HBAcceptor": "hbond",
+    "Anionic": "salt_bridge", "Cationic": "salt_bridge",
+    "XBAcceptor": "halogen", "XBDonor": "halogen",
+}
 METHOD_DOCKQ = "dockq_v2_cli"
 
 DOCKQ_SOURCE = "DockQ v2 (MIT), https://github.com/bjornwallner/DockQ"
@@ -83,10 +89,7 @@ DOCKQ_BANDS: tuple[tuple[float, str], ...] = (
 #: one is refused loudly instead of reported as a missing score.
 _DOCKQ_KEYS = ("best_dockq", "GlobalDockQ", "best_result", "best_mapping_str")
 
-#: Distance cutoffs in angstrom. Read from ProLIF's documented interaction
-#: defaults on 2026-11-16 and applied to heavy atoms. They are ProLIF's bars for
-#: a protonated model; carried here onto a heavy-atom proxy, so a contact counted
-#: is a geometric possibility, not a confirmed interaction.
+#: Project distance cutoffs in angstrom for geometric proximity counts.
 CUTOFFS_A: dict[str, float] = {
     "hydrophobic": 4.5,
     "hbond": 3.5,
@@ -132,7 +135,8 @@ class InteractionFingerprint:
         record["counts"] = dict(self.counts)
         record["contacts"] = [dict(item) for item in self.contacts]
         record["notes"] = list(self.notes)
-        record["cutoffs_a"] = CUTOFFS_A
+        if self.engine == "native":
+            record["cutoffs_a"] = CUTOFFS_A
         record["total_interactions"] = sum(self.counts.values())
         return record
 
@@ -145,8 +149,8 @@ class ComplexComparison:
     native_contacts: int
     recovered_contacts: int
     model_contacts: int
-    fnonnat: float
-    method: str = "fnat_capri_v1"
+    fnonnat: float | None
+    method: str = "fnat_capri_v2"
     notes: tuple[str, ...] = field(default_factory=tuple)
 
     def as_record(self) -> dict[str, object]:
@@ -177,15 +181,13 @@ class DockQFailedError(Exception):
 
 
 def _load(path: Path) -> AtomArray:
+    from rfproteina.disease.pose_validation import PoseBustersResultError, _receptor_atoms
+
     try:
-        from biotite.structure.io import load_structure
-    except ImportError as error:  # pragma: no cover - biotite is a hard dependency
-        raise StructureUnreadableError(f"biotite_unavailable:{error}") from error
-    try:
-        atoms = load_structure(str(path), model=1)
-    except Exception as error:
-        raise StructureUnreadableError(f"structure_unreadable:{type(error).__name__}") from error
-    keep = (atoms.element != "H") & (atoms.res_name != "HOH")
+        atoms = _receptor_atoms(path)
+    except PoseBustersResultError as error:
+        raise StructureUnreadableError(str(error)) from error
+    keep = ~np.isin(atoms.element, ("H", "D", "T")) & ~np.isin(atoms.res_name, ("HOH", "DOD", "WAT"))
     atoms = atoms[keep]
     if atoms.array_length() == 0:
         raise StructureUnreadableError("structure_empty_after_filtering")
@@ -199,7 +201,6 @@ def _ligand_features(mol: Mol) -> dict[str, object]:
     elements: list[str] = []
     is_hydrophobic: list[bool] = []
     charge: list[int] = []
-    heavy_index: list[int] = []
     for atom in mol.GetAtoms():
         if atom.GetAtomicNum() <= 1:
             continue
@@ -209,7 +210,6 @@ def _ligand_features(mol: Mol) -> dict[str, object]:
         neighbours = {neigh.GetSymbol().upper() for neigh in atom.GetNeighbors()}
         is_hydrophobic.append(atom.GetSymbol().upper() == "C" and not (neighbours & {"N", "O", "F"}))
         charge.append(int(atom.GetFormalCharge()))
-        heavy_index.append(atom.GetIdx())
     ring_centroids: list[list[float]] = []
     for ring in mol.GetRingInfo().AtomRings():
         if all(mol.GetAtomWithIdx(idx).GetIsAromatic() for idx in ring):
@@ -251,15 +251,16 @@ def _protein_charged(atoms: AtomArray, table: dict[str, tuple[str, ...]]) -> np.
 
 
 def _residue_labels(atoms: AtomArray) -> np.ndarray:
-    parts = zip(atoms.chain_id, atoms.res_id, atoms.res_name, strict=True)
-    return np.array([f"{chain}:{res_id}:{res_name}" for chain, res_id, res_name in parts])
+    parts = zip(atoms.chain_id, atoms.res_id, atoms.ins_code, strict=True)
+    return np.array([f"{chain}:{res_id}:{insertion}" for chain, res_id, insertion in parts])
 
 
 def _count_within(left: np.ndarray, right: np.ndarray, cutoff: float) -> int:
+    from scipy.spatial import cKDTree
+
     if left.size == 0 or right.size == 0:
         return 0
-    distances = np.linalg.norm(left[:, None, :] - right[None, :, :], axis=-1)
-    return int(np.sum(distances <= cutoff))
+    return int(cKDTree(left).count_neighbors(cKDTree(right), cutoff))
 
 
 def native_fingerprint(protein_path: str | Path, mol: Mol) -> InteractionFingerprint:
@@ -269,9 +270,22 @@ def native_fingerprint(protein_path: str | Path, mol: Mol) -> InteractionFingerp
     a designed model carries no hydrogens, so hydrogen bonds are counted as
     donor/acceptor heavy-atom pairs within the cutoff.
     """
-    if mol is None or mol.GetNumConformers() == 0:
-        raise StructureUnreadableError("ligand_without_conformer")
-    atoms = _load(Path(protein_path))
+    from rfproteina.disease.pose_validation import (
+        PoseBustersResultError,
+        PoseUnreadableError,
+        _protein_heavy_mask,
+        _receptor_atoms,
+        read_ligand,
+    )
+
+    try:
+        mol = read_ligand(mol)
+        receptor = _receptor_atoms(Path(protein_path))
+    except (PoseUnreadableError, PoseBustersResultError) as error:
+        raise StructureUnreadableError(str(error)) from error
+    atoms = receptor[_protein_heavy_mask(receptor)]
+    if not len(atoms):
+        raise StructureUnreadableError("protein_empty_after_filtering")
     ligand = _ligand_features(mol)
     lig_coords: np.ndarray = ligand["coords"]
     if lig_coords.size == 0:
@@ -305,47 +319,58 @@ def native_fingerprint(protein_path: str | Path, mol: Mol) -> InteractionFingerp
         method=METHOD_NATIVE,
         notes=(
             "every count is a heavy-atom geometric proxy, not a confirmed interaction",
-            "cutoffs are ProLIF defaults applied to heavy atoms; no hydrogens, no protonation",
+            "distance cutoffs define the project's heavy-atom proximity counts",
             "salt bridges use ligand formal charges and protein residue identity, not a titration",
         ),
     )
 
 
-def prolif_fingerprint(protein_path: str | Path, ligand_path: str | Path) -> InteractionFingerprint:
-    """A ProLIF interaction fingerprint. Raises :class:`ProLIFUnavailableError` if absent.
-
-    ProLIF is the honest engine for this: it protonates and types atoms rather
-    than counting heavy-atom proximities. It is kept behind an import guard so
-    its absence is reported, never silently downgraded without the caller asking.
-    """
+def prolif_fingerprint(protein_path: str | Path, ligand_path: str | Path | Mol) -> InteractionFingerprint:
+    """Measure residue-pair interactions on one supplied pose and protonation state."""
+    from rdkit import Chem
     try:
         import MDAnalysis as mda  # noqa: N813
         import prolif
     except ImportError as error:
         raise ProLIFUnavailableError(f"prolif_unavailable:{error}") from error
-    protein = mda.Universe(str(protein_path))
-    ligand = mda.Universe(str(ligand_path))
-    fp = prolif.Fingerprint()
-    fp.run_from_iterable([prolif.Molecule.from_mda(ligand)], prolif.Molecule.from_mda(protein))
+    def read_one(path: str | Path) -> prolif.Molecule:
+        universe = mda.Universe(str(path))
+        if len(universe.trajectory) != 1 or not np.isfinite(universe.atoms.positions).all():
+            raise StructureUnreadableError("prolif_requires_one_finite_pose")
+        return prolif.Molecule.from_mda(universe)
+
+    protein = read_one(protein_path)
+    if isinstance(ligand_path, Chem.Mol):
+        from rfproteina.disease.pose_validation import read_ligand
+
+        ligand = prolif.Molecule.from_rdkit(read_ligand(ligand_path))
+    else:
+        ligand = read_one(ligand_path)
+    fp = prolif.Fingerprint(list(_PROLIF_TYPES))
+    fp.run_from_iterable([ligand], protein, n_jobs=1, progress=False)
     frame = fp.to_dataframe()
+    if len(frame) != 1:
+        raise StructureUnreadableError("prolif_missing_pose_result")
     counts: dict[str, int] = {name: 0 for name in INTERACTION_TYPES}
     for column in frame.columns:
-        interaction = str(column[-1]).lower()
-        key = {"pistacking": "pi_stacking", "saltbridge": "salt_bridge", "hbdonor": "hbond", "hbacceptor": "hbond"}.get(
-            interaction, interaction
-        )
-        if key in counts:
-            counts[key] += int(frame[column].sum())
+        flag = frame[column].iloc[0]
+        if not isinstance(flag, bool | np.bool_):
+            raise StructureUnreadableError("prolif_invalid_interaction_flag")
+        counts[_PROLIF_TYPES[column[-1]]] += int(flag)
     return InteractionFingerprint(
         engine="prolif",
         counts=counts,
         contacts=(),
         method=METHOD_PROLIF,
-        notes=("counts summed over frames from ProLIF's own typed interactions",),
+        notes=("typed interaction flags summed across residue pairs for one supplied pose",),
     )
 
 
 def _interface_contacts(path: Path, chain_a: str, chain_b: str) -> set[tuple[str, str]]:
+    from scipy.spatial import cKDTree
+
+    if not chain_a or not chain_b or chain_a == chain_b:
+        raise StructureUnreadableError("two_distinct_chains_required")
     atoms = _load(path)
     labels = _residue_labels(atoms)
     mask_a = atoms.chain_id == chain_a
@@ -356,9 +381,11 @@ def _interface_contacts(path: Path, chain_a: str, chain_b: str) -> set[tuple[str
     coords_b = np.asarray(atoms.coord[mask_b], dtype=float)
     labels_a = labels[mask_a]
     labels_b = labels[mask_b]
-    distances = np.linalg.norm(coords_a[:, None, :] - coords_b[None, :, :], axis=-1)
-    close = np.argwhere(distances <= INTERFACE_CONTACT_A)
-    return {(labels_a[i], labels_b[j]) for i, j in close}
+    tree = cKDTree(coords_b)
+    contacts = set()
+    for label, point in zip(labels_a, coords_a, strict=True):
+        contacts.update((label, labels_b[j]) for j in tree.query_ball_point(point, INTERFACE_CONTACT_A))
+    return contacts
 
 
 def compare_to_reference(
@@ -378,17 +405,17 @@ def compare_to_reference(
     recovered = native & model
     non_native = model - native
     fnat = len(recovered) / len(native)
-    fnonnat = (len(non_native) / len(model)) if model else 0.0
+    fnonnat = (len(non_native) / len(model)) if model else None
     return ComplexComparison(
-        fnat=round(fnat, 4),
+        fnat=fnat,
         native_contacts=len(native),
         recovered_contacts=len(recovered),
         model_contacts=len(model),
-        fnonnat=round(fnonnat, 4),
+        fnonnat=fnonnat,
         notes=(
             "Fnat only: iRMSD and LRMSD are not computed here, so this is not a DockQ score",
             "a contact is a residue pair with heavy atoms within 5.0 A, the CAPRI convention",
-            "residue labels must match between model and reference for a contact to be the same contact",
+            "residues correspond by chain, residue number and insertion code in the two structures",
         ),
     )
 
@@ -467,10 +494,16 @@ def dockq_version(command: str | None = None) -> str | None:
 
 def dockq_quality(score: float) -> str:
     """The authors' own band for a DockQ score in ``[0, 1]``."""
+    if not _valid_dockq_number(score, 1):
+        raise ValueError("DockQ scores must be finite numbers in [0, 1]")
     for floor, name in DOCKQ_BANDS:
         if score >= floor:
             return name
     return "incorrect"
+
+
+def _valid_dockq_number(value: object, maximum: int) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool) and 0 <= value <= maximum
 
 
 def dockq(
@@ -505,8 +538,8 @@ def dockq(
     what a design and its own refold want.
 
     Returns a record whose ``global_dockq`` is the 0-to-1 figure the CLI prints
-    as "Total DockQ". ``dockq_sum`` adds the interfaces up and is **greater
-    than 1 whenever there is more than one** -- measured at 3.0 for a
+    as "Total DockQ". ``dockq_sum`` adds the interfaces up and can exceed
+    one in a multimer. It measured 3.0 for a
     three-chain identity comparison -- so the two are named apart rather than
     both called a total.
     """
@@ -547,11 +580,15 @@ def dockq(
             detail = (done.stdout or done.stderr or "").strip().splitlines()
             reason = detail[-1] if detail else f"exit_{done.returncode}_and_no_output"
             raise DockQFailedError(f"dockq_no_result:{reason}")
+        if done.returncode:
+            raise DockQFailedError(f"dockq_process_failed:exit_{done.returncode}")
         try:
             document = json.loads(out.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as error:
             raise DockQFailedError(f"dockq_result_unreadable:{type(error).__name__}") from error
 
+    if not isinstance(document, dict):
+        raise DockQFailedError("dockq_result_not_an_object")
     missing = [key for key in _DOCKQ_KEYS if key not in document]
     if missing:
         raise DockQFailedError(f"dockq_result_keys_absent:{','.join(missing)}")
@@ -559,7 +596,12 @@ def dockq(
     if not isinstance(interfaces, dict) or not interfaces:
         raise DockQFailedError("dockq_no_interface_scored")
 
-    global_score = float(document["GlobalDockQ"])
+    global_score = document["GlobalDockQ"]
+    score_sum = document["best_dockq"]
+    if not _valid_dockq_number(global_score, 1) or not _valid_dockq_number(score_sum, len(interfaces)):
+        raise DockQFailedError("dockq_score_outside_range")
+    if not all(isinstance(values, dict) and values for values in interfaces.values()):
+        raise DockQFailedError("dockq_interface_result_empty")
     return {
         "method": METHOD_DOCKQ,
         "source": DOCKQ_SOURCE,
@@ -568,9 +610,9 @@ def dockq(
         "version": dockq_version(command) or "unknown",
         "model": str(model),
         "reference": str(native),
-        "global_dockq": round(global_score, 6),
+        "global_dockq": global_score,
         "quality": dockq_quality(global_score),
-        "dockq_sum": round(float(document["best_dockq"]), 6),
+        "dockq_sum": score_sum,
         "interface_count": len(interfaces),
         # DockQ's own per-interface fields, passed through: these are the
         # authoritative numbers, and rewriting them would only add a way to
@@ -580,7 +622,7 @@ def dockq(
         "chain_map": document.get("best_mapping", {}),
         "notes": [
             "global_dockq is the 0-to-1 score the CLI prints as Total DockQ",
-            "dockq_sum adds the per-interface scores and exceeds 1 when there is more than one interface",
+            "dockq_sum adds the per-interface scores and can exceed 1 for a multimer",
             "bands are the authors' own: >=0.80 high, >=0.49 medium, >=0.23 acceptable, below that incorrect",
             "a DockQ score is always against a reference; a design with no native complex has none",
         ],
@@ -596,17 +638,21 @@ def dockq_verdicts(record: dict[str, object], dockq_min: float | None = None) ->
     no default, so a gate names its bar and that bar is recorded as
     ``caller_supplied``.
     """
-    score = float(record["global_dockq"])  # type: ignore[arg-type]
+    score = record.get("global_dockq")
+    if dockq_min is not None and not _valid_dockq_number(dockq_min, 1):
+        raise ValueError("dockq_min must be a finite number in [0, 1]")
     if dockq_min is None:
         state = "no_cut"
         source = "no cut supplied; DockQ reported with its published band"
     else:
-        state = "clear" if score >= dockq_min else "hit"
+        state = "clear" if _valid_dockq_number(score, 1) and score >= dockq_min else "hit"
         source = f"caller_supplied dockq_min={dockq_min}"
+    if not _valid_dockq_number(score, 1):
+        score, state = None, "untested"
     return {
         "dockq": {
             "value": score,
-            "band": record.get("quality"),
+            "band": dockq_quality(score) if score is not None else None,
             "band_source": DOCKQ_PAPER,
             "state": state,
             "threshold": dockq_min,
@@ -626,8 +672,8 @@ def native_verdicts(fingerprint: InteractionFingerprint) -> dict[str, dict[str, 
     out: dict[str, dict[str, object]] = {}
     for name in INTERACTION_TYPES:
         out[name] = {
-            "value": fingerprint.counts.get(name, 0),
-            "state": "no_cut",
+            "value": fingerprint.counts.get(name),
+            "state": "no_cut" if name in fingerprint.counts else "untested",
             "threshold": None,
             "direction": "none",
             "threshold_source": "no published pass mark for interaction counts; reported for calibration",
@@ -660,11 +706,10 @@ def comparison_verdicts(comparison: ComplexComparison, fnat_min: float | None = 
 
 
 def fingerprint(protein_path: str | Path, mol: Mol, prefer_prolif: bool = True) -> InteractionFingerprint:
-    """ProLIF when installed and ``prefer_prolif``, otherwise the native proxy.
-
-    ``mol`` is required for the native path. When ProLIF is preferred it needs a
-    ligand file, so this convenience helper falls back to native with an
-    RDKit mol; call :func:`prolif_fingerprint` directly to force ProLIF.
-    """
-    _ = prefer_prolif  # ProLIF needs a ligand file, not a mol; native is the mol path
+    """Prefer ProLIF when requested and installed. The result names the engine used."""
+    if prefer_prolif:
+        try:
+            return prolif_fingerprint(protein_path, mol)
+        except ProLIFUnavailableError:
+            pass
     return native_fingerprint(protein_path, mol)

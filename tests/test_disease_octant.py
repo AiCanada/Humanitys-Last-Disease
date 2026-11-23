@@ -79,6 +79,27 @@ def test_the_subset_stores_nanomolar_not_the_pic50(tmp_path: Path):
     assert row["inchikey"]
 
 
+@pytest.mark.parametrize("value", [1e6, -1e6])
+def test_octant_unrepresentable_concentration_cannot_become_zero_or_abort_a_batch(tmp_path, value):
+    with pytest.raises(ValueError, match="concentration range"):
+        octant.pic50_to_nm(value)
+    raw = _write(tmp_path / "inhibition.tsv", [_row(CYP3A4_pIC50=str(value)), _row(CYP3A4_pIC50="6")])
+    assert octant.octant_cyp3a4_subset(raw, tmp_path / "out").rows == 1
+
+
+def test_octant_subset_cannot_relabel_a_bound_as_an_exact_measurement(tmp_path):
+    raw = _write(tmp_path / "inhibition.tsv", [_row(CYP3A4_pIC50="6")])
+    path = octant.octant_cyp3a4_subset(raw, tmp_path / "out").path
+    rows = _subset_rows(path)
+    rows[0]["relation"] = ">"
+    with path.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0]), delimiter="\t")
+        writer.writeheader()
+        writer.writerows(rows)
+    with pytest.raises(SafetyBackendUnavailableError, match="measurement_mismatch"):
+        octant.measured_nm_from_octant(_SMILES, path)
+
+
 def test_cyp2j2_in_the_same_file_is_not_a_panel_row(tmp_path: Path):
     header = [*_HEADER, "CYP2J2_pIC50", "enzyme"]
     rows = [
@@ -240,6 +261,29 @@ def test_a_protein_screen_does_not_write_octant_toxicology(tmp_path: Path, monke
     record = screen_generation(output, binder_kind="protein", target_id="P05113")
     assert "toxicology" not in record
     assert not (output / "toxicology.tsv").exists()
+
+
+def test_a_supplied_csv_keeps_precedence_over_an_automatic_lookup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    _installed(tmp_path, monkeypatch)
+    (tmp_path / "ligand_smiles.txt").write_text(_SMILES, encoding="utf-8")
+    (tmp_path / "toxicology.csv").write_text("axis,nm\nherg,50\n", encoding="utf-8")
+    result = screen_generation(tmp_path, binder_kind="ligand", target_id="")
+    assert result["toxicology"]["herg"]["measurement"] == 50
+    assert not (tmp_path / "toxicology.tsv").exists()
+
+
+def test_a_replaced_ligand_cannot_inherit_an_octant_measurement(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    _installed(tmp_path, monkeypatch)
+    ligand = tmp_path / "ligand_smiles.txt"
+    ligand.write_text(_SMILES, encoding="utf-8")
+    first = screen_generation(tmp_path, binder_kind="ligand", target_id="")
+    assert first["toxicology"]["cyp3a4"]["method"] == octant.OCTANT_METHOD
+    table = (tmp_path / "toxicology.tsv").read_bytes()
+    ligand.write_text("CCO", encoding="utf-8")
+    second = screen_generation(tmp_path, binder_kind="ligand", target_id="")
+    assert second["toxicology"]["cyp3a4"]["blocker"] == "ligand_identity_mismatch"
+    assert second["toxicology"]["cyp3a4"]["measurement"] is None
+    assert (tmp_path / "toxicology.tsv").read_bytes() == table
 
 
 def test_release_files_already_on_disk_are_not_fetched_again(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

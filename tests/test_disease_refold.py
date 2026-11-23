@@ -211,3 +211,70 @@ def test_the_metrics_tags_are_readable() -> None:
         "developability",
     ]
     assert applicable_tags([{"metrics_tags": ""}]) == []
+
+
+@pytest.mark.parametrize("raw", ["2", "-1", "0.5", "NaN", "inf", "failed"])
+def test_nonbinary_refold_flags_never_pass(raw: str) -> None:
+    item = next(c for c in refold_report([{"ppi.pass": raw}])["criteria"] if c["name"] == "ppi")
+    assert item["state"] not in {"pass", "fail"}
+
+
+def test_incomplete_refold_is_distinct_from_a_measured_failure(tmp_path: Path) -> None:
+    metrics = tmp_path / "inference_metrics"
+    metrics.mkdir()
+    (metrics / "per_example_metrics.csv").write_text(
+        "example_id,ppi.pass,ppi.all_metrics_present\none,1,1\ntwo,0,0\n",
+        encoding="utf-8",
+    )
+    screen = screen_generation(tmp_path, binder_kind="other", target_id="")
+    ppi = next(c for c in screen["refold"]["criteria"] if c["name"] == "ppi")
+    assert ppi["state"] == "incomplete"
+    assert ppi["rows_measured"] == 1
+    assert ppi["rows_expected"] == 2
+    assert screen["ppi_pass"] == "absent"
+    assert screen["ppi_blocker"] == "metrics_incomplete"
+
+
+def test_a_shared_oracle_column_does_not_score_an_unrelated_criterion() -> None:
+    rows = [
+        {"metrics_tags": "ppi_refolding", "ppi.pass": "1", "oracle_ppi.min_ipae_coi": "1.3"},
+        {"metrics_tags": "antibody", "antibody.pass": "0", "oracle_ppi.min_ipae_coi": "3.5"},
+    ]
+    report = refold_report(rows)
+    ppi = next(c for c in report["criteria"] if c["name"] == "ppi")
+    assert ppi["state"] == "pass"
+    assert "failed_thresholds" not in ppi
+    bound = next(b for b in ppi["thresholds"] if b["metric"] == "oracle_ppi.min_ipae_coi")
+    assert bound["measured"] == 1.3
+
+
+def test_refold_partial_coverage_cannot_confirm_a_bound() -> None:
+    rows = [{"ppi.pass": "1", "oracle_ppi.min_ipae_coi": "0.9"}, {"ppi.pass": "", "metrics_tags": "ppi_refolding"}]
+    ppi = next(c for c in refold_report(rows)["criteria"] if c["name"] == "ppi")
+    assert ppi["state"] == "incomplete"
+    bound = next(b for b in ppi["thresholds"] if b["metric"] == "oracle_ppi.min_ipae_coi")
+    assert bound["measured"] == 0.9
+    assert bound["met"] is None
+
+
+def test_reductions_and_two_sided_bounds_use_each_designs_own_inputs(tmp_path: Path) -> None:
+    config = tmp_path / CRITERIA_FILE
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        "sample:\n  metric_thresholds:\n    pair: {mean_of: [a, b], min: 2, max_exclusive: 5}\n"
+        "    malformed: {min: 1, typo: 2}\n",
+        encoding="utf-8",
+    )
+    rows = [
+        {"sample.pass": "1", "a": "2", "b": "4", "pair": "99"},
+        {"sample.pass": "0", "a": "4", "b": "6"},
+        {"sample.pass": "", "a": "4", "b": "inf"},
+    ]
+    sample = refold_report(rows, root=tmp_path)["criteria"][0]
+    floor, ceiling, invalid = sample["thresholds"]
+    assert (floor["measured"], floor["met"]) == (3, None)
+    assert (ceiling["measured"], ceiling["met"]) == (5, False)
+    assert ceiling["input_metrics"] == ["a", "b"]
+    assert ceiling["reduction"] == "mean_of"
+    assert sample["failed_thresholds"] == ["pair"]
+    assert invalid == {"metric": "malformed", "bound": "unsupported"}

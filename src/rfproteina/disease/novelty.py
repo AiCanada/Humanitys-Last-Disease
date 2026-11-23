@@ -26,6 +26,7 @@ The binary is ``FOLDSEEK``, then ``DATA_PATH/foldseek``, then the checkout's
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,7 +37,9 @@ from rfproteina.disease.screening_tools import (
     HIT,
     UNTESTED,
     ScreeningInputError,
+    alignment_output,
     axis_record,
+    read_alignment_output,
     resolve_tool,
     run_tool,
 )
@@ -172,6 +175,16 @@ class StructureHit:
     qtmscore: float | None = None
     ttmscore: float | None = None
 
+    def has_valid_scores(self) -> bool:
+        fractions = (self.fident, self.tmscore, self.qtmscore, self.ttmscore)
+        return (
+            bool(self.query.strip() and self.target.strip())
+            and all(0 <= value <= 1 for value in fractions if value is not None)
+            and math.isfinite(self.evalue)
+            and self.evalue >= 0
+            and math.isfinite(self.bits)
+        )
+
 
 class NoveltyUnavailableError(RuntimeError):
     """Foldseek or its database is absent. Carries the blocker to record as untested."""
@@ -252,12 +265,15 @@ def build_search_command(
     ]
 
 
-def parse_search_table(text: str, columns: tuple[str, ...] = SEARCH_COLUMNS) -> dict[str, StructureHit]:
+def parse_search_table(
+    text: str, columns: tuple[str, ...] = SEARCH_COLUMNS, *, strict: bool = False
+) -> dict[str, StructureHit]:
     """Best structural match per query from a Foldseek tab-separated table.
 
     "Best" is the highest TM-score. A row whose numeric fields do not parse is
     skipped rather than read as a zero, which would look like a confident
-    non-match. The query key is the design's own id as Foldseek reports it.
+    non-match. A production search sets ``strict`` so an incomplete result
+    table cannot license a verdict. The query key is Foldseek's entry ID.
     """
     index = {name: position for position, name in enumerate(columns)}
     best: dict[str, StructureHit] = {}
@@ -266,10 +282,10 @@ def parse_search_table(text: str, columns: tuple[str, ...] = SEARCH_COLUMNS) -> 
         if not line:
             continue
         fields = line.split("\t")
-        if len(fields) < len(columns):
-            continue
-        query = fields[index["query"]]
         try:
+            if len(fields) != len(columns):
+                raise ValueError("unexpected column count")
+            query = fields[index["query"]]
             qtmscore = float(fields[index["qtmscore"]])
             ttmscore = float(fields[index["ttmscore"]])
             hit = StructureHit(
@@ -282,7 +298,11 @@ def parse_search_table(text: str, columns: tuple[str, ...] = SEARCH_COLUMNS) -> 
                 qtmscore=qtmscore,
                 ttmscore=ttmscore,
             )
-        except (KeyError, ValueError):
+            if not hit.has_valid_scores():
+                raise ValueError("invalid Foldseek score or identifier")
+        except (KeyError, ValueError) as error:
+            if strict:
+                raise ScreeningInputError("foldseek_result_invalid") from error
             continue
         current = best.get(query)
         if current is None or hit.tmscore > current.tmscore:
@@ -379,7 +399,9 @@ def verdict(best: StructureHit | None, *, same_fold_tm: float = SAME_FOLD_TM) ->
     searching the chain of interest alone; this field records which chain
     answered, so that distinction is visible rather than implied.
     """
-    if best is None:
+    if not 0 <= same_fold_tm <= 1:
+        raise ScreeningInputError("foldseek_threshold_invalid")
+    if best is None or not best.has_valid_scores():
         # No rows at all is NOT a novel design. At ``evalue_max`` 1e6 against a
         # whole-PDB database a chain that was read returns something, so an
         # empty result means the query never reached the search -- and Foldseek
@@ -396,7 +418,7 @@ def verdict(best: StructureHit | None, *, same_fold_tm: float = SAME_FOLD_TM) ->
         return axis_record(
             UNTESTED,
             None,
-            "no_rows_query_may_not_have_been_read",
+            "no_rows_query_may_not_have_been_read" if best is None else "foldseek_result_invalid",
             novel=None,
             best_target=None,
             matched_entry=None,
@@ -461,14 +483,14 @@ def novelty_search(
     alignment_out = work_dir / "novelty.m8"
     tmp_dir = work_dir / "tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    command = build_search_command(
-        query_dir, Path(database), alignment_out, tmp_dir, foldseek=foldseek, evalue_max=evalue_max
-    )
-    result = run_tool(command, timeout_s=timeout_s)
-    if not result.ok:
-        raise NoveltyUnavailableError(result.blocker or "foldseek_failed")
-    text = alignment_out.read_text(encoding="utf-8") if alignment_out.is_file() else result.stdout
-    best = parse_search_table(text)
+    with alignment_output(alignment_out) as fresh:
+        command = build_search_command(
+            query_dir, Path(database), fresh, tmp_dir, foldseek=foldseek, evalue_max=evalue_max
+        )
+        result = run_tool(command, timeout_s=timeout_s)
+        if not result.ok:
+            raise NoveltyUnavailableError(result.blocker or "foldseek_failed")
+        best = parse_search_table(read_alignment_output(fresh), strict=True)
     design_ids = [_query_id(path) for path in structures]
     matched = best_per_design(best, design_ids)
     records: dict[str, dict[str, object]] = {}

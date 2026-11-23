@@ -16,9 +16,9 @@ units problem. This module respects it on both sides:
 * **The predicted route, fenced off.** :func:`bayesherg_probability` and
   :func:`admet_ai_predictions` wrap BayeshERG (Kim et al. 2022) and ADMET-AI
   (Swanson et al. 2024, MIT, verified from the installed distribution's
-  ``License-Expression``) behind import guards. BayeshERG is not installed here
-  and its licence has not been read at source, so it must be before this route
-  is used. Their outputs are *probabilities*,
+  ``License-Expression``). BayeshERG runs its published CPU command in a
+  separate environment. Its weight terms are described in
+  :func:`bayesherg_probability`. The classifier scores are *probabilities*,
   stored only under ``*_prob`` keys with ``unit="probability"``. They are never
   written into an ``*_nm`` column, and :func:`assert_no_probability_in_nm`
   enforces that -- the test suite calls it, and so can a caller.
@@ -38,12 +38,17 @@ threshold here.
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import math
+import os
 import statistics
+import subprocess
+import tempfile
 import threading
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
+from itertools import islice
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -92,13 +97,13 @@ BINDINGDB_PANEL_ACCESSIONS: dict[str, str] = {
 }
 
 #: Method id for the offline route, so a stored record says which source and
-#: which rule produced it. The live ChEMBL route is ``chembl_measured_nm_v1``.
-BINDINGDB_METHOD = "bindingdb_measured_nm_v1"
+#: which rule produced it. Version 2 keeps endpoint and assay groups separate.
+BINDINGDB_METHOD = "bindingdb_measured_nm_v2"
 
 #: Same route, matched on the InChIKey skeleton instead. A separate method id
 #: because the readings it pools are not guaranteed to be the same molecule:
 #: same connectivity, possibly a different stereoisomer, salt or isotope.
-BINDINGDB_CONNECTIVITY_METHOD = "bindingdb_measured_nm_connectivity_v1"
+BINDINGDB_CONNECTIVITY_METHOD = "bindingdb_measured_nm_connectivity_v2"
 
 #: The resolutions :func:`measured_nm_from_bindingdb` will match at.
 _BDB_MATCH_MODES = frozenset({"exact", "connectivity"})
@@ -165,8 +170,7 @@ _OFFTARGET_INDEX: dict[tuple[str, int, int], Any] = {}
 _OFFTARGET_LOCK = threading.Lock()
 
 #: One fingerprint index per subset file, built once and keyed on the file's
-#: identity: parsing 29,393 distinct structures is the cost, and a query against
-#: them is milliseconds.
+#: identity. Repeated queries reuse the computed fingerprints.
 _BDB_INDEX: dict[tuple[str, int, int], Any] = {}
 _BDB_INDEX_LOCK = threading.Lock()
 
@@ -177,7 +181,7 @@ CHEMBL_BASE = "https://www.ebi.ac.uk/chembl/api/data"
 _AFFINITY_TYPES = ("IC50", "Ki", "Kd")
 #: Relations that make a reading a determinate concentration. ``>`` and ``<``
 #: qualify the number and are recorded as skipped rather than averaged in.
-_DETERMINATE_RELATIONS = frozenset({"=", None, ""})
+_DETERMINATE_RELATIONS = frozenset({"="})
 _TIMEOUT = 60
 
 #: Anything urlopen-shaped. Injected so a test drives a server it wrote, exactly
@@ -222,6 +226,7 @@ ADMET_AI_UNCOVERED_AXES: tuple[str, ...] = tuple(axis for axis in LIGAND_AXES if
 #: Bumped when the allowlist or the reading rule changes, so a stored record
 #: states which rule produced it.
 ADMET_AI_METHOD = "admet_ai_classification_v1"
+BAYESHERG_METHOD = "bayesherg_mc30_cpu_v1"
 
 #: The loaded model, built once per process. Loading assembles two Chemprop
 #: ensembles from disk; doing that per molecule would dominate a screen.
@@ -273,7 +278,7 @@ class PanelMeasurements:
     molecule_chembl_id: str | None
     axes: dict[str, dict[str, object]]
     unit: str = "nM"
-    method: str = "chembl_measured_nm_v1"
+    method: str = "chembl_measured_nm_v2"
     notes: tuple[str, ...] = field(default_factory=tuple)
 
     def as_record(self) -> dict[str, object]:
@@ -300,6 +305,8 @@ class PanelProbabilities:
     method: str = ""
     endpoints: dict[str, str] = field(default_factory=dict)
     uncovered_axes: tuple[str, ...] = field(default_factory=tuple)
+    uncertainty_variances: dict[str, float] = field(default_factory=dict)
+    provenance: dict[str, str | int] = field(default_factory=dict)
 
     def as_record(self) -> dict[str, object]:
         record = asdict(self)
@@ -307,6 +314,12 @@ class PanelProbabilities:
         record["notes"] = list(self.notes)
         record["endpoints"] = dict(self.endpoints)
         record["uncovered_axes"] = list(self.uncovered_axes)
+        if self.uncertainty_variances:
+            record["uncertainty_variances"] = {"unit": "probability_squared", **self.uncertainty_variances}
+        else:
+            del record["uncertainty_variances"]
+        if not self.provenance:
+            del record["provenance"]
         return record
 
 
@@ -340,14 +353,42 @@ def _molecule_id(inchikey: str, opener: Opener) -> str | None:
 
 
 def _axis_activities(molecule_id: str, target_id: str, opener: Opener, limit: int) -> list[dict[str, Any]]:
+    if limit < 1:
+        raise ValueError("ChEMBL activity page size must be positive")
     types = ",".join(_AFFINITY_TYPES)
     url = (
         f"{CHEMBL_BASE}/activity?molecule_chembl_id={quote(molecule_id)}"
         f"&target_chembl_id={quote(target_id)}&standard_type__in={quote(types)}"
         f"&format=json&limit={int(limit)}"
     )
-    payload = _get(url, opener)
-    return list(payload.get("activities") or [])
+    activities = []
+    seen_pages = set()
+    seen_ids = set()
+    while True:
+        payload = _get(f"{url}&offset={len(activities)}", opener)
+        page = payload.get("activities") or []
+        meta = payload.get("page_meta") or {}
+        if not isinstance(page, list) or not isinstance(meta, dict):
+            raise SafetyBackendUnavailableError("chembl_activities_unreadable")
+        for activity in page:
+            if not isinstance(activity, dict):
+                raise SafetyBackendUnavailableError("chembl_activities_unreadable")
+            identity = activity.get("activity_id")
+            if identity is not None:
+                key = str(identity)
+                if key in seen_ids:
+                    raise SafetyBackendUnavailableError("chembl_duplicate_activity_id")
+                seen_ids.add(key)
+            activities.append(activity)
+        next_page = meta.get("next")
+        if not next_page:
+            total = meta.get("total_count")
+            if total is not None and total != len(activities):
+                raise SafetyBackendUnavailableError("chembl_activities_incomplete")
+            return activities
+        if not page or not isinstance(next_page, str) or next_page in seen_pages:
+            raise SafetyBackendUnavailableError("chembl_activities_incomplete")
+        seen_pages.add(next_page)
 
 
 def _nanomolar(activities: Sequence[dict[str, Any]]) -> tuple[list[float], list[int], int]:
@@ -360,7 +401,7 @@ def _nanomolar(activities: Sequence[dict[str, Any]]) -> tuple[list[float], list[
         if unit != "nM":
             continue
         relation = row.get("standard_relation")
-        if relation not in _DETERMINATE_RELATIONS:
+        if relation != "=":
             skipped += 1
             continue
         raw = row.get("standard_value")
@@ -374,8 +415,21 @@ def _nanomolar(activities: Sequence[dict[str, Any]]) -> tuple[list[float], list[
             continue
         values.append(number)
         if row.get("activity_id") is not None:
-            ids.append(int(row["activity_id"]))
+            try:
+                ids.append(int(row["activity_id"]))
+            except (TypeError, ValueError, OverflowError):
+                continue
     return values, ids, skipped
+
+
+def _grouped_measurements(base: AxisMeasurement, groups: list[dict]) -> dict:
+    """Retain one scalar only when all measured values share an endpoint and assay group."""
+    record = base.as_record()
+    if len(groups) == 1:
+        return {**record, **groups[0]}
+    if groups:
+        record.update(opinions=groups, relation="", value_nm=None)
+    return record
 
 
 def fetch_measured_nm(
@@ -384,7 +438,7 @@ def fetch_measured_nm(
     opener: Opener = urlopen,
     limit: int = 1000,
 ) -> PanelMeasurements:
-    """Measured nM for each panel axis from ChEMBL, aggregated as the median.
+    """Summarize determinate ChEMBL nM readings within each endpoint and assay.
 
     Only axes in :data:`CHEMBL_TARGETS` can be fetched. A molecule ChEMBL has
     never seen yields every axis ``untested`` with a reason, never a zero or a
@@ -427,16 +481,32 @@ def fetch_measured_nm(
             ).as_record()
             continue
         activities = _axis_activities(molecule_id, target["chembl_id"], opener, limit)
-        values, ids, skipped = _nanomolar(activities)
-        value = round(float(statistics.median(values)), 3) if values else None
-        note = f"median_of_{len(values)}_nM_readings" if values else "no_determinate_nM_activity"
+        by_assay = {}
+        for index, activity in enumerate(activities):
+            endpoint = activity.get("standard_type")
+            if endpoint in _AFFINITY_TYPES:
+                assay_id = activity.get("assay_chembl_id") or ""
+                key = (endpoint, assay_id, None if assay_id else index)
+                by_assay.setdefault(key, []).append(activity)
+        groups = []
+        ids = []
+        skipped = 0
+        for (endpoint, assay_id, _), group in by_assay.items():
+            values, activity_ids, excluded = _nanomolar(group)
+            skipped += excluded
+            ids.extend(activity_ids)
+            if values:
+                groups.append({"standard_type": endpoint, "assay_id": assay_id, "value_nm": statistics.median(values),
+                               "n_values": len(values), "activity_ids": activity_ids, "relation": "="})
+        count = sum(group["n_values"] for group in groups)
+        note = "no_determinate_nM_activity" if not groups else f"{len(groups)}_assay_groups"
         if skipped:
             note = f"{note}; {skipped}_bounded_readings_excluded"
-        readings[axis] = AxisMeasurement(
+        base = AxisMeasurement(
             axis=axis,
             chembl_target=target["chembl_id"],
-            value_nm=value,
-            n_values=len(values),
+            value_nm=None,
+            n_values=count,
             unit="nM",
             relation="=",
             panel_cut_nm=panel_cut(axis),
@@ -444,14 +514,15 @@ def fetch_measured_nm(
             source=f"ChEMBL {target['chembl_id']} ({target['pref_name']})",
             activity_ids=tuple(ids),
             note=note,
-        ).as_record()
+        )
+        readings[axis] = _grouped_measurements(base, groups)
     return PanelMeasurements(
         smiles=smiles.strip(),
         inchikey=inchikey,
         molecule_chembl_id=molecule_id,
         axes=readings,
         notes=(
-            "every value is a measured ChEMBL activity in nM, aggregated as the median",
+            "median measured nM within each reported ChEMBL assay and endpoint",
             "no probability is produced or stored here; nothing is converted into a concentration",
             "bounded readings (> or <) are excluded from the median and counted in the note",
         ),
@@ -459,30 +530,28 @@ def fetch_measured_nm(
 
 
 def to_toxicology_rows(measured: PanelMeasurements) -> list[dict[str, str]]:
-    """Long-form rows for ``toxicology.tsv``: axis, protein, nm, unit, relation, source.
+    """Long-form measured rows, including the compound, method, endpoint and assay.
 
     Only axes with a determinate value become rows; an untested axis is left out
     so the screen reports it ``untested`` rather than reading a blank as a number.
     """
     rows: list[dict[str, str]] = []
-    for axis, reading in measured.axes.items():
-        value = reading.get("value_nm")
-        if value is None:
-            continue
-        rows.append(
-            {
+    for axis, summary in measured.axes.items():
+        for reading in summary.get("opinions", [summary]):
+            if reading.get("value_nm") is None:
+                continue
+            rows.append({
                 "axis": axis,
-                # Whichever database named the target. The ChEMBL route fills
-                # chembl_target, the BindingDB route fills target with a UniProt
-                # accession, and the column means "the protein this was measured
-                # against" either way.
-                "protein": str(reading.get("target") or reading.get("chembl_target") or ""),
-                "nm": str(value),
+                "protein": str(summary.get("target") or summary.get("chembl_target") or ""),
+                "nm": str(reading["value_nm"]),
                 "unit": "nM",
                 "relation": str(reading.get("relation", "=")),
-                "source": str(reading.get("source", "")),
-            }
-        )
+                "source": str(reading.get("source", summary.get("source", ""))),
+                "method": measured.method,
+                "inchikey": measured.inchikey or "",
+                "standard_type": str(reading.get("standard_type", "")),
+                "assay_id": str(reading.get("assay_id", "")),
+            })
     return rows
 
 
@@ -490,14 +559,14 @@ def to_toxicology_rows(measured: PanelMeasurements) -> list[dict[str, str]]:
 class _SubsetRows:
     """A BindingDB subset parsed once: the rows, and which columns it had."""
 
-    rows: tuple[tuple[str, str, str, float, str, str, int, str], ...]
+    rows: tuple[tuple[str, str, str, float, str, str, int, str, str], ...]
     columns: frozenset[str]
 
 
 def _bdb_rows(subset: Path) -> _SubsetRows:
     """Parse a subset once and hold it, keyed on the file's identity.
 
-    Both readers want the same 60,095 rows: the exact lookup takes a median of
+    Both readers use the same rows. The exact lookup takes a median of
     one compound's, and the read-across fingerprints all of them. Parsing twice
     was pure waste, so the parse is shared and each applies its own rule to the
     result -- bounds and complexes are kept here rather than filtered, because
@@ -513,15 +582,19 @@ def _bdb_rows(subset: Path) -> _SubsetRows:
     if cached is not None:
         return cached
 
-    rows: list[tuple[str, str, str, float, str, str, int, str]] = []
+    rows: list[tuple[str, str, str, float, str, str, int, str, str]] = []
     try:
-        with subset.open("r", encoding="utf-8", newline="") as handle:
-            reader = csv.DictReader(handle, delimiter="\t")
+        with subset.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle, delimiter="\t", strict=True)
             names = frozenset(reader.fieldnames or ())
+            if len(names) != len(reader.fieldnames or ()):
+                raise SafetyBackendUnavailableError("bindingdb_subset_duplicate_columns")
             for column in _BINDINGDB_NEEDED:
                 if column not in names:
                     raise SafetyBackendUnavailableError(f"bindingdb_subset_column_absent:{column}")
             for row in reader:
+                if None in row:
+                    raise SafetyBackendUnavailableError("bindingdb_subset_surplus_fields")
                 axis = (row.get("panel_axis") or "").strip()
                 inchikey = (row.get("inchikey") or "").strip()
                 if not axis or not inchikey:
@@ -533,19 +606,20 @@ def _bdb_rows(subset: Path) -> _SubsetRows:
                 if not math.isfinite(value) or value < 0:
                     continue
                 try:
-                    chains = int((row.get("chains") or "1").strip() or "1")
+                    chains = int((row.get("chains") or "").strip())
                 except ValueError:
-                    chains = 1
+                    chains = 0
                 rows.append(
                     (
                         inchikey,
                         (row.get("smiles") or "").strip(),
                         axis,
                         value,
-                        (row.get("relation") or "=").strip() or "=",
+                        (row.get("relation") or "").strip(),
                         (row.get("assay") or "").strip(),
                         chains,
                         (row.get("curation") or "").strip(),
+                        (row.get("source") or "").strip(),
                     )
                 )
     except (OSError, UnicodeError, csv.Error) as error:
@@ -565,58 +639,19 @@ def measured_nm_from_bindingdb(
     single_chain_only: bool = False,
     match: str = "exact",
 ) -> PanelMeasurements:
-    """Measured nM for each panel axis from a local BindingDB subset, by InChIKey.
+    """Summarize measured nM activity for a ligand in the local BindingDB panel subset.
 
-    The offline counterpart of :func:`fetch_measured_nm`, and deliberately the
-    same shape: the same median of determinate nM readings, the same
-    :class:`PanelMeasurements` out, so a caller can swap the live ChEMBL fetch
-    for a file without changing how it reads the answer. ``method`` says which
-    one produced a stored record, and at which matching resolution.
+    The exact lookup uses the full InChIKey. Connectivity matching uses its first block
+    and may include different stereoisomers, isotopic variants or charge states. The
+    report identifies the match mode and counts the distinct structures contributing.
 
-    ``subset`` is what
-    :func:`~rfproteina.disease.tables.bindingdb_panel_subset` writes. It holds
-    every compound BindingDB has measured against the panel; this reads only the
-    rows belonging to **this** ligand. A molecule BindingDB has never seen leaves
-    every axis untested with a reason, which for a novel design is the honest
-    answer -- and the reason :func:`nearest_measured_neighbours` exists.
+    Each endpoint, curation marking and available study source retains its own median
+    of determinate readings. An axis with several such groups exposes their individual
+    observations. Bounded readings are excluded from medians and counted in the note.
+    The optional single-chain filter excludes measurements on multichain preparations,
+    including targets assayed with accessory proteins.
 
-    ``match`` picks the resolution, and the choice is real rather than cosmetic:
-
-    * ``"exact"`` (default) compares the full 27-character InChIKey, so a
-      reading belongs to this stereoisomer, this salt form, these isotopes.
-    * ``"connectivity"`` compares only the first block, the 14-character
-      skeleton, which is what to reach for when a file spells one drug several
-      ways. BindingDB does: on ketoconazole it pools forms the exact key misses
-      and moves CYP2C19 from 14,550 to 19,000 nM and P-gp from 5,600 to 5,435.
-      It will also match an enantiomer, which can carry a different hERG
-      liability, so a record made this way says so in its ``method`` and in
-      every note and reports how many distinct structures it pooled.
-
-      It is **not** the fix for a sparse-looking answer. Ketoconazole came back
-      empty on CYP3A4 under either resolution, and the cause was
-      ``single_chain_only``, not the key -- read the note before widening the
-      match, because it names the real exclusion.
-
-    A bound (``>``, ``<``) is counted and excluded rather than averaged in,
-    which is :func:`_nanomolar`'s rule.
-
-    ``single_chain_only`` defaults to **off**, and the reason is worth stating
-    because the opposite looked obviously safer. A Ki against a two-protein
-    complex is not a Ki for one chain of it, so excluding multi-chain rows reads
-    like the conservative choice. On this data it is not: 99.0% of the subset's
-    hERG rows name more than one chain, 99.5% of its CYP2D6 rows and 97.8% of
-    its CYP3A4 rows, because these targets are assayed with their accessory
-    subunit or redox partner -- the rows still say ``Target Name: Cytochrome
-    P450 3A4``, and the second chain is the reductase, not a second target.
-    Excluding them discarded 99% of the file and answered "unmeasured" for
-    ketoconazole on CYP3A4, where including them gives 48.0 nM over 72 readings,
-    which is the textbook figure. Set it ``True`` to be strict, and the note will
-    say how many readings that cost.
-
-    The licences are per row and travel with the readings. Whichever
-    ``Curation/DataSource`` markings the kept rows carried are named in
-    :attr:`PanelMeasurements.notes`, because CC BY-SA 3.0 on the ChEMBL-derived
-    rows governs any redistribution of a table built from them.
+    Per-row licence markings travel with the readings in the panel notes.
     """
     if match not in _BDB_MATCH_MODES:
         raise ValueError(f"match must be one of {sorted(_BDB_MATCH_MODES)}, got {match!r}")
@@ -627,27 +662,28 @@ def measured_nm_from_bindingdb(
     wanted = inchikey if match == "exact" else inchikey.split("-")[0]
     parsed = _bdb_rows(subset)
 
-    per_axis: dict[str, list[float]] = {axis: [] for axis in axes}
+    per_axis: dict[str, dict[tuple[str, str, str], list[float]]] = {axis: {} for axis in axes}
     bounded: dict[str, int] = dict.fromkeys(axes, 0)
     complexes: dict[str, int] = dict.fromkeys(axes, 0)
-    assays: dict[str, set[str]] = {axis: set() for axis in axes}
+    unknown_chains: dict[str, int] = dict.fromkeys(axes, 0)
     structures: dict[str, set[str]] = {axis: set() for axis in axes}
     markings: dict[str, None] = {}
-    for key, _smiles, axis, value, relation, assay, chains, mark in parsed.rows:
+    for key, _smiles, axis, value, relation, assay, chains, mark, study in parsed.rows:
         if axis not in per_axis:
             continue
         if (key if match == "exact" else key.split("-")[0]) != wanted:
             continue
-        if single_chain_only and chains > 1:
-            complexes[axis] += 1
+        if single_chain_only and chains != 1:
+            if chains > 1:
+                complexes[axis] += 1
+            else:
+                unknown_chains[axis] += 1
             continue
         if relation not in _DETERMINATE_RELATIONS:
             bounded[axis] += 1
             continue
-        per_axis[axis].append(value)
+        per_axis[axis].setdefault((assay, mark, study), []).append(value)
         structures[axis].add(key)
-        if assay:
-            assays[axis].add(assay)
         if mark:
             markings.setdefault(mark, None)
 
@@ -670,25 +706,40 @@ def measured_nm_from_bindingdb(
                 target="",
             ).as_record()
             continue
-        values = per_axis[axis]
-        value = round(float(statistics.median(values)), 3) if values else None
-        if values:
-            note = f"median_of_{len(values)}_nM_readings"
-            if assays[axis]:
-                note = f"{note}; {'/'.join(sorted(assays[axis]))}"
+        groups = []
+        for (endpoint, origin, study), values in per_axis[axis].items():
+            source = f"BindingDB UniProt {accession}"
+            context = [study] if study else []
+            if origin and origin not in study:
+                context.append(origin)
+            groups.append({
+                "standard_type": endpoint,
+                "source": f"{source} ({', '.join(context)})" if context else source,
+                "value_nm": statistics.median(values),
+                "n_values": len(values),
+                "relation": "=",
+            })
+        count = sum(group["n_values"] for group in groups)
+        if groups:
+            note = (f"median_of_{count}_nM_readings; {groups[0]['standard_type']}" if len(groups) == 1
+                    else f"{len(groups)}_separate_endpoint_and_source_groups")
             if match == "connectivity":
                 note = f"{note}; connectivity match over {len(structures[axis])}_distinct_structures"
+        elif bounded[axis] or complexes[axis] or unknown_chains[axis]:
+            note = "no_eligible_determinate_bindingdb_reading"
         else:
             note = "ligand_not_measured_against_this_target_in_bindingdb"
         if bounded[axis]:
             note = f"{note}; {bounded[axis]}_bounded_readings_excluded"
         if complexes[axis]:
             note = f"{note}; {complexes[axis]}_multi_chain_readings_excluded"
-        readings[axis] = AxisMeasurement(
+        if unknown_chains[axis]:
+            note = f"{note}; {unknown_chains[axis]}_unknown_chain_count_readings_excluded"
+        base = AxisMeasurement(
             axis=axis,
             chembl_target="",
-            value_nm=value,
-            n_values=len(values),
+            value_nm=None,
+            n_values=count,
             unit="nM",
             relation="=",
             panel_cut_nm=panel_cut(axis),
@@ -697,7 +748,8 @@ def measured_nm_from_bindingdb(
             activity_ids=(),
             note=note,
             target=accession,
-        ).as_record()
+        )
+        readings[axis] = _grouped_measurements(base, groups)
 
     notes = [
         "measured values only; nothing here is a prediction and nothing is converted into a probability",
@@ -740,24 +792,15 @@ class MeasuredNeighbour:
     relation: str
     assay: str
     curation: str
+    same_inchikey_as_query: bool = False
 
 
 @dataclass(frozen=True)
 class PanelReadAcross:
-    """Nearest measured analogues per panel axis. **Not** a reading of this design.
+    """Release compounds retrieved by fingerprint similarity for each panel axis.
 
-    Every number in here was measured on a different molecule. That is the whole
-    point and also the whole danger, so the field names refuse the confusion by
-    construction: the value is ``neighbour_nanomolar``, never ``*_nm``, and it
-    never travels without the ``similarity`` that qualifies it and the
-    ``inchikey`` of the compound it belongs to. Nothing here is accepted by
-    :func:`~rfproteina.disease.toxicology.measure_toxicology` as a panel value,
-    and :func:`to_toxicology_rows` will not take it.
-
-    A read-across is an argument from analogy, not a measurement. It earns its
-    place because the alternative for a novel design is nothing at all: an
-    exact-structure lookup answers only for molecules already measured, and a
-    designed ligand never is.
+    Each concentration belongs to its named release compound. Its InChIKey can
+    match the query. Exact assay attribution uses the separate exact-match reader.
     """
 
     smiles: str
@@ -786,14 +829,11 @@ class PanelReadAcross:
 def _morgan_index(subset: Path) -> dict[str, list[tuple[Any, str, str, float, int, str, str, str]]]:
     """Fingerprints and per-compound readings from a subset, built once.
 
-    Takes its rows from :func:`_bdb_rows`, so the file is parsed once however
-    many readers want it, and adds the part only this needs: a Morgan
-    fingerprint per distinct structure. That is the expensive half -- 29,393
-    structures to parse -- and the reason it is held rather than repeated per
-    query.
+    Reuses the rows from :func:`_bdb_rows` and computes a Morgan fingerprint
+    per distinct structure. Subsequent queries reuse the index.
 
-    Only determinate readings are indexed. A bound says the compound is *not*
-    potent, which is worth knowing but is not a number to rank analogues by.
+    Only determinate readings are indexed. A bound places the measurement
+    above or below the reported concentration.
     """
     stat = subset.stat()
     key = (str(subset.resolve()), stat.st_size, stat.st_mtime_ns)
@@ -815,7 +855,7 @@ def _morgan_index(subset: Path) -> dict[str, list[tuple[Any, str, str, float, in
     prints: dict[str, Any] = {}
     # axis -> inchikey -> [most potent value, how many readings, relation, assay, curation, smiles]
     best: dict[str, dict[str, list[Any]]] = {}
-    for inchikey, smiles, axis, value, relation, assay, _chains, curation in parsed.rows:
+    for inchikey, smiles, axis, value, relation, assay, _chains, curation, _study in parsed.rows:
         if relation not in _DETERMINATE_RELATIONS or not smiles:
             continue
         if smiles not in prints:
@@ -923,17 +963,23 @@ def nearest_measured_neighbours(
                     relation=entry[5],
                     assay=entry[6],
                     curation=entry[7],
+                    same_inchikey_as_query=entry[1] == inchikey,
                 )
             )
             for score, entry in ranked
         ]
 
     total = sum(len(entries) for entries in found.values())
+    same_identity = any(entry["same_inchikey_as_query"] for entries in found.values() for entry in entries)
     notes = [
-        "every number here was measured on a DIFFERENT molecule; it is an analogy, not a reading of this design",
+        "A concentration on a DIFFERENT molecule belongs to the named release compound.",
         "nothing here may be written into an *_nm column for this design",
         f"matched by {_MORGAN_METHOD} at or above Tanimoto {min_similarity}",
     ]
+    if same_identity:
+        notes.append(
+            "A release compound shares the query InChIKey. Exact assay attribution uses the exact-match reader."
+        )
     if not total:
         notes.append("no measured compound reached that similarity on any axis")
     licences = sorted({str(entry["curation"]) for entries in found.values() for entry in entries if entry["curation"]})
@@ -957,10 +1003,8 @@ class OffTargetProfile:
     and -- first, because it is the loudest thing here -- whether any of them is
     a withdrawn drug.
 
-    Every number belongs to a **different molecule**, so the same discipline as
-    :class:`PanelReadAcross` applies by construction: the value is
-    ``neighbour_nanomolar``, never ``*_nm``, and it never travels without the
-    ``similarity`` that qualifies it and the compound it belongs to.
+    Each concentration belongs to the named release compound. A matching
+    InChIKey is recorded on the compound and on each of its assay rows.
     """
 
     smiles: str
@@ -995,6 +1039,15 @@ class OffTargetProfile:
         return {
             name: min(float(hit["neighbour_nanomolar"]) for hit in hits) for name, hits in self.families.items() if hits
         }
+
+
+def _release_flag(row: dict[str, str], column: str) -> str:
+    value = (row.get(column) or "").strip().lower()
+    if value in {"yes", "true", "1"}:
+        return "yes"
+    if value in {"", "no", "false", "0"}:
+        return ""
+    raise SafetyBackendUnavailableError(f"gtopdb_invalid_status:{column}")
 
 
 def _offtarget_index(subset: Path) -> tuple[dict[str, Any], dict[str, list[tuple[str, ...]]]]:
@@ -1054,8 +1107,8 @@ def _offtarget_index(subset: Path) -> tuple[dict[str, Any], dict[str, list[tuple
                         row.get("action", "").strip(),
                         row.get("selectivity", "").strip(),
                         row.get("primary_target", "").strip(),
-                        row.get("approved", "").strip(),
-                        row.get("withdrawn", "").strip(),
+                        _release_flag(row, "approved"),
+                        _release_flag(row, "withdrawn"),
                         smiles,
                     )
                 )
@@ -1148,6 +1201,7 @@ def offtarget_profile(
         used.append(
             {
                 "inchikey": key,
+                "same_inchikey_as_query": key == inchikey,
                 "name": name,
                 "smiles": rows[0][13] if rows else "",
                 "similarity": round(float(score), 4),
@@ -1170,6 +1224,7 @@ def offtarget_profile(
                     "primary_target": row[10] == "true",
                     "similarity": round(float(score), 4),
                     "neighbour_inchikey": key,
+                    "same_inchikey_as_query": key == inchikey,
                     "neighbour_name": name,
                     "neighbour_approved": bool(is_approved),
                     "neighbour_withdrawn": bool(is_withdrawn),
@@ -1180,11 +1235,16 @@ def offtarget_profile(
         families[name] = hits[:per_family]
 
     notes = [
-        "every number here was measured on a DIFFERENT molecule; it is an analogy, not a reading of this design",
+        "A concentration on a DIFFERENT molecule belongs to the named release compound.",
+        "Approval and withdrawal flags reflect affirmative release annotations.",
         "nothing here may be written into an *_nm column for this design",
         f"matched by {_MORGAN_METHOD} at or above Tanimoto {min_similarity}",
         "GtoPdb is ODbL; share-alike follows any redistributed derivative",
     ]
+    if any(item["same_inchikey_as_query"] for item in used):
+        notes.append(
+            "A release compound shares the query InChIKey. Concentrations retain their individual assay attribution."
+        )
     if withdrawn:
         notes.insert(0, "a close analogue is a WITHDRAWN drug: " + "; ".join(withdrawn))
     if not used:
@@ -1201,42 +1261,119 @@ def offtarget_profile(
     )
 
 
-def bayesherg_probability(smiles: str) -> PanelProbabilities:
-    """BayeshERG hERG probability with its uncertainty. Raises if BayeshERG is absent.
+_BAYESHERG_WEIGHTS_SHA256 = "c3b50a881d28b26b2862dc531c5cdd9c6949a49cd06f52f064db9990aae7f28a"
+_BAYESHERG_WEIGHTS_BYTES = 513_837
 
-    BayeshERG (Kim et al., Brief Bioinform 23(4) 2022,
-    doi:10.1093/bib/bbac211) returns a calibrated probability, not a
-    concentration. It is stored under ``herg_prob`` with ``unit="probability"``
-    and never written into an ``*_nm`` column.
 
-    **The licence has since been read at source, and it is not one licence.**
-    The repository is MIT for the code, but it also ships a CC-BY-SA-4.0 file,
-    and its README puts the trained weights -- and any compound found with them
-    -- under CC-BY-NC-4.0, "freely available for academic purposes or
-    individual research but restricted for commercial use" (read 2026-11-18).
-    The weights are the part that predicts, so this backend is non-commercial
-    whatever the code licence says. It is also not pip-installable: there is no
-    ``setup.py`` or ``pyproject.toml``, and upstream expects ``main.py`` to run
-    inside a supplied conda environment on Python 3.6 with dgl.
+def _bayesherg_result(path: Path, smiles: str) -> PanelProbabilities:
+    with path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        expected = {"ID", "smiles", "score", "alea", "epis"}
+        columns = reader.fieldnames or []
+        if not expected.issubset(columns) or len(set(columns)) != len(columns):
+            raise ValueError("bayesherg_invalid_output_columns")
+        rows = list(islice(reader, 3))
+    if (
+        len(rows) != 2 or {row["ID"] for row in rows} != {"query", "batch_copy"}
+        or any(row["smiles"] != smiles for row in rows)
+    ):
+        raise ValueError("bayesherg_output_does_not_match_input")
+    row = next(row for row in rows if row["ID"] == "query")
+    score = _as_probability("BayeshERG score", row["score"])
+    variances = {
+        "aleatoric": _as_probability("alea", row["alea"]),
+        "epistemic": _as_probability("epis", row["epis"]),
+    }
+    # For the same dropout samples E[p(1-p)] + Var(p) = mean(p) (1 - mean(p)).
+    if not math.isclose(sum(variances.values()), score * (1.0 - score), rel_tol=1e-5, abs_tol=2e-7 * score):
+        raise ValueError("bayesherg_inconsistent_uncertainty_variances")
+    return PanelProbabilities(
+        smiles=smiles,
+        model="BayeshERG",
+        method=BAYESHERG_METHOD,
+        probabilities={"herg_prob": score},
+        uncertainty_variances=variances,
+        provenance={
+            "release": "GIST-CSBL/BayeshERG", "weights_sha256": _BAYESHERG_WEIGHTS_SHA256,
+            "dropout_samples": 30, "device": "cpu", "seed": "upstream_unseeded",
+            "batch_rows": 2, "reported_row": "query",
+        },
+        endpoints={"herg": "hERG blocker"},
+        uncovered_axes=tuple(axis for axis in LIGAND_AXES if axis != "herg"),
+        notes=("Mean blocker probability over 30 Monte Carlo samples. Both uncertainty components are variances.",),
+    )
+
+
+def bayesherg_probability(
+    smiles: str, *, release_dir: str | Path | None = None, python: str | Path | None = None
+) -> PanelProbabilities:
+    """Run the Kim et al. BayeshERG release (doi:10.1093/bib/bbac211) on CPU.
+
+    Supply the release directory and its Python interpreter as arguments or via
+    ``BAYESHERG_ROOT`` and ``BAYESHERG_PYTHON``. The upstream README restricts
+    the weights to noncommercial use. The repository includes a separate
+    Attribution-NonCommercial-ShareAlike licence alongside the MIT source licence.
     """
     text = (smiles or "").strip()
     if not text:
         raise LigandUnreadableError("empty_smiles")
-    try:
-        import bayesherg  # type: ignore[import-not-found]
-    except ImportError as error:
-        raise SafetyBackendUnavailableError(f"bayesherg_unavailable:{error}") from error
-    result = bayesherg.predict(text)  # pragma: no cover - exercised only where installed
-    probabilities = {
-        "herg_prob": float(result["probability"]),
-        "herg_prob_std": float(result.get("uncertainty", float("nan"))),
+    release = release_dir or os.environ.get("BAYESHERG_ROOT")
+    interpreter = python or os.environ.get("BAYESHERG_PYTHON")
+    if not release or not interpreter:
+        raise SafetyBackendUnavailableError("bayesherg_unavailable: configure BAYESHERG_ROOT and BAYESHERG_PYTHON")
+    script = Path(release).resolve() / "main.py"
+    weights = script.parent / "model" / "model_weights.pth"
+    executable = Path(interpreter).absolute()
+    required = (script, weights.parent / "BayeshERG_model.py", weights, executable)
+    if not all(path.is_file() for path in required):
+        raise SafetyBackendUnavailableError("bayesherg_unavailable: release source, weights or interpreter missing")
+    from rdkit import Chem
+
+    params = Chem.SmilesParserParams()
+    params.parseName = False
+    if any(char in text for char in "\r\n\0"):
+        raise LigandUnreadableError("smiles_unparsable")
+    molecule = Chem.MolFromSmiles(text, params)
+    if molecule is None or not molecule.GetNumAtoms():
+        raise LigandUnreadableError("smiles_unparsable")
+    if not molecule.GetNumBonds():
+        raise LigandUnreadableError("bayesherg_requires_a_molecular_bond")
+    env = {
+        **os.environ, "CUDA_VISIBLE_DEVICES": "-1", "DGLBACKEND": "pytorch",
+        "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1",
     }
-    return PanelProbabilities(
-        smiles=text,
-        model="BayeshERG",
-        probabilities=probabilities,
-        notes=("a probability is not a concentration and is never written to an *_nm column",),
-    )
+    env.setdefault("OMP_NUM_THREADS", "1")
+    env.pop("PYTHONPATH", None)
+    env.pop("PYTHONHOME", None)
+    try:
+        with tempfile.TemporaryDirectory(prefix="bayesherg-") as name:
+            work = Path(name)
+            for directory in ("model", "prediction_results", "attention_results"):
+                (work / directory).mkdir()
+            with weights.open("rb") as handle:
+                checkpoint = handle.read(_BAYESHERG_WEIGHTS_BYTES + 1)
+            if (
+                len(checkpoint) != _BAYESHERG_WEIGHTS_BYTES
+                or hashlib.sha256(checkpoint).hexdigest() != _BAYESHERG_WEIGHTS_SHA256
+            ):
+                raise SafetyBackendUnavailableError("bayesherg_unverified_weights")
+            (work / "model" / weights.name).write_bytes(checkpoint)
+            with (work / "input.csv").open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.writer(handle)
+                # DGL 0.4.3 returns the original graph for a singleton batch. Upstream
+                # pops its features, so the second dropout sample would reuse an empty graph.
+                writer.writerows([("ID", "smiles"), ("query", text), ("batch_copy", text)])
+            run = subprocess.run(
+                [str(executable), str(script), "-i", "input.csv", "-o", "query", "-c", "cpu", "-t", "30"],
+                cwd=work, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=300,
+            )
+            if run.returncode:
+                lines = run.stderr.strip().splitlines()
+                reason = lines[-1][:300] if lines else f"exit {run.returncode}"
+                raise SafetyBackendUnavailableError(f"bayesherg_worker_failed: {reason}")
+            return _bayesherg_result(work / "prediction_results" / "query.csv", text)
+    except (OSError, subprocess.TimeoutExpired, ValueError, csv.Error) as error:
+        raise SafetyBackendUnavailableError(f"bayesherg_unavailable: {error}") from error
 
 
 def _admet_model() -> Any:
@@ -1417,13 +1554,12 @@ def assert_no_probability_in_nm(record: dict[str, object]) -> None:
         if isinstance(node, dict):
             local_unit = node.get("unit", unit) if isinstance(node.get("unit"), str) else unit
             for key, value in node.items():
-                if isinstance(value, int | float) and not isinstance(value, bool):
-                    number = float(value)
-                    if key.endswith("_nm") and 0.0 <= number <= 1.0 and local_unit == "probability":
-                        raise ValueError(f"probability stored under nM key: {key}={number}")
-                    if key.endswith("_prob") and not (0.0 <= number <= 1.0):
-                        raise ValueError(f"non-probability stored under _prob key: {key}={number}")
-                    if key.endswith("_prob") and local_unit not in {None, "probability"}:
+                if key.endswith("_nm") and value is not None and local_unit == "probability":
+                    raise ValueError(f"probability stored under nM key: {key}={value}")
+                if key.endswith("_prob") and value is not None:
+                    if isinstance(value, bool) or not isinstance(value, int | float) or not 0.0 <= value <= 1.0:
+                        raise ValueError(f"non-probability stored under _prob key: {key}={value}")
+                    if local_unit not in {None, "probability"}:
                         raise ValueError(f"_prob key declares a non-probability unit: {key} unit={local_unit}")
                 walk(value, local_unit)
         elif isinstance(node, list):

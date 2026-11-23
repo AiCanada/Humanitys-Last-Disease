@@ -44,7 +44,7 @@ from rfproteina.utils.chain import get_chain_of_interest
 from rfproteina.utils.common import design_output_dir, ensure_dir
 from rfproteina.utils.coordinate_transfer import remove_terminal_oxygen_atoms
 from rfproteina.utils.ddp import RankedLogger
-from rfproteina.utils.parse_presets import STANDARD_ANNOTATIONS_ONLY
+from rfproteina.utils.parse_presets import evaluation_parse_config
 from rfproteina.utils.structure_files import find_structure_file
 from rfproteina.utils.verbosity import VERBOSE, configure_verbosity
 from script_utils.entrypoints import initialize_metrics_worker
@@ -396,7 +396,8 @@ def run_oracle_and_refolding_metrics(
                         logger.warning(f"{example_id}: refolded CIF missing for {label}: {cif_path}")
                         continue
                     try:
-                        refolded_aa = _parse_structure(cif_path, config=STANDARD_ANNOTATIONS_ONLY)["assemblies"]["1"][0]
+                        parsed = _parse_structure(cif_path, config=evaluation_parse_config(cif_path))
+                        refolded_aa = parsed["assemblies"]["1"][0]
                     except Exception as e:
                         logger.warning(f"{example_id}: failed to parse refolded CIF {cif_path}: {e}")
                         continue

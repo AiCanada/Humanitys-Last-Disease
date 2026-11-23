@@ -259,48 +259,41 @@ INTERFACE_PROVENANCE: dict[str, Provenance] = {
         kind=BORROWED,
         source="bindcraft_average_n_interface_residues",
         caveat=(
-            "BindCraft settings_filters/default_filters.json, read 2026-11-16: that project's "
-            "default, not a published value. Measured median here is 27 (range 16-47) over 23 "
-            "designs, so every accepted design clears the bar of 7. A floor, not a discriminator."
+            "BindCraft's interface-residue floor of 7 is a project default, not a published value. "
+            "BindCraft counts contacting residues. The local count uses per-residue surface burial."
         ),
     ),
     "interface_polar_contacts": Provenance(
         kind=BORROWED,
         source="bindcraft_average_n_interface_hbonds",
         caveat=(
-            "BindCraft's default of 3, read 2026-11-16. DEFINITION DIFFERS: BindCraft counts "
-            "Rosetta hydrogen bonds on a protonated model, this counts heavy-atom N/O pairs within "
-            "3.5 A and overcounts against that. Measured median here is 18, so the bar of 3 is "
-            "slack and kept only as a floor."
+            "BindCraft's floor of 3 applies to Rosetta hydrogen bonds. DEFINITION DIFFERS. The local "
+            "measurement counts cross-interface N/O pairs within 3.5 A."
         ),
     ),
     "buried_unsatisfied_polar_atoms": Provenance(
         kind=BORROWED,
         source="bindcraft_average_n_interface_unsat_hbonds",
         caveat=(
-            "BindCraft's default of 4, read 2026-11-16. DEFINITION DIFFERS: this is a "
-            "chemistry-typed heavy-atom proxy without hydrogens. Measured median here is 2, under "
-            "the bar, so <= 4 is adopted as a calibrated-compatible soft cut."
+            "BindCraft uses a Rosetta buried-unsatisfied hydrogen-bond filter. The local heavy-atom "
+            "proxy uses different burial and satisfaction rules. The Worker A calibration sample "
+            "contained 23 unlabeled designs."
         ),
     ),
     "shape_complementarity": Provenance(
         kind=REPORTED_ONLY,
         source="lawrence_colman_1993_scale_differs",
         caveat=(
-            "NO CUT adopted. Lawrence & Colman 1993 report Sc ~0.64-0.76 for natural interfaces "
-            "and BindCraft's bar is 0.55, both on the Connolly surface with re-entrant patches. "
-            "SCALE DIFFERS: this Sc is on a contact dot surface without them and runs "
-            "systematically lower, measured median 0.166 (range 0.069-0.254) over 23 designs. "
-            "0.55 would fail every accepted design. Triage on the measured distribution."
+            "Lawrence & Colman 1993. SCALE DIFFERS because this proxy uses contact patches. The "
+            "historical median of 0.166 used the earlier burial calculation."
         ),
     ),
     "dsasa_total_a2": Provenance(
         kind=REPORTED_ONLY,
         source="no_cut_adopted",
         caveat=(
-            "NO CUT adopted. BindCraft's Average_dSASA default of 1 is a fraction of the maximum, "
-            "not an area, so it cannot be carried across to this absolute value. Measured median "
-            "2393 A^2 (range 1353-4356) over 23 designs, recorded for reference only."
+            "Area in square angstroms. BindCraft reports Rosetta delta SASA and a separate interface "
+            "SASA percentage. This Biotite measurement has no calibrated cutoff."
         ),
     ),
 }

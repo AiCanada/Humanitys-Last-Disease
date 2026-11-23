@@ -400,59 +400,7 @@ fi
 # ============================================================
 if [ "$DO_CONCATENATE" == "true" ]; then
     CONCAT_SBATCH_FILE="$RUN_DIR/slurm_concat_script.sh"
-    CONCAT_SCRIPT="$CODE_DIR/src/rfproteina/inference_utils/aggregate_metrics.py"
-    CONCAT_DIR="$RUN_DIR/evaluation_metrics"
-
-    FOLDSEEK_FLAG=""
-    [ "$CONCATENATE_FOLDSEEK" == "true" ] && FOLDSEEK_FLAG="--cluster-with-foldseek"
-
-    {
-        echo "#!/bin/bash"
-        echo "#SBATCH --job-name concat-${RUN_NAME}"
-        if [ "$SKIP_ACCOUNT" != "true" ] && [ -n "$ACCOUNT" ]; then
-            echo "#SBATCH --account $ACCOUNT"
-        fi
-        if [[ -n "${CPU_PARTITION:-${PARTITION:-}}" ]]; then
-            echo "#SBATCH --partition ${CPU_PARTITION:-$PARTITION}"
-        fi
-        echo "#SBATCH --time 04:00:00"
-        echo "#SBATCH --nodes 1"
-        echo "#SBATCH --ntasks-per-node 1"
-        echo "#SBATCH --cpus-per-task 4"
-        echo "#SBATCH --mem 16g"
-        echo "#SBATCH --output ./slurm_run_outputs/slurm_concat.out"
-        echo "#SBATCH --error ./slurm_run_outputs/slurm_concat.err"
-        echo "#SBATCH --open-mode append"
-        echo ""
-        echo "export PYTHONPATH=$CODE_DIR:\$PYTHONPATH"
-        echo "export PYTHONFAULTHANDLER=1"
-        echo ""
-        echo "echo \"Running result concatenation for: $RUN_NAME\""
-        echo "echo \"Concat dir: $CONCAT_DIR\""
-    } > "$CONCAT_SBATCH_FILE"
-
-    if [ "$CONTAINER_TYPE" != "docker" ]; then
-        cat >> "$CONCAT_SBATCH_FILE" << EOF
-export CLUSTER=$CLUSTER
-export CONTAINER_TYPE=$CONTAINER_TYPE
-
-"$CONCAT_SCRIPT" --input "$CONCAT_DIR" $FOLDSEEK_FLAG
-EOF
-    else
-        CONTAINER_CMD_CONCAT=$(get_srun_cmd)
-        CONTAINER_MOUNTS_STR_CONCAT=$(build_container_mounts_string)
-        CONTAINER_ENV_CMDS_CONCAT=$(build_container_env_cmds)
-        cat >> "$CONCAT_SBATCH_FILE" << EOF
-srun --ntasks=1 $CONTAINER_CMD_CONCAT \\
-    --container-mounts="$CONTAINER_MOUNTS_STR_CONCAT" \\
-    --container-workdir=$RUN_DIR \\
-    bash -c "$CONTAINER_ENV_CMDS_CONCAT && python \"$CONCAT_SCRIPT\" --input \"$CONCAT_DIR\" $FOLDSEEK_FLAG"
-EOF
-    fi
-
-    cat >> "$CONCAT_SBATCH_FILE" << 'EOF'
-echo "Concatenation complete!"
-EOF
+    write_metrics_batch "$CODE_DIR" "$RUN_DIR/evaluation_metrics" "$CONCATENATE_FOLDSEEK" > "$CONCAT_SBATCH_FILE"
 fi
 
 # ============================================================

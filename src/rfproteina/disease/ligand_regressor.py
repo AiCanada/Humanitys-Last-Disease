@@ -27,10 +27,10 @@ means it was measured on a *different* molecule, and this means a model guessed
 it. :func:`assert_prediction_not_measured` enforces the distinction rather than
 trusting it.
 
-**What it is worth.** Measured, not asserted: pooled over three
-scaffold-balanced held-out splits, on determinate measurements only -- a
-``>10000 nM`` row is a bound, and scoring it as a point value would be a
-fabricated number.
+**Historical forest results.** These values came from three scaffold splits
+of an earlier corpus that pooled assay types and target preparations.
+Fresh fits on the full release subset use single-chain IC50 values with
+the matching accession. Each fresh fit has its own validation statistics.
 
 ===========  ======  ==========  =====  =========  ========
 axis          train  RMSE log10   fold  Spearman     test n
@@ -40,24 +40,10 @@ axis          train  RMSE log10   fold  Spearman     test n
 ``bsep``        352       0.535   3.4x      0.587       132
 ===========  ======  ==========  =====  =========  ========
 
-So a typical prediction is wrong by about four-fold, and the ranking is good
-to a Spearman near 0.6 to 0.8. **That is a triage signal, not an assay**: it
-orders designs and flags the obviously dangerous, and a number from it should
-never be quoted as a potency. :func:`train` recomputes all of this rather than
-trusting the table, and the replicates matter -- a single split leaves ``bsep``
-with 44 test rows, which is not a number worth reporting.
-
-**Why the default backend is not the graph network.** Chemprop was measured
-against a fingerprint model on identical splits and lost on all three axes:
-0.520 against 0.481 on ``nav1_5``, 0.613 against 0.507 on ``bcrp``, 0.570
-against 0.551 on ``bsep``. It early-stopped between 32 and 69 epochs with a
-500-epoch ceiling, so training longer is not the missing ingredient; at 350 to
-1,700 training molecules a D-MPNN simply has too little data to beat Morgan
-fingerprints. Both backends are built and selectable -- :data:`BACKENDS` --
-and the default is the one that measured better. Early stopping mattered a
-great deal to that comparison: without it chemprop scored a *negative* R² on
-two axes, so :func:`_fit_chemprop` always early-stops on validation loss and
-restores the best checkpoint.
+The reported errors describe the original partitions. :func:`train` recomputes
+held-out errors for a new corpus. The default backend uses Morgan fingerprints
+and ExtraTrees. The optional Chemprop backend selects its checkpoint by
+validation loss and uses only its training partition for similarity estimates.
 """
 
 from __future__ import annotations
@@ -66,6 +52,7 @@ import csv
 import json
 import math
 import os
+import tempfile
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
@@ -123,7 +110,7 @@ REPLICATES = 3
 APPLICABILITY_SIMILARITY = 0.4
 
 _MANIFEST = "ligand_regressor.json"
-_VERSION = 1
+_VERSION = 2
 
 
 class RegressorCorpusError(Exception):
@@ -161,6 +148,7 @@ class CorpusReport:
     dropped: Mapping[str, int] = field(default_factory=dict)
     aggregated: int = 0
     licence: str = "BindingDB; cite BindingDB and the per-row reference"
+    measurement_scope: str = "assay and target preparation unreported"
 
     @property
     def per_axis(self) -> dict[str, int]:
@@ -191,8 +179,8 @@ class AxisScore:
     backend: str
     rmse_log10: float
     mae_log10: float
-    r2: float
-    spearman: float
+    r2: float | None
+    spearman: float | None
     test_rows: int
     train_rows: int
     replicates: int
@@ -201,6 +189,14 @@ class AxisScore:
     def fold_error(self) -> float:
         """The RMSE expressed as a factor, which is how a chemist reads it."""
         return 10.0**self.rmse_log10
+
+    def reported_metrics(self) -> dict[str, float | int | None]:
+        return {
+            "train_rows": self.train_rows, "test_rows": self.test_rows, "replicates": self.replicates,
+            "rmse_log10": round(self.rmse_log10, 4), "fold_error": round(self.fold_error, 2),
+            "spearman": round(self.spearman, 4) if self.spearman is not None and math.isfinite(self.spearman) else None,
+            "r2": round(self.r2, 4) if self.r2 is not None and math.isfinite(self.r2) else None,
+        }
 
 
 @dataclass(frozen=True)
@@ -217,7 +213,7 @@ class AxisModel:
     estimator: Any
     score: AxisScore | None = None
     training_fingerprints: Any = None
-    training_rows: int = 0
+    training_rows: int | None = 0
 
 
 @dataclass(frozen=True)
@@ -229,6 +225,7 @@ class PanelRegressor:
     method: str = METHOD_FOREST
     corpus_rows: int = 0
     notes: tuple[str, ...] = ()
+    measurement_scope: str = "assay and target preparation unreported"
 
     @property
     def covered(self) -> tuple[str, ...]:
@@ -276,9 +273,7 @@ class PanelPredictions:
     @property
     def extrapolated(self) -> tuple[str, ...]:
         """Axes where the nearest training compound is too far to trust."""
-        return tuple(
-            axis for axis, values in self.predictions.items() if not bool(values.get("within_applicability", True))
-        )
+        return tuple(axis for axis, values in self.predictions.items() if values.get("within_applicability") is False)
 
 
 def assert_prediction_not_measured(record: Mapping[str, object]) -> None:
@@ -307,11 +302,10 @@ def assert_prediction_not_measured(record: Mapping[str, object]) -> None:
 def load_corpus(path: Path, axes: Sequence[str] = UNCOVERED_AXES) -> CorpusReport:
     """Read the BindingDB panel subset into training rows, and say what was dropped.
 
-    Three filters, each for a reason that would otherwise be a silent error:
-    the relation must be an equality, because ``>50000`` is a bound and not a
-    value; the SMILES must parse; and repeats of the same (axis, compound) are
-    aggregated by **geometric mean**, because these are log-scale affinities
-    and an arithmetic mean would follow the weakest reading.
+    The released schema identifies IC50, accession and chain count. Older
+    four-column extracts retain their unreported measurement scope. Within
+    each axis, determinate positive readings for the same stereochemical
+    identity are aggregated by geometric mean.
     """
     path = Path(path)
     if not path.is_file():
@@ -319,6 +313,9 @@ def load_corpus(path: Path, axes: Sequence[str] = UNCOVERED_AXES) -> CorpusRepor
     wanted = {str(axis) for axis in axes}
     dropped: dict[str, int] = defaultdict(int)
     readings: dict[tuple[str, str], list[float]] = defaultdict(list)
+    canonical: dict[str, str] = {}
+    from rdkit import Chem
+
     read = 0
     try:
         with path.open("r", encoding="utf-8", newline="") as handle:
@@ -335,6 +332,15 @@ def load_corpus(path: Path, axes: Sequence[str] = UNCOVERED_AXES) -> CorpusRepor
                 if (row.get("relation") or "").strip() not in DETERMINATE:
                     dropped["measurement_censored"] += 1
                     continue
+                if "assay" in names and (row.get("assay") or "").strip().upper() != "IC50":
+                    dropped["assay_other_than_ic50"] += 1
+                    continue
+                if "chains" in names and (row.get("chains") or "").strip() != "1":
+                    dropped["target_not_single_chain"] += 1
+                    continue
+                if "accession" in names and (row.get("accession") or "").strip() != AXIS_ACCESSIONS.get(axis):
+                    dropped["target_accession_mismatch"] += 1
+                    continue
                 smiles = (row.get("smiles") or "").strip()
                 if not smiles:
                     dropped["smiles_absent"] += 1
@@ -347,7 +353,13 @@ def load_corpus(path: Path, axes: Sequence[str] = UNCOVERED_AXES) -> CorpusRepor
                 if not math.isfinite(value) or value <= 0:
                     dropped["measurement_not_positive"] += 1
                     continue
-                readings[(axis, smiles)].append(value)
+                if smiles not in canonical:
+                    mol = _parse(smiles)
+                    canonical[smiles] = Chem.MolToSmiles(mol) if mol is not None else ""
+                if not canonical[smiles]:
+                    dropped["smiles_unparsable"] += 1
+                    continue
+                readings[(axis, canonical[smiles])].append(value)
     except (OSError, UnicodeError, csv.Error) as error:
         raise RegressorCorpusError(f"subset_unreadable:{type(error).__name__}") from error
 
@@ -365,6 +377,11 @@ def load_corpus(path: Path, axes: Sequence[str] = UNCOVERED_AXES) -> CorpusRepor
         read=read,
         dropped=dict(sorted(dropped.items())),
         aggregated=sum(1 for row in rows if row.readings > 1),
+        measurement_scope=", ".join((
+            "IC50" if "assay" in names else "assay unreported",
+            "single chain" if "chains" in names else "chain count unreported",
+            "matched accession" if "accession" in names else "accession unreported",
+        )),
     )
 
 
@@ -381,7 +398,13 @@ def _parse(smiles: str) -> Any:
         from rdkit import Chem
     except ImportError as error:  # pragma: no cover
         raise RegressorUnavailableError(f"rdkit_unavailable:{error}") from error
-    return Chem.MolFromSmiles((smiles or "").strip())
+    text = (smiles or "").strip()
+    if not text or any(char in text for char in "\r\n\0"):
+        return None
+    params = Chem.SmilesParserParams()
+    params.parseName = False
+    mol = Chem.MolFromSmiles(text, params)
+    return mol if mol is not None and mol.GetNumAtoms() else None
 
 
 def fingerprints(smiles: Iterable[str]) -> tuple[np.ndarray, list[int]]:
@@ -417,7 +440,7 @@ def _rmse(truth: Sequence[float], predicted: Sequence[float]) -> float:
     return float(np.sqrt(np.mean((np.asarray(truth) - np.asarray(predicted)) ** 2)))
 
 
-def _spearman(truth: Sequence[float], predicted: Sequence[float]) -> float:
+def _spearman(truth: Sequence[float], predicted: Sequence[float]) -> float | None:
     def ranks(values: Sequence[float]) -> np.ndarray:
         array = np.asarray(values, dtype=np.float64)
         order = np.argsort(array, kind="mergesort")
@@ -433,7 +456,7 @@ def _spearman(truth: Sequence[float], predicted: Sequence[float]) -> float:
 
     a, b = ranks(truth), ranks(predicted)
     if not np.std(a) or not np.std(b):
-        return float("nan")
+        return None
     return float(np.corrcoef(a, b)[0, 1])
 
 
@@ -454,7 +477,7 @@ def _score(
         backend=backend,
         rmse_log10=_rmse(truth_array, predicted_array),
         mae_log10=float(np.mean(np.abs(truth_array - predicted_array))),
-        r2=1.0 - residual / total if total else float("nan"),
+        r2=1.0 - residual / total if total else None,
         spearman=_spearman(truth_array, predicted_array),
         test_rows=int(len(truth_array)),
         train_rows=train_rows,
@@ -532,24 +555,26 @@ def _fit_chemprop(
         batch_norm=True,
         metrics=[nn.RMSE()],
     )
-    checkpoint = ModelCheckpoint(monitor="val_loss", mode="min", save_top_k=1)
-    trainer = pl.Trainer(
-        max_epochs=max_epochs,
-        accelerator="auto",
-        devices=1,
-        enable_progress_bar=False,
-        enable_model_summary=False,
-        logger=False,
-        callbacks=[EarlyStopping(monitor="val_loss", mode="min", patience=patience), checkpoint],
-    )
-    trainer.fit(
-        model,
-        chemprop_data.build_dataloader(train_set, batch_size=50, num_workers=0),
-        chemprop_data.build_dataloader(validation_set, batch_size=50, num_workers=0, shuffle=False),
-    )
-    if checkpoint.best_model_path:
-        model = models.MPNN.load_from_checkpoint(checkpoint.best_model_path)
-    return model
+    with tempfile.TemporaryDirectory(prefix="ligand-chemprop-") as work:
+        checkpoint = ModelCheckpoint(dirpath=work, monitor="val_loss", mode="min", save_top_k=1)
+        trainer = pl.Trainer(
+            max_epochs=max_epochs, accelerator="auto", devices=1, default_root_dir=work,
+            enable_progress_bar=False, enable_model_summary=False, logger=False,
+            callbacks=[EarlyStopping(monitor="val_loss", mode="min", patience=patience), checkpoint],
+        )
+        trainer.fit(
+            model,
+            chemprop_data.build_dataloader(train_set, batch_size=50, num_workers=0, seed=seed),
+            chemprop_data.build_dataloader(
+                validation_set, batch_size=50, num_workers=0, shuffle=False, drop_last=False
+            ),
+        )
+        if (
+            not checkpoint.best_model_path or checkpoint.best_model_score is None
+            or not math.isfinite(float(checkpoint.best_model_score))
+        ):
+            raise RegressorModelError("chemprop_no_finite_validation_checkpoint")
+        return models.MPNN.load_from_checkpoint(checkpoint.best_model_path, map_location="cpu")
 
 
 def _predict_chemprop(model: Any, smiles: Sequence[str]) -> np.ndarray:
@@ -563,13 +588,19 @@ def _predict_chemprop(model: Any, smiles: Sequence[str]) -> np.ndarray:
             raise RegressorModelError("unparsable_smiles")
         points.append(chemprop_data.MoleculeDatapoint(mol=mol, y=np.array([0.0])))
     loader = chemprop_data.build_dataloader(
-        chemprop_data.MoleculeDataset(points), batch_size=50, num_workers=0, shuffle=False
+        chemprop_data.MoleculeDataset(points), batch_size=50, num_workers=0, shuffle=False, drop_last=False
     )
     trainer = pl.Trainer(
-        accelerator="auto", devices=1, enable_progress_bar=False, logger=False, enable_model_summary=False
+        accelerator="auto", devices=1, enable_progress_bar=False, logger=False, enable_model_summary=False,
+        enable_checkpointing=False,
     )
     out = trainer.predict(model, loader)
-    return np.concatenate([tensor.numpy().reshape(-1) for tensor in out])
+    if not out:
+        raise RegressorModelError("chemprop_returned_no_predictions")
+    values = np.concatenate([tensor.detach().cpu().numpy().reshape(-1) for tensor in out])
+    if len(values) != len(smiles) or not np.isfinite(values).all():
+        raise RegressorModelError("chemprop_incomplete_or_nonfinite_predictions")
+    return values
 
 
 def evaluate(
@@ -588,15 +619,21 @@ def evaluate(
     """
     if backend not in BACKENDS:
         raise ValueError(f"unknown backend: {backend}")
-    train_sets, validation_sets, test_sets = _split_indices(rows, replicates, seed)
+    if replicates < 1:
+        raise ValueError("replicates_must_be_positive")
+    return _score_splits(rows, axis, backend, seed, _split_indices(rows, replicates, seed))
+
+
+def _score_splits(
+    rows: Sequence[TrainingRow], axis: str, backend: str, seed: int, splits: tuple[Any, Any, Any],
+    *, first_chemprop_model: Any = None,
+) -> AxisScore | None:
     truth: list[float] = []
     predicted: list[float] = []
     trained = 0
-    for replicate in range(replicates):
-        train = list(train_sets[replicate])
-        validation = list(validation_sets[replicate])
-        test = list(test_sets[replicate])
-        if len(train) < 50 or not test:
+    scored_replicates = 0
+    for replicate, (train, validation, test) in enumerate(zip(*splits, strict=True)):
+        if len(train) < 50 or len(test) == 0:
             continue
         if backend == "forest":
             estimator, _matrix = _fit_forest([rows[i] for i in train], seed=seed + replicate)
@@ -606,14 +643,17 @@ def evaluate(
             predicted.extend(estimator.predict(matrix).tolist())
             truth.extend(rows[test[i]].log10_nanomolar for i in kept)
         else:
-            model = _fit_chemprop(rows, train, validation, seed=seed + replicate)
+            model = first_chemprop_model if replicate == 0 else None
+            if model is None:
+                model = _fit_chemprop(rows, train, validation, seed=seed + replicate)
             texts = [rows[i].smiles for i in test]
             predicted.extend(_predict_chemprop(model, texts).tolist())
             truth.extend(rows[i].log10_nanomolar for i in test)
         trained = len(train)
+        scored_replicates += 1
     if len(truth) < 10:
         return None
-    return _score(axis, backend, truth, predicted, trained, replicates)
+    return _score(axis, backend, truth, predicted, trained, scored_replicates)
 
 
 def train(
@@ -632,40 +672,45 @@ def train(
     """
     if backend not in BACKENDS:
         raise ValueError(f"unknown backend: {backend}")
+    if replicates < 1:
+        raise ValueError("replicates_must_be_positive")
     rows = corpus.rows if isinstance(corpus, CorpusReport) else tuple(corpus)
     if not rows:
         raise RegressorCorpusError("no_training_rows")
     by_axis: dict[str, list[TrainingRow]] = defaultdict(list)
     for row in rows:
+        if row.axis not in UNCOVERED_AXES:
+            raise RegressorModelError(f"unknown_panel_axis:{row.axis}")
         by_axis[row.axis].append(row)
 
     models: dict[str, AxisModel] = {}
     for axis, axis_rows in sorted(by_axis.items()):
-        score = (
-            evaluate(axis_rows, axis=axis, backend=backend, replicates=replicates, seed=seed)
-            if evaluate_first
-            else None
-        )
+        score = None
         if backend == "forest":
+            if evaluate_first:
+                score = evaluate(axis_rows, axis=axis, backend=backend, replicates=replicates, seed=seed)
             estimator, matrix = _fit_forest(axis_rows, seed=seed)
             prints = matrix
         else:
-            train_sets, validation_sets, _test = _split_indices(axis_rows, 1, seed)
-            estimator = _fit_chemprop(axis_rows, list(train_sets[0]), list(validation_sets[0]), seed=seed)
-            prints, _kept = fingerprints([row.smiles for row in axis_rows])
+            splits = _split_indices(axis_rows, replicates if evaluate_first else 1, seed)
+            fit, validation = splits[0][0], splits[1][0]
+            estimator = _fit_chemprop(axis_rows, fit, validation, seed=seed)
+            if evaluate_first:
+                score = _score_splits(axis_rows, axis, backend, seed, splits, first_chemprop_model=estimator)
+            prints, _kept = fingerprints([axis_rows[i].smiles for i in fit])
         models[axis] = AxisModel(
             axis=axis,
             backend=backend,
             estimator=estimator,
             score=score,
             training_fingerprints=prints,
-            training_rows=len(axis_rows),
+            training_rows=len(prints),
         )
 
     method = METHOD_FOREST if backend == "forest" else METHOD_CHEMPROP
     notes = [
-        f"trained on {len(rows):,} (axis, compound) pairs from BindingDB",
-        "the target is log10(nM); an RMSE of 0.6 is a typical error near four-fold",
+        f"corpus contained {len(rows):,} (axis, compound) pairs before splitting",
+        "The target is log10(nM). Exponentiating the held-out RMSE expresses that error on a fold scale.",
         f"every value is reported as {PREDICTED_KEY} and never under an *_nm key: it is a model output, "
         "not a measurement",
         "censored measurements were excluded: a bound is not a value",
@@ -673,7 +718,9 @@ def train(
     missing = [axis for axis in UNCOVERED_AXES if axis not in models]
     if missing:
         notes.append("axes with no model, still unanswered: " + ", ".join(missing))
-    return PanelRegressor(axes=models, backend=backend, method=method, corpus_rows=len(rows), notes=tuple(notes))
+    scope = corpus.measurement_scope if isinstance(corpus, CorpusReport) else "caller-supplied training rows"
+    return PanelRegressor(axes=models, backend=backend, method=method, corpus_rows=len(rows),
+                          notes=tuple(notes), measurement_scope=scope)
 
 
 def _similarity(matrix: np.ndarray, vector: np.ndarray) -> float:
@@ -699,9 +746,6 @@ def predict(regressor: PanelRegressor, smiles: str, *, axes: Sequence[str] | Non
     text = (smiles or "").strip()
     if not text:
         raise ValueError("empty_smiles")
-    mol = _parse(text)
-    if mol is None:
-        raise ValueError("smiles_unparsable")
     wanted = list(axes) if axes else list(regressor.covered)
     unknown = [axis for axis in wanted if axis not in regressor.axes]
     if unknown:
@@ -721,14 +765,23 @@ def predict(regressor: PanelRegressor, smiles: str, *, axes: Sequence[str] | Non
             value = float(_predict_chemprop(model.estimator, [text])[0])
         nearest = _similarity(model.training_fingerprints, vector)
         score = model.score
+        try:
+            concentration = 10.0**value
+        except OverflowError as error:
+            raise RegressorModelError("nonfinite_predicted_concentration") from error
+        if not math.isfinite(concentration) or concentration <= 0.0:
+            raise RegressorModelError("nonfinite_predicted_concentration")
         predictions[axis] = {
-            PREDICTED_KEY: round(10.0**value, 3),
+            PREDICTED_KEY: concentration,
             "predicted_log10_nanomolar": round(value, 4),
+            "training_measurements": regressor.measurement_scope,
             "accession": AXIS_ACCESSIONS.get(axis, ""),
             "model_rmse_log10": None if score is None else round(score.rmse_log10, 4),
             "model_fold_error": None if score is None else round(score.fold_error, 2),
+            "model_test_rows": None if score is None else score.test_rows,
+            "model_r2": None if score is None else score.reported_metrics()["r2"],
             "nearest_training_similarity": None if math.isnan(nearest) else round(nearest, 4),
-            "within_applicability": bool(not math.isnan(nearest) and nearest >= APPLICABILITY_SIMILARITY),
+            "within_applicability": None if math.isnan(nearest) else nearest >= APPLICABILITY_SIMILARITY,
             "training_rows": model.training_rows,
         }
 
@@ -737,7 +790,10 @@ def predict(regressor: PanelRegressor, smiles: str, *, axes: Sequence[str] | Non
         "log10-scale model: read the fold error, not the digits",
         "BindingDB terms apply to the training data; cite BindingDB",
     ]
-    outside = [axis for axis, values in predictions.items() if not values["within_applicability"]]
+    outside = [axis for axis, values in predictions.items() if values["within_applicability"] is False]
+    unknown_reference = [axis for axis, values in predictions.items() if values["within_applicability"] is None]
+    if unknown_reference:
+        notes.append("Training-set similarity unavailable for " + ", ".join(unknown_reference))
     if outside:
         notes.insert(
             0,
@@ -754,20 +810,20 @@ def predict(regressor: PanelRegressor, smiles: str, *, axes: Sequence[str] | Non
     )
 
 
-def save(regressor: PanelRegressor, directory: Path) -> Path:
-    """Write the models and a manifest. Returns the manifest path."""
-    directory = Path(directory)
-    directory.mkdir(parents=True, exist_ok=True)
+def _write_payloads(regressor: PanelRegressor, directory: Path) -> dict[str, Any]:
     manifest: dict[str, object] = {
         "version": _VERSION,
         "backend": regressor.backend,
         "method": regressor.method,
         "corpus_rows": regressor.corpus_rows,
+        "measurement_scope": regressor.measurement_scope,
         "notes": list(regressor.notes),
         "morgan": {"radius": MORGAN_RADIUS, "bits": MORGAN_BITS, "counts": MORGAN_COUNTS},
         "axes": {},
     }
     for axis, model in sorted(regressor.axes.items()):
+        if axis not in UNCOVERED_AXES or model.axis != axis or model.backend != regressor.backend:
+            raise RegressorModelError("estimator_axis_or_backend_mismatch")
         if regressor.backend == "forest":
             try:
                 import joblib
@@ -781,16 +837,64 @@ def save(regressor: PanelRegressor, directory: Path) -> Path:
             payload = directory / f"{axis}.pt"
             chemprop_models.save_model(payload, model.estimator)
         prints = directory / f"{axis}.fingerprints.npy"
-        np.save(prints, np.asarray(model.training_fingerprints, dtype=np.float32))
+        if model.training_fingerprints is not None:
+            matrix = np.asarray(model.training_fingerprints, dtype=np.float32)
+            if matrix.shape != (model.training_rows, MORGAN_BITS) or not np.isfinite(matrix).all():
+                raise RegressorModelError("training_fingerprints_mismatch")
+            np.save(prints, matrix)
         manifest["axes"][axis] = {
             "estimator": payload.name,
-            "fingerprints": prints.name,
+            "fingerprints": prints.name if model.training_fingerprints is not None else None,
             "training_rows": model.training_rows,
             "score": None if model.score is None else asdict(model.score),
         }
+    return manifest
+
+
+def check_output_backend(directory: Path, backend: str) -> None:
     path = directory / _MANIFEST
-    path.write_text(json.dumps(manifest, indent=1, sort_keys=True), encoding="utf-8")
-    return path
+    if path.is_file():
+        existing = json.loads(path.read_text(encoding="utf-8"))
+        if existing.get("backend", "forest") != backend:
+            raise RegressorModelError("output_directory_contains_a_different_backend")
+
+
+def save(regressor: PanelRegressor, directory: Path) -> Path:
+    """Publish a complete local model. Existing readers can finish using the previous files."""
+    directory = Path(directory)
+    method = {"forest": METHOD_FOREST, "chemprop": METHOD_CHEMPROP}.get(regressor.backend)
+    if method is None or regressor.method != method or not regressor.axes:
+        raise RegressorModelError("invalid_regressor_manifest")
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    check_output_backend(directory, regressor.backend)
+    with tempfile.TemporaryDirectory(prefix=".ligand-fit-", dir=directory.parent) as name:
+        staging = Path(name)
+        payloads = staging / "payloads"
+        payloads.mkdir()
+        manifest = _write_payloads(regressor, payloads)
+        staged_manifest = staging / _MANIFEST
+        staged_manifest.write_text(json.dumps(manifest, indent=1, sort_keys=True), encoding="utf-8")
+        if not directory.exists():
+            # A fresh model keeps the original flat file layout.
+            staged_manifest.replace(payloads / _MANIFEST)
+            try:
+                payloads.rename(directory)
+            except OSError:
+                if not directory.is_dir():
+                    raise
+                (payloads / _MANIFEST).replace(staged_manifest)
+            else:
+                return directory / _MANIFEST
+        check_output_backend(directory, regressor.backend)
+        revision = staging.name.lstrip(".")
+        for record in manifest["axes"].values():
+            for key in ("estimator", "fingerprints"):
+                if record[key]:
+                    record[key] = f"{revision}/{record[key]}"
+        staged_manifest.write_text(json.dumps(manifest, indent=1, sort_keys=True), encoding="utf-8")
+        payloads.rename(directory / revision)
+        staged_manifest.replace(directory / _MANIFEST)
+    return directory / _MANIFEST
 
 
 def load_regressor(path: Path) -> PanelRegressor:
@@ -808,7 +912,8 @@ def load_regressor(path: Path) -> PanelRegressor:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise RegressorUnavailableError(f"manifest_unreadable:{type(error).__name__}") from error
-    if manifest.get("version") != _VERSION:
+    version = manifest.get("version")
+    if type(version) is not int or version not in (1, _VERSION):
         raise RegressorUnavailableError(f"manifest_version_unsupported:{manifest.get('version')}")
     morgan = manifest.get("morgan") or {}
     if (
@@ -820,9 +925,14 @@ def load_regressor(path: Path) -> PanelRegressor:
     backend = str(manifest.get("backend") or "forest")
     if backend not in BACKENDS:
         raise RegressorUnavailableError(f"unknown_backend:{backend}")
+    expected_method = METHOD_CHEMPROP if backend == "chemprop" else METHOD_FOREST
+    if manifest.get("method", expected_method) != expected_method:
+        raise RegressorUnavailableError("manifest_method_backend_mismatch")
 
     axes: dict[str, AxisModel] = {}
     for axis, record in (manifest.get("axes") or {}).items():
+        if axis not in UNCOVERED_AXES:
+            raise RegressorUnavailableError(f"unknown_panel_axis:{axis}")
         payload = directory / str(record.get("estimator"))
         if not payload.is_file():
             raise RegressorUnavailableError(f"estimator_not_found:{payload.name}")
@@ -837,22 +947,34 @@ def load_regressor(path: Path) -> PanelRegressor:
 
             estimator = chemprop_models.load_model(payload)
         prints_path = directory / str(record.get("fingerprints"))
-        prints = np.load(prints_path) if prints_path.is_file() else None
+        # A v1 graph checkpoint indexed its entire corpus, including held-out compounds.
+        reference_verified = backend == "forest" or version >= 2
+        prints = np.load(prints_path) if reference_verified and prints_path.is_file() else None
+        training_rows = record.get("training_rows") if reference_verified else None
+        if prints is not None and (prints.ndim != 2 or prints.shape != (training_rows, MORGAN_BITS)):
+            raise RegressorUnavailableError("manifest_training_fingerprints_mismatch")
         score = record.get("score")
+        if score and (score.get("axis") != axis or score.get("backend") != backend):
+            raise RegressorUnavailableError("manifest_score_axis_or_backend_mismatch")
+        if score:
+            for metric in ("r2", "spearman"):
+                if score.get(metric) is not None and not math.isfinite(score[metric]):
+                    score[metric] = None
         axes[axis] = AxisModel(
             axis=axis,
             backend=backend,
             estimator=estimator,
             score=AxisScore(**score) if score else None,
             training_fingerprints=prints,
-            training_rows=int(record.get("training_rows") or 0),
+            training_rows=training_rows,
         )
     if not axes:
         raise RegressorUnavailableError("manifest_has_no_axes")
     return PanelRegressor(
         axes=axes,
         backend=backend,
-        method=str(manifest.get("method") or METHOD_FOREST),
+        method=expected_method,
+        measurement_scope=str(manifest.get("measurement_scope") or "assay and target preparation unreported"),
         corpus_rows=int(manifest.get("corpus_rows") or 0),
         notes=tuple(manifest.get("notes") or ()),
     )
@@ -866,19 +988,26 @@ def default_subset() -> Path:
     return Path(data_path) / "bindingdb" / "bindingdb_panel_subset.tsv"
 
 
-def default_model_dir() -> Path:
+def default_model_dir(backend: str = "forest") -> Path:
     """Where the trained regressors live."""
-    override = os.environ.get("RFD4_LIGAND_REGRESSOR", "").strip()
+    if backend not in BACKENDS:
+        raise ValueError(f"unknown backend: {backend}")
+    override_key = "RFD4_CHEMPROP_REGRESSOR" if backend == "chemprop" else "RFD4_LIGAND_REGRESSOR"
+    override = os.environ.get(override_key, "").strip()
     if override:
         return Path(override)
     data_path = os.environ.get("DATA_PATH", "").strip()
     if not data_path:
         raise RegressorUnavailableError("data_path_unset")
-    return Path(data_path) / "bindingdb" / "regressor"
+    return Path(data_path) / "bindingdb" / ("regressor_chemprop" if backend == "chemprop" else "regressor")
 
 
 def regressor_report(smiles: str, *, directory: Path | None = None) -> dict[str, object]:
     """What ``scripts/screen_ligand.py`` prints for one ligand."""
+    if not (smiles or "").strip():
+        raise ValueError("empty_smiles")
+    if _parse(smiles) is None:
+        raise ValueError("smiles_unparsable")
     regressor = load_regressor(directory or default_model_dir())
     predictions = predict(regressor, smiles)
     record = predictions.as_record()
@@ -888,10 +1017,7 @@ def regressor_report(smiles: str, *, directory: Path | None = None) -> dict[str,
         "backend": regressor.backend,
         "axes": list(regressor.covered),
         "axes_still_unanswered": list(regressor.missing),
-        "scores": {
-            axis: {"rmse_log10": round(score.rmse_log10, 4), "spearman": round(score.spearman, 4)}
-            for axis, score in regressor.scores.items()
-        },
+        "scores": {axis: score.reported_metrics() for axis, score in regressor.scores.items()},
         "extrapolated_axes": list(predictions.extrapolated),
         **record,
     }

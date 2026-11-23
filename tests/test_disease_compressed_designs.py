@@ -154,6 +154,26 @@ def test_a_whole_zstd_design_is_not_refused_by_the_truncation_check(tmp_path: Pa
     assert _design_text(streamed) == body
 
 
+@pytest.mark.skipif(_zstandard() is None, reason="zstandard is not installed")
+def test_all_zstd_frames_must_end_and_fit_the_limit(tmp_path: Path, monkeypatch) -> None:
+    from rfproteina.disease import screen
+
+    pack = _zstandard().ZstdCompressor(write_checksum=True).compress
+    path = tmp_path / "binder_0_generated.cif.zst"
+    data = _CIF.encode("utf-8")
+    cut = len(data) // 2
+    first = pack(data[:cut]) + pack(b"")
+    last = pack(data[cut:])
+    path.write_bytes(first + last)
+    assert _design_text(path) == _CIF
+    for suffix in (last[:-1], last + b"trailing junk"):
+        path.write_bytes(first + suffix)
+        assert _design_text(path) is None
+    monkeypatch.setattr(screen, "_DESIGN_TEXT_LIMIT", len(data) - 1)
+    path.write_bytes(first + last)
+    assert _design_text(path) is None
+
+
 def test_a_file_that_is_not_compressed_at_all_is_refused(tmp_path: Path) -> None:
     """Plain text under a ``.gz`` name is the mislabelled case."""
     directory = _samples(tmp_path)

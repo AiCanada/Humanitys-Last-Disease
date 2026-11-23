@@ -27,6 +27,11 @@ with (
     from omegaconf import DictConfig
 
     from rfproteina.inference_utils.foldseek import chain_cif_dir
+    from rfproteina.inference_utils.metrics_tables import (
+        locked_metrics_directory,
+        read_metrics_csv,
+        write_metrics_tables,
+    )
     from rfproteina.metrics import MetricManager
     from rfproteina.metrics.utils.metrics_utils import (
         _write_chain_only_cif_if_unambiguous,
@@ -39,7 +44,7 @@ with (
     from rfproteina.utils.ddp import RankedLogger
     from rfproteina.utils.env import load_dotenv
     from rfproteina.utils.logging import print_config_tree
-    from rfproteina.utils.parse_presets import STANDARD_ANNOTATIONS_ONLY
+    from rfproteina.utils.parse_presets import evaluation_parse_config
     from rfproteina.utils.structure_files import (
         find_structure_file,
         iter_structure_files,
@@ -75,17 +80,24 @@ def run_evaluate(cfg: DictConfig) -> None:
         metrics_tags = None
 
     inputs_dir = Path(cfg.inputs)
-    structure_files = iter_structure_files(inputs_dir, include_pdb=True)
+    generation_samples = inputs_dir / "inference_samples"
+    if generation_samples.is_dir():
+        inputs_dir = generation_samples
+    role = "_generated" if inputs_dir.name == "inference_samples" else None
+    structure_files = iter_structure_files(inputs_dir, include_pdb=True, stem_suffix=role)
     if not structure_files:
         raise ValueError(f"No structure files found in {cfg.inputs}")
 
     task_csv_path = cfg.get("task_csv")
     filename_to_task: dict[str, str] = {}
     if task_csv_path is not None:
-        task_df = pd.read_csv(task_csv_path)
+        task_df = read_metrics_csv(task_csv_path)
         if "designed_structure_path" not in task_df.columns or "task" not in task_df.columns:
             raise ValueError(f"task_csv {task_csv_path} must have 'designed_structure_path' and 'task' columns")
-        filename_to_task = dict(zip(task_df["designed_structure_path"], task_df["task"], strict=False))
+        assignments = task_df[["designed_structure_path", "task"]].drop_duplicates()
+        if assignments.isna().any().any() or assignments["designed_structure_path"].duplicated().any():
+            raise ValueError("Each task_csv path must have one nonempty task label.")
+        filename_to_task = dict(assignments.itertuples(index=False, name=None))
         logger.info(f"Loaded task assignments for {len(filename_to_task)} files from {task_csv_path}")
     else:
         logger.warning("No task_csv provided; all structures will be assigned task='all'")
@@ -122,8 +134,9 @@ def run_evaluate(cfg: DictConfig) -> None:
     pass_mm = _mm("pass_criteria")
     pre_oracle_filter_mm = _mm("pre_oracle_filters")
 
-    dataset_name = inputs_dir.name
+    dataset_name = inputs_dir.parent.name if role else inputs_dir.name
     design_results: list[dict] = []
+    failed_inputs: list[dict] = []
     parsed_arrays: dict[str, tuple[Path, object]] = {}
 
     if design_mm is not None:
@@ -137,12 +150,6 @@ def run_evaluate(cfg: DictConfig) -> None:
         identity = rel.with_name(stem + ".cif")
         example_id = f"{stem}_{hash_sequence(str(identity), 8)}"
         task = filename_to_task.get(str(structure_file), "all")
-        try:
-            atom_array = parse(structure_file, config=STANDARD_ANNOTATIONS_ONLY)["assemblies"]["1"][0]
-        except Exception as e:
-            logger.warning(f"Failed to parse {structure_file}: {e}")
-            continue
-        parsed_arrays[example_id] = (structure_file, atom_array)
         result: dict = {
             "example_id": example_id,
             "dataset_name": dataset_name,
@@ -151,6 +158,18 @@ def run_evaluate(cfg: DictConfig) -> None:
             "output_base_dir": str(samples_dir),
             "metrics_tags": ",".join(metrics_tags or []),
         }
+        try:
+            atom_array = parse(structure_file, config=evaluation_parse_config(structure_file))["assemblies"]["1"][0]
+            if atom_array.array_length() == 0:
+                raise ValueError("The parsed assembly contains no atoms")
+        except Exception as e:
+            logger.warning(f"Failed to parse {structure_file}: {e}")
+            failed_inputs.append({**result, "evaluation_error": "structure_unreadable"})
+            continue
+        parsed_arrays[example_id] = (structure_file, atom_array)
+        coi, coi_unambiguous = get_chain_of_interest(atom_array)
+        if coi_unambiguous:
+            result["chain_of_interest"] = coi
         # Symlink the input structure into evaluation_samples/ so the output directory mirrors
         # inference_samples/ and is self-contained.  Using the original filename avoids a
         # double _generated suffix when processing inference outputs.
@@ -176,11 +195,10 @@ def run_evaluate(cfg: DictConfig) -> None:
             try:
                 input_path = _find_input_structure(structure_file)
                 ground_truth_aa = (
-                    parse(input_path, config=STANDARD_ANNOTATIONS_ONLY)["assemblies"]["1"][0]
+                    parse(input_path, config=evaluation_parse_config(input_path))["assemblies"]["1"][0]
                     if input_path is not None
                     else None
                 )
-                coi, coi_unambiguous = get_chain_of_interest(atom_array)
                 result |= design_mm(
                     network_input=None,
                     network_output=None,
@@ -248,19 +266,29 @@ def run_evaluate(cfg: DictConfig) -> None:
     # downstream, so keep those rows and let the merge below fold them into the refolding rows.
     cleaned_design = [c for m in design_results if (c := _clean_metrics_dict(m, keep_metadata_only=True)) is not None]
     cleaned_refold = [c for m in refolding_results if (c := _clean_metrics_dict(m)) is not None]
-    if cleaned_design or cleaned_refold:
+    if cleaned_design or cleaned_refold or failed_inputs:
         by_id: dict = {}
-        for m in cleaned_design + cleaned_refold:
+        for m in cleaned_design + cleaned_refold + failed_inputs:
             if eid := m.get("example_id"):
-                by_id.setdefault(eid, {}).update(m)
+                row = by_id.setdefault(eid, {})
+                previous_chain = row.get("chain_of_interest")
+                current_chain = m.get("chain_of_interest")
+                row.update(m)
+                if previous_chain and current_chain and previous_chain != current_chain:
+                    row["chain_of_interest"] = None
+                elif previous_chain and not current_chain:
+                    row["chain_of_interest"] = previous_chain
         if pass_mm is not None:
             for row in by_id.values():
-                if row.get("pre_oracle_pass") == 0:
-                    for name, metric in pass_mm.metrics.items():
-                        if metric.applies_to_tags(set(metrics_tags or [])):
-                            row[f"{name}.pass"] = row[f"{name}.all_metrics_present"] = 0.0
-        combined = pd.DataFrame(list(by_id.values())).round(4)
-        combined.to_csv(metrics_dir / f"per_example_metrics{job_suffix}.csv", index=False)
+                for name, metric in pass_mm.metrics.items():
+                    if metric.applies_to_tags(set(metrics_tags or [])) and f"{name}.pass" not in row:
+                        row[f"{name}.pass"] = row[f"{name}.all_metrics_present"] = 0.0
+        combined = pd.DataFrame(list(by_id.values()))
+        with locked_metrics_directory(metrics_dir):
+            write_metrics_tables(
+                metrics_dir, {f"per_example_metrics{job_suffix}.csv": combined},
+                archive_replaced="individual_job_results" if job_suffix else None,
+            )
 
 
 @hydra.main(version_base="1.3", config_path=_config_path, config_name="evaluate")

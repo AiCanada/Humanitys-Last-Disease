@@ -27,6 +27,7 @@ is downloaded. The binary is ``MMSEQS``, then ``DATA_PATH/mmseqs/mmseqs``, then
 
 from __future__ import annotations
 
+import math
 import os
 import shutil
 from dataclasses import dataclass
@@ -38,7 +39,9 @@ from rfproteina.disease.screening_tools import (
     HIT,
     UNTESTED,
     ScreeningInputError,
+    alignment_output,
     axis_record,
+    read_alignment_output,
     run_tool,
     tool_code_path,
     write_fasta,
@@ -182,12 +185,13 @@ def build_search_command(
     ]
 
 
-def parse_search_table(text: str, columns: tuple[str, ...] = SEARCH_COLUMNS) -> dict[str, list[OffTargetHit]]:
+def parse_search_table(
+    text: str, columns: tuple[str, ...] = SEARCH_COLUMNS, *, strict: bool = False
+) -> dict[str, list[OffTargetHit]]:
     """All hits per query from an MMseqs2 tab-separated table.
 
-    A row whose numeric fields do not parse is skipped rather than read as a
-    zero. Hits are kept per query so the caller can exclude the on-target before
-    choosing the worst off-target.
+    Best-effort readers skip invalid rows. Production searches require a complete,
+    valid result table.
     """
     index = {name: position for position, name in enumerate(columns)}
     hits: dict[str, list[OffTargetHit]] = {}
@@ -196,21 +200,30 @@ def parse_search_table(text: str, columns: tuple[str, ...] = SEARCH_COLUMNS) -> 
         if not line:
             continue
         fields = line.split("\t")
-        if len(fields) < len(columns):
-            continue
-        query = fields[index["query"]]
         try:
+            if len(fields) != len(columns):
+                raise ValueError("unexpected column count")
+            query = fields[index["query"]].strip()
+            length = float(fields[index["alnlen"]])
+            if not length.is_integer() or length <= 0:
+                raise ValueError("invalid alignment length")
             hit = OffTargetHit(
                 query=query,
-                target=fields[index["target"]],
+                target=fields[index["target"]].strip(),
                 fident=float(fields[index["fident"]]),
-                alnlen=int(float(fields[index["alnlen"]])),
+                alnlen=int(length),
                 qcov=float(fields[index["qcov"]]),
                 tcov=float(fields[index["tcov"]]),
                 evalue=float(fields[index["evalue"]]),
                 bits=float(fields[index["bits"]]),
             )
-        except (KeyError, ValueError):
+            if not query or not hit.target or not all(0 <= v <= 1 for v in (hit.fident, hit.qcov, hit.tcov)):
+                raise ValueError("invalid identifier or alignment fraction")
+            if not math.isfinite(hit.bits) or not math.isfinite(hit.evalue) or hit.evalue < 0:
+                raise ValueError("invalid alignment statistic")
+        except (KeyError, ValueError) as error:
+            if strict:
+                raise ScreeningInputError("mmseqs_result_invalid") from error
             continue
         hits.setdefault(query, []).append(hit)
     return hits
@@ -317,14 +330,16 @@ def offtarget_scan(
     result_out = work_dir / "offtarget.m8"
     tmp_dir = work_dir / "tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    command = build_search_command(
-        query_fasta, Path(proteome_fasta), result_out, tmp_dir, mmseqs=resolved, evalue_max=evalue_max
-    )
-    result = run_tool(command, timeout_s=timeout_s)
-    if not result.ok:
-        raise OffTargetUnavailableError(result.blocker or "mmseqs_failed")
-    text = result_out.read_text(encoding="utf-8") if result_out.is_file() else result.stdout
-    hits = parse_search_table(text)
+    with alignment_output(result_out) as fresh:
+        command = build_search_command(
+            query_fasta, Path(proteome_fasta), fresh, tmp_dir, mmseqs=resolved, evalue_max=evalue_max
+        )
+        result = run_tool(command, timeout_s=timeout_s)
+        if not result.ok:
+            raise OffTargetUnavailableError(result.blocker or "mmseqs_failed")
+        hits = parse_search_table(read_alignment_output(fresh), strict=True)
+        if hits.keys() - {design_id for design_id, _ in usable}:
+            raise ScreeningInputError("mmseqs_unexpected_query")
     records: dict[str, dict[str, object]] = {}
     for design_id, _seq in usable:
         records[design_id] = verdict(

@@ -111,9 +111,16 @@ _VERDICT_FIELDS = (
     "chain_blocker",
     "refold",
     "solubility",
+    "protein_sol",
     "design_diversity",
     "designed_interface_quality",
+    "prodigy_affinity",
+    "vina_pose",
+    "tnp_profile",
     "ligand_alerts",
+    "ligand_solubility",
+    "qupkake",
+    "sygma",
     "mhc_class_i",
     "synthesis",
     # The last three were excluded by name and the reasons did not survive review.
@@ -154,6 +161,9 @@ _VERDICT_FIELDS = (
 _HELD_BACK: dict[str, frozenset[str]] = {
     "synthesis": frozenset({"repeat_sequence"}),
     "ligand_alerts": frozenset({"smiles"}),
+    "ligand_solubility": frozenset({"structures"}),
+    "qupkake": frozenset({"structures"}),
+    "sygma": frozenset({"structures"}),
     "mhc_class_i": frozenset({"reference"}),
 }
 #: The two blocks that carry a nested ``provenance`` record, keyed by the thing
@@ -308,6 +318,8 @@ _AXIS_FIELDS = (
     "not_nm_columns",
     "presented_complete",
     "fold_source",
+    "fold_column",
+    "linear_fold_magnitude",
     "reference_rank_scale_ambiguous",
     "reference_proteins_too_short",
     "method",
@@ -345,6 +357,7 @@ _AXIS_FIELDS = (
     "unparsed_columns",
     "calis_mask_allele_specific",
     "compara_examined",
+    "compara_scored",
     "compara_blocker",
     "alleles",
     "peptides_scored",
@@ -361,6 +374,7 @@ _AXIS_FIELDS = (
     "coevolution_level",
     "coevolution_rows",
     "other_species_toxicity",
+    "human_toxicity_state",
     "coevolution_blocker",
 )
 #: The groups of a screen that hold one record per axis. ``chemical_liability``
@@ -674,13 +688,8 @@ def _printed_json(lines: list[str]) -> dict[str, object] | None:
     record got its fragments instead. It is printed as JSON precisely because
     the sequel to that command is usually another command.
 
-    ``lines`` are the raw lines, not the ones returned in ``messages``. Those
-    have each been through the free-text scrubber, and reassembling a document
-    from them handed back something that parsed and was not what was printed:
-    ``scrub_for_upload`` replaces a home segment wherever it sits, so a run at
-    ``/data/home/ann/runs/x`` came back as ``/data<home>/runs/x`` -- not a path
-    that exists, and the same string for another person's identical run, which
-    is the very fault ``scrub_path_prefix`` was written to fix. The
+    Parse the original lines before redacting individual record fields. The
+    free-text scrubber can otherwise collapse distinct paths. The
     nine-residue rule did the same to an example id: ``KALLIKREIN_A_0`` became
     ``[sequence omitted]_A_0``. The document is parsed first and redacted as a
     record by :func:`_refold_record`, where a path can be scrubbed as a path.
@@ -1069,6 +1078,60 @@ def _without_held_back(payload: Mapping[str, object]) -> dict[str, object]:
     return record
 
 
+def _affinity_view(report: Mapping[str, object]) -> dict[str, object]:
+    """Put input-supplied sample and chain names in values handled by the text scrubber."""
+    samples = report.get("samples")
+    if not isinstance(samples, Mapping):
+        return dict(report)
+    rows = []
+    for name, sample in samples.items():
+        row = dict(sample) if isinstance(sample, Mapping) else {"malformed": True}
+        counts = row.get("residues_by_chain")
+        if isinstance(counts, Mapping):
+            row["residues_by_chain"] = [{"chain": chain, "residues": count} for chain, count in counts.items()]
+        rows.append({**row, "example_id": name})
+    return {**report, "samples": rows}
+
+
+def _sygma_view(block: Mapping) -> dict:
+    """Retain sequence-like InChIKeys only when the local structure verifies them."""
+    from rfproteina.disease.sygma_engine import structure_id
+
+    view = dict(block)
+    structures, parents = block.get("structures"), block.get("parents")
+    if not isinstance(structures, Mapping) or not isinstance(parents, list):
+        return view
+    try:
+        from rdkit import Chem
+    except (ImportError, OSError):
+        return view
+
+    def product_view(product: object) -> object:
+        if not isinstance(product, Mapping):
+            return product
+        key, identifier = product.get("inchikey"), product.get("product_id")
+        if not isinstance(key, str) or len(key) != 27 or not _SEQUENCE.search(key) or not isinstance(identifier, str):
+            return product
+        smiles = structures.get(identifier)
+        if not isinstance(smiles, str) or not smiles.isascii() or structure_id(smiles) != identifier:
+            return product
+        try:
+            mol = Chem.MolFromSmiles(smiles)
+            if mol is not None and Chem.MolToInchiKey(mol) == key:
+                return {**product, "inchikey": _Prose(key)}
+        except (ValueError, RuntimeError, OverflowError):
+            pass
+        return product
+
+    view["parents"] = [
+        {**p, "products": [product_view(row) for row in p["products"]]}
+        if isinstance(p, Mapping) and isinstance(p.get("products"), list)
+        else p
+        for p in parents
+    ]
+    return view
+
+
 def _verdict(payload: Mapping[str, object], *, include_record: bool) -> dict[str, object]:
     """The decision fields. The full record is included only when asked for.
 
@@ -1078,6 +1141,12 @@ def _verdict(payload: Mapping[str, object], *, include_record: bool) -> dict[str
     result its own schema rejects, and a client that validates would then
     discard every run in the answer over one field of one of them.
     """
+    affinity = payload.get("prodigy_affinity")
+    if isinstance(affinity, Mapping):
+        payload = {**payload, "prodigy_affinity": _affinity_view(affinity)}
+    metabolites = payload.get("sygma")
+    if isinstance(metabolites, Mapping):
+        payload = {**payload, "sygma": _sygma_view(metabolites)}
     view: dict[str, object] = {}
     malformed: list[str] = []
     for name in _VERDICT_FIELDS:
@@ -1283,6 +1352,12 @@ def _is_object(value: object) -> bool:
     return isinstance(value, Mapping)
 
 
+def _is_optional_number(value: object) -> bool:
+    if value is None or type(value) is int:
+        return True
+    return isinstance(value, float) and math.isfinite(value)
+
+
 #: The type the tool's schema declares for a verdict field. A field that is not
 #: listed has no declared type and is returned as stored.
 def _is_flag(value: object) -> bool:
@@ -1335,6 +1410,8 @@ _AXIS_TYPES: dict[str, Callable[[object], bool]] = {
     "threshold_source": _is_text,
     "units": _is_text,
     "fold_source": _is_text,
+    "fold_column": _is_text,
+    "linear_fold_magnitude": _is_optional_number,
     "method": _is_text,
     "presentation": _is_text,
     "displaced_method": _is_text,
@@ -1355,6 +1432,7 @@ _AXIS_TYPES: dict[str, Callable[[object], bool]] = {
     "seeds_searched": _is_count,
     "n_readings": _is_count,
     "compara_examined": _is_count,
+    "compara_scored": _is_count,
     "presented_complete": _is_flag,
     "reference_rank_scale_ambiguous": _is_flag,
     "reference_method_undeclared": _is_flag,
@@ -1380,6 +1458,7 @@ _AXIS_TYPES: dict[str, Callable[[object], bool]] = {
     "coevolution_signal": _is_text,
     "coevolution_level": _is_text,
     "other_species_toxicity": _is_text,
+    "human_toxicity_state": _is_text,
     "coevolution_blocker": _is_text,
 }
 #: ``bar_axes`` and ``metrics_file`` are deliberately absent: the first is a
@@ -1400,7 +1479,14 @@ _VERDICT_TYPES: dict[str, Callable[[object], bool]] = {
     "solubility": _is_object,
     "design_diversity": _is_object,
     "designed_interface_quality": _is_object,
+    "prodigy_affinity": _is_object,
+    "vina_pose": _is_object,
+    "tnp_profile": _is_object,
     "ligand_alerts": _is_object,
+    "ligand_solubility": _is_object,
+    "qupkake": _is_object,
+    "sygma": _is_object,
+    "protein_sol": _is_object,
     "mhc_class_i": _is_object,
     "synthesis": _is_object,
     "inputs": _is_records,
@@ -1526,10 +1612,8 @@ def _inside(path: Path, roots: tuple[Path, ...]) -> bool:
 def _shown(path: Path) -> str:
     """A checkout-relative path when the file lives here, otherwise the path as it is.
 
-    Only a personal prefix at its start is replaced. The whole path used to go
-    through the free-text scrubber, which removes a ``/home/<name>`` segment
-    wherever it sits, so two different run directories could be returned as
-    one string that named neither.
+    Scrub a machine-specific prefix only at the start of the path. Interior
+    directory names distinguish runs inside a shared filesystem.
     """
     from rfproteina.disease.publish import repository_relative, scrub_path_prefix
 

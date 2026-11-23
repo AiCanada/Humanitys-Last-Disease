@@ -44,7 +44,7 @@ def design_diversity(pairs: Sequence[tuple[str, str | None]]) -> dict[str, objec
 
     ``pairs`` is each design's example id and its designed sequence, the shape
     ``_designed_sequences`` returns. A design whose chain could not be read is
-    left out of every count. Fewer than two readable sequences returns None:
+    counted as unreadable and excluded from sequence comparisons. Fewer than two readable sequences returns None:
     one design has nothing to differ from, and a record saying so would read as
     a measurement.
     """
@@ -57,6 +57,8 @@ def design_diversity(pairs: Sequence[tuple[str, str | None]]) -> dict[str, objec
         "designs": len(sequences),
         "distinct": len(set(sequences)),
     }
+    if len(pairs) != len(sequences):
+        record["unreadable_designs"] = len(pairs) - len(sequences)
     if len(sequences) > DIVERSITY_DESIGN_LIMIT:
         record["pairwise"] = "not_performed"
         record["limit"] = DIVERSITY_DESIGN_LIMIT
@@ -93,6 +95,8 @@ def diversity_phrase(record: Mapping[str, object]) -> str | None:
     if designs is None or distinct is None:
         return None
     parts = [f"designs {designs}, distinct {distinct}"]
+    if unreadable := _count(record, "unreadable_designs"):
+        parts.append(f"unreadable designs {unreadable}")
     groups = _count(record, "groups")
     if groups is not None:
         parts.append(f"groups {groups} at identity {_number(record.get('threshold'))}")

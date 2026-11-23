@@ -72,10 +72,11 @@ def test_a_binder_trace_records_the_run_and_leaves_out_a_sequence(tmp_path: Path
     (sample / "binder_0_generated.cif").write_text("data_binder\n#\n", encoding="utf-8")
     metrics = output / "inference_metrics"
     metrics.mkdir()
+    synthetic_home = "/" + "/".join(("home", tmp_path.name))
     secret = "sk-" + "a" * 24
     (metrics / "per_example_metrics.csv").write_text(
         "example_id,ckpt_name,ckpt_path,seed,oracle_ppi.plddt_coi,generation.n_recycle,generation.args.nsteps\n"
-        f"binder_0,release.ckpt,/home/someone/models/{secret},7,81.5,3,60\n",
+        f"binder_0,release.ckpt,{synthetic_home}/models/{secret},7,81.5,3,60\n",
         encoding="utf-8",
     )
     (output.parent / "protein_1ABC_1.yaml").write_text(
@@ -133,7 +134,7 @@ def test_a_binder_trace_records_the_run_and_leaves_out_a_sequence(tmp_path: Path
     assert "sequence" not in _keys(record)
     assert PEPTIDE not in text
     assert secret not in text
-    assert "/home/someone" not in text
+    assert synthetic_home not in text
     assert "DATA_PATH" not in text
     assert "${oc.env" not in text
     assert "[redacted]" in text
@@ -255,11 +256,12 @@ def test_a_modified_checkpoint_does_not_claim_the_release_pin(tmp_path: Path) ->
     folder.mkdir(parents=True)
     (folder / "binder_0_generated.cif").write_text("data_binder\n#\n", encoding="utf-8")
     config = _config(tmp_path / "inference.yaml")
+    synthetic_home = "/" + "/".join(("home", tmp_path.name))
     argv = [
         "rfd4-generate",
         "inference_experiment=disease_binder",
         "hf_ckpt_path=null",
-        "ckpt_path=/home/someone/models",
+        f"ckpt_path={synthetic_home}/models",
         "ckpt_name=disease.ckpt",
         f"out_dir={output}",
     ]
@@ -283,7 +285,7 @@ def test_a_modified_checkpoint_does_not_claim_the_release_pin(tmp_path: Path) ->
     assert command["checkpoint_path"].startswith("<home>/")
     assert "abcdef" not in text
     assert "release.ckpt" not in text
-    assert "/home/someone" not in text
+    assert synthetic_home not in text
 
 
 def test_the_original_command_uses_the_inference_config_pin(tmp_path: Path) -> None:
@@ -376,6 +378,24 @@ def test_each_binder_gets_its_own_trace(tmp_path: Path) -> None:
     assert by_name["binder_1.json"]["screening"]["sample"]["contact_ms"] is None
     assert by_name["binder_0.json"]["experimental_validation"]["status"] == NOT_PERFORMED
     assert by_name["binder_1.json"]["experimental_validation"]["status"] == NOT_PERFORMED
+
+
+def test_a_shared_row_cannot_supply_flags_or_confidence_to_two_traces(tmp_path):
+    for group in ("first", "second"):
+        path = tmp_path / "inference_samples" / group / "binder_0_generated.cif"
+        path.parent.mkdir(parents=True)
+        path.write_text("data_fixture\n#\n")
+    table = tmp_path / "inference_metrics" / "per_example_metrics.csv"
+    table.parent.mkdir()
+    table.write_text("example_id,ppi.pass,pre_oracle_pass,oracle_ppi.plddt_coi\nbinder_0,1,1,90\n")
+    written = write_research_traces(tmp_path, disease_name="fixture", disease_id="fixture",
+                                    option=structure_option(), binder_kind="other", argv=[], screen={"samples": []})
+    assert len(written) == 2
+    for path in written:
+        trace = json.loads(path.read_text())
+        flags = trace["screening"]["sample"]
+        assert flags["pre_oracle_pass"] == flags["ppi_pass"] == NOT_RECORDED
+        assert trace["model_confidence"]["status"] == NOT_RECORDED
 
 
 def test_a_finished_generation_archives_the_trace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

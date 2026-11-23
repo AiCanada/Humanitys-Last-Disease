@@ -197,6 +197,15 @@ _AXIS_SCHEMA: dict[str, object] = {
                     "without one, so this is what the number rests on."
                 ),
             },
+            "fold_column": {"type": "string", "description": "Source column for the supplied fold measurement."},
+            "linear_fold_magnitude": {
+                "type": ["number", "null"],
+                "description": "Linear fold magnitude compared with the configured threshold.",
+            },
+            "human_toxicity_state": {
+                "type": "string",
+                "description": "Human evidence status for a cross-species note.",
+            },
             "reference_rank_scale_ambiguous": {
                 "type": "boolean",
                 "description": (
@@ -340,6 +349,9 @@ _AXIS_SCHEMA: dict[str, object] = {
                     "so the two were compared on the assumption that one method produced both."
                 ),
             },
+            "design_method": {"type": "string", "description": "Method recorded for the design results."},
+            "reference_method": {"type": "string", "description": "Method recorded for the reference results."},
+            "restricting_method": {"type": "string", "description": "Method recorded for the restricting evidence."},
             "proteome_kmers": {
                 "type": "integer",
                 "description": (
@@ -388,7 +400,11 @@ _AXIS_SCHEMA: dict[str, object] = {
             },
             "compara_examined": {
                 "type": "integer",
-                "description": "How many paralogs the ortholog database examined. A clear here rests on this count.",
+                "description": "Number of homology records returned by Ensembl Compara.",
+            },
+            "compara_scored": {
+                "type": "integer",
+                "description": "Number of those records with a usable percent identity.",
             },
             "compara_blocker": {
                 "type": "string",
@@ -666,6 +682,26 @@ _VERDICT_SCHEMA: dict[str, object] = {
                 "clears no axis."
             ),
         },
+        "protein_sol": {
+            "type": "object",
+            "description": "Native Protein-Sol scaled solubility predictions and coverage blockers for each sample.",
+        },
+        "tnp_profile": {
+            "type": "object",
+            "description": "TNP developability descriptors, clinical reference flags, and per-design coverage.",
+        },
+        "vina_pose": {
+            "type": "object",
+            "description": "Per-design fixed-pose Vina scores in kcal/mol, checked input identities and blockers.",
+        },
+        "prodigy_affinity": {
+            "type": "object",
+            "description": (
+                "Post-generation PRODIGY protein-pair estimates. Each sample row carries its example_id, "
+                "method, predicted free energy in kcal/mol and derived Kd in mol/L, or a named blocker. "
+                "The report gives the number of predictions and all attempted structures."
+            ),
+        },
         "design_diversity": {
             "type": "object",
             "description": (
@@ -695,6 +731,30 @@ _VERDICT_SCHEMA: dict[str, object] = {
                 "ligand_alerts_blocker. Recorded, not judged: a catalogue hit is a flag for review, "
                 "and the states under verdicts are this report's own, not axis states, and are not "
                 "counted in hits. The SMILES itself stays in screen.json."
+            ),
+        },
+        "sygma": {
+            "type": "object",
+            "description": (
+                "Possible human metabolites ranked separately for each nominated parent. Each product carries its "
+                "InChIKey, score, pathway and unresolved stereochemistry count. The local screen.json contains "
+                "the parent, intermediate and product structures as isomeric SMILES."
+            ),
+        },
+        "qupkake": {
+            "type": "object",
+            "description": (
+                "QupKake site-specific aqueous microscopic pKa. Each measurement identifies its direction, "
+                "mapped heavy atom, and conjugate acid/base state IDs. Includes per-nomination coverage and blockers. "
+                "The atom-mapped structures are available in local screen.json."
+            ),
+        },
+        "ligand_solubility": {
+            "type": "object",
+            "description": (
+                "ADMET-AI AqSolDB aqueous log10 molar solubility for each distinct nominated compound. "
+                "Includes signed predictions, coverage, blockers and corpus provenance. "
+                "Compound structures stay in the local screen file."
             ),
         },
         "mhc_class_i": {

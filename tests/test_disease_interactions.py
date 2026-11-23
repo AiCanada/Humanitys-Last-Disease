@@ -100,6 +100,16 @@ def test_native_fingerprint_refuses_mol_without_conformer(tmp_path):
         ix.native_fingerprint(protein, flat)
 
 
+def test_native_fingerprint_rejects_invalid_coordinates_and_excludes_cofactors(tmp_path):
+    protein = _write_pdb(tmp_path / "cofactor.pdb", [
+        ("CA", "ALA", "A", 1, 100, 0, 0, "C"), ("C1", "LIG", "L", 1, 0, 0, 0, "C")])
+    mol = _mol_at("CC", (0, 0, 0))
+    assert sum(ix.native_fingerprint(protein, mol).counts.values()) == 0
+    mol.GetConformer().SetAtomPosition(0, (float("nan"), 0, 0))
+    with pytest.raises(ix.StructureUnreadableError, match="nonfinite"):
+        ix.native_fingerprint(protein, mol)
+
+
 def test_native_verdicts_are_all_no_cut(tmp_path):
     protein = _protein(tmp_path)
     mol = _mol_at("c1ccccc1", (0.0, 0.0, 4.0))
@@ -147,6 +157,24 @@ def test_comparison_verdicts_gate_only_when_bar_supplied(tmp_path):
     assert ix.comparison_verdicts(comp)["fnat"]["state"] == "no_cut"
     assert ix.comparison_verdicts(comp, fnat_min=0.5)["fnat"]["state"] == "clear"
     assert ix.comparison_verdicts(comp, fnat_min=1.5)["fnat"]["state"] == "hit"
+
+
+def test_fnat_distinguishes_insertions_and_has_no_fraction_with_zero_model_contacts(tmp_path):
+    ref = _write_pdb(tmp_path / "ref.pdb", [
+        ("CA", "ALA", "A", 1, 0, 0, 0, "C"), ("CA", "ALA", "A", 1, 0, 1, 0, "C"),
+        ("CA", "ALA", "B", 2, 3, 0, 0, "C")])
+    lines = ref.read_text().splitlines()
+    lines[1] = lines[1][:26] + "A" + lines[1][27:]
+    ref.write_text("\n".join(lines) + "\n")
+    model = tmp_path / "model.pdb"
+    model.write_text(ref.read_text().replace("ALA", "GLY"))
+    same = ix.compare_to_reference(model, ref, "A", "B")
+    assert same.recovered_contacts == same.native_contacts == 2 and same.fnat == 1
+    model.write_text(model.read_text().replace("   3.000", "  93.000"))
+    absent = ix.compare_to_reference(model, ref, "A", "B")
+    assert absent.fnat == 0 and absent.fnonnat is None
+    with pytest.raises(ix.StructureUnreadableError, match="distinct_chains"):
+        ix.compare_to_reference(model, ref, "A", "A")
 
 
 def _no_dockq(monkeypatch, tmp_path):
@@ -248,6 +276,33 @@ def test_verdicts_report_the_band_and_gate_only_on_a_caller_bar():
     assert ix.dockq_verdicts(record, dockq_min=0.5)["dockq"]["state"] == "clear"
     assert ix.dockq_verdicts(record, dockq_min=0.7)["dockq"]["state"] == "hit"
     assert ix.dockq_verdicts(record, dockq_min=0.7)["dockq"]["threshold_source"].startswith("caller_supplied")
+
+
+@pytest.mark.parametrize("status,score", [(0, 0.4899999), (0, float("nan")), (0, 1.01), (2, 0.8)])
+def test_dockq_requires_successful_process_and_valid_unrounded_score(tmp_path, monkeypatch, status, score):
+    import json
+    import subprocess
+    from pathlib import Path
+
+    model = tmp_path / "model.pdb"
+    model.touch()
+    monkeypatch.setattr(ix, "dockq_command", lambda: "DockQ")
+    monkeypatch.setattr(ix, "dockq_version", lambda _: "fixture")
+
+    def run(argv, **kwargs):
+        report = {"GlobalDockQ": score, "best_dockq": score, "best_result": {"AB": {"DockQ": score}},
+                  "best_mapping_str": "AB:AB"}
+        Path(argv[argv.index("--json") + 1]).write_text(json.dumps(report))
+        return subprocess.CompletedProcess(argv, status, "", "")
+
+    monkeypatch.setattr(ix.subprocess, "run", run)
+    if status or not 0 <= score <= 1:
+        with pytest.raises(ix.DockQFailedError):
+            ix.dockq(model, model)
+    else:
+        result = ix.dockq(model, model)
+        assert ix.dockq_verdicts(result, 0.49)["dockq"]["state"] == "hit"
+    assert ix.dockq_verdicts({"global_dockq": None}, 0.49)["dockq"]["state"] == "untested"
 
 
 # --------------------------------------------------------------- DockQ, really run
@@ -457,3 +512,35 @@ def test_the_prolif_entry_point_rejects_sdf_plainly(tmp_path):
     assert not isinstance(
         caught.value, ix.ProLIFUnavailableError
     ), "an unreadable ligand must not be reported as a missing ProLIF"
+
+
+def test_prolif_cli_accepts_one_rdkit_pose_and_honours_the_engine(tmp_path, capsys):
+    import json
+
+    from scripts.screen_pose_safety import main
+
+    pytest.importorskip("prolif")
+    protein, ligand = _stacked_over_phe(tmp_path)
+    mol = Chem.MolFromPDBFile(str(ligand), removeHs=False)
+    sdf = tmp_path / "pose.sdf"
+    Chem.MolToMolFile(mol, str(sdf))
+    assert main(["ifp", str(protein), str(sdf), "--engine", "prolif"]) == 0
+    record = json.loads(capsys.readouterr().out)["measured"]
+    assert record["method"] == ix.METHOD_PROLIF and record["counts"]["pi_stacking"] == 1
+    assert ix.fingerprint(protein, mol, prefer_prolif=True).engine == "prolif"
+
+
+def test_prolif_retains_directional_interactions_and_rejects_missing_results(tmp_path, monkeypatch):
+    import pandas as pd
+
+    prolif = pytest.importorskip("prolif")
+    protein, ligand = _stacked_over_phe(tmp_path)
+    names = ("Anionic", "Cationic", "XBAcceptor", "XBDonor")
+    frame = pd.DataFrame([[True, False, True, True]],
+                         columns=pd.MultiIndex.from_tuples([("lig", "res", name) for name in names]))
+    monkeypatch.setattr(prolif.Fingerprint, "to_dataframe", lambda _: frame)
+    counts = ix.prolif_fingerprint(protein, ligand).counts
+    assert counts["salt_bridge"] == 1 and counts["halogen"] == 2
+    monkeypatch.setattr(prolif.Fingerprint, "to_dataframe", lambda _: frame.iloc[:0])
+    with pytest.raises(ix.StructureUnreadableError, match="missing_pose_result"):
+        ix.prolif_fingerprint(protein, ligand)

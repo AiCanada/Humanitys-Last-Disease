@@ -1,56 +1,23 @@
-"""Late-stage physics rescoring of a binder-target complex.
+"""Implicit-solvent potential energies for a supplied complex and its components.
 
-Two tiers, both free and open:
+:func:`rescore_complex` reports three single-structure potential energies in
+kcal/mol. The historical field ``dg_bind`` holds their arithmetic difference,
+``E(complex) - E(receptor) - E(ligand)``. The built-in OpenMM backend uses
+PDBFixer to place missing atoms and hydrogens independently in each structure.
+Repeats on the same coordinates changed the sign of this difference. The
+reader preserves the energies as diagnostics and withholds an affinity verdict.
 
-1. :func:`rescore_complex` -- a single-structure MM-GBSA-style binding free
-   energy estimate using OpenMM (MIT for the API, Reference and CPU platforms,
-   verified from OpenMM's own ``docs-source/licenses/Licenses.txt`` on
-   2026-11-16) with an implicit (Generalized Born) solvent.
-
-   **This tier is not yet reproducible, and must not be used to rank designs
-   as it stands.** Each of the three subsystems is written out and rebuilt
-   independently inside :func:`_openmm_implicit_energy`, where PDBFixer adds
-   missing atoms and hydrogens. That placement differs between runs, so the
-   same input gave a 124 kcal/mol range in ``dg_bind`` -- including a change of
-   sign -- over five draws on 2026-11-20, and one draw put the receptor 114
-   kcal/mol away from the others on an evidently bad rebuild. It also means the
-   decomposition is not closed: the complex is not the receptor plus the ligand
-   once each has been hydrogenated separately.
-
-   The fix is structural and is deliberately not taken here, because it changes
-   every number the tier produces: rebuild **once** on the complex, then split
-   the rebuilt topology into receptor and ligand so all three energies come
-   from one set of coordinates and one set of added hydrogens. An earlier
-   version of this docstring called this "the working, tested tier"; its tests
-   injected ``energy_fn`` and never ran the back-end, which is how that claim
-   survived.
-
-2. :func:`plan_rbfe` -- a documented scaffold for a relative binding free energy
-   (RBFE / FEP) calculation built on OpenFE (MIT), pmx (LGPL-3.0) or alchemlyb
-   (BSD-3), all verified from their own LICENSE files on 2026-11-16. FEP needs an
-   explicit-solvent MD campaign that is out of this pass's compute budget, so the
-   scaffold names the pieces and refuses to fabricate a free energy.
-
-What MM-GBSA here is, and is not
---------------------------------
-The estimate is the classic single-trajectory decomposition::
-
-    dG_bind ~= E(complex) - E(receptor) - E(ligand)
-
-with each energy evaluated in implicit solvent on one structure (optionally
-energy-minimised first). It is **not** a converged MM-GBSA: it averages over no
-MD ensemble and includes no explicit configurational entropy term. It is a fast,
-reproducible rescoring signal to rank designs, not a calibrated affinity. Real
-MM-GBSA averages the decomposition over a trajectory; that is a documented
-follow-up, not this function. No absolute-affinity threshold is invented: more
-negative is stronger binding, and that is all the verdict claims.
+:func:`plan_rbfe` describes the inputs for a separate relative free-energy
+calculation. Its return value records a plan and backend availability.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
+from importlib import import_module
 from pathlib import Path
 
 METHOD = "mmgbsa_single_structure_v1"
@@ -66,18 +33,15 @@ DEFAULT_IMPLICIT_SOLVENT = "GBn2"
 #: Default protein force field passed through to OpenMM.
 DEFAULT_FORCEFIELD = "amber14-all.xml"
 
-#: A single-structure dG_bind at or below this (kcal/mol) is flagged as a
-#: favourable interaction. Suggested default pending calibration: a
-#: single-structure MM-GBSA number has no published pass mark and is only
-#: meaningful as a relative ranking across this program's own designs.
+#: Historical project cutoff for an externally supplied energy calculation.
+#: The built-in independently prepared energies have no applicable cutoff.
 FAVOURABLE_DG_BIND = -5.0
 
 RESCORING_BARS: dict[str, dict[str, object]] = {
     "dg_bind": {
         "max": FAVOURABLE_DG_BIND,
         "source": (
-            "suggested default pending calibration; single-structure MM-GBSA has no absolute "
-            "pass mark and is only a relative ranking signal"
+            "suggested default pending calibration for an external energy calculation"
         ),
     },
 }
@@ -89,7 +53,7 @@ class OpenMMUnavailableError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class MMGBSAResult:
-    """One single-structure MM-GBSA-style binding estimate."""
+    """Three single-structure potential energies and their arithmetic difference."""
 
     e_complex: float
     e_receptor: float
@@ -100,6 +64,7 @@ class MMGBSAResult:
     forcefield: str
     minimized: bool
     notes: tuple[str, ...]
+    preparation: str | None = None
 
     def as_record(self) -> dict[str, object]:
         return asdict(self)
@@ -110,9 +75,24 @@ def openmm_available() -> bool:
     return importlib.util.find_spec("openmm") is not None
 
 
+_FEP_APIS = {
+    "openfe": ("openfe", "Transformation"),
+    "pmx": ("pmx.model", "Model"),
+    "alchemlyb": ("alchemlyb.estimators", "MBAR"),
+}
+
+
+def _fep_importable(name: str) -> bool:
+    module, symbol = _FEP_APIS[name]
+    try:
+        return callable(getattr(import_module(module), symbol, None))
+    except (ImportError, OSError):
+        return False
+
+
 def fep_backends_available() -> dict[str, bool]:
-    """Which free-energy back-ends are importable: ``openfe``, ``pmx``, ``alchemlyb``."""
-    return {name: importlib.util.find_spec(name) is not None for name in ("openfe", "pmx", "alchemlyb")}
+    """Check the scientific Python API of each optional free-energy package."""
+    return {name: _fep_importable(name) for name in _FEP_APIS}
 
 
 # Energy function signature: (pdb_path, implicit_solvent, forcefield, minimize) -> energy in kcal/mol.
@@ -129,7 +109,7 @@ def rescore_complex(
     forcefield: str = DEFAULT_FORCEFIELD,
     energy_fn: EnergyFn | None = None,
 ) -> MMGBSAResult:
-    """Estimate dG_bind for a complex split into receptor and ligand chains.
+    """Report potential energies for a complex split into receptor and ligand chains.
 
     Args:
         structure: A PDB/mmCIF holding the full complex.
@@ -180,25 +160,23 @@ def rescore_complex(
         e_ligand = float(compute(ligand_pdb, implicit_solvent, forcefield, minimize))
 
     dg_bind = e_complex - e_receptor - e_ligand
+    if not all(math.isfinite(value) for value in (e_complex, e_receptor, e_ligand, dg_bind)):
+        raise ValueError("nonfinite_subsystem_energy")
     return MMGBSAResult(
-        e_complex=round(e_complex, 4),
-        e_receptor=round(e_receptor, 4),
-        e_ligand=round(e_ligand, 4),
-        dg_bind=round(dg_bind, 4),
+        e_complex=e_complex,
+        e_receptor=e_receptor,
+        e_ligand=e_ligand,
+        dg_bind=dg_bind,
         units=ENERGY_UNITS,
         implicit_solvent=implicit_solvent,
         forcefield=forcefield,
         minimized=minimize,
+        preparation="independent_subsystems" if energy_fn is None else "external_energy_function",
         notes=(
-            "single-structure MM-GBSA-style estimate; not averaged over an MD ensemble",
-            "no explicit configurational entropy term is included",
-            "NOT REPRODUCIBLE: one draw, not a measurement. The three subsystems are each "
-            "rebuilt independently by PDBFixer, whose hydrogen and missing-atom placement "
-            "differs run to run, so repeating this call on the same file moved dg_bind over a "
-            "124 kcal/mol range and changed its sign (measured 2026-11-20, five draws on one "
-            "two-chain input). Do not rank designs on a single draw.",
-            "the subtraction is not closed: the complex's atoms are not the receptor's plus the "
-            "ligand's, because each was hydrogenated separately",
+            "Single-structure potential energy difference in kcal/mol.",
+            "The built-in calculation prepares each subsystem independently with PDBFixer. "
+            "Repeated preparations changed the sign of the difference."
+            if energy_fn is None else "The caller supplied the energy calculation.",
         ),
     )
 
@@ -289,54 +267,52 @@ def plan_rbfe(
     *,
     backend: str = "openfe",
 ) -> dict[str, object]:
-    """Describe (do not run) a relative binding free energy calculation.
-
-    FEP/RBFE needs an explicit-solvent, lambda-windowed MD campaign and MBAR
-    analysis, which is out of this pass's compute budget. Rather than fabricate a
-    dG, this returns the concrete plan and the free, licence-cleared back-end to
-    run it with, and reports whether that back-end is importable.
-
-    Args:
-        ligand_a: Identifier of the reference ligand in the perturbation.
-        ligand_b: Identifier of the ligand being compared to it.
-        backend: One of ``openfe`` (MIT), ``pmx`` (LGPL-3.0) or ``alchemlyb`` (BSD-3).
-
-    Raises:
-        ValueError: If ``backend`` is not one of the three known back-ends.
-    """
+    """Describe a backend's role and report whether its scientific Python API imports."""
     known = {
-        "openfe": "OpenFE (MIT): RelativeHybridTopologyProtocol over an OpenMM MD campaign",
-        "pmx": "pmx (LGPL-3.0): hybrid-topology non-equilibrium RBFE with GROMACS",
-        "alchemlyb": "alchemlyb (BSD-3): MBAR/BAR estimation over dHdl/u_nk from an existing MD campaign",
+        "openfe": ("OpenFreeEnergy relative hybrid topology", [
+            "equilibrium free-energy estimates for the complex and solvent legs",
+            "combine completed estimates and report repeat uncertainty",
+        ]),
+        "pmx": ("pmx nonequilibrium free-energy workflow", [
+            "forward and reverse work distributions for each leg",
+            "estimate both leg free energies from work and compare them",
+        ]),
+        "alchemlyb": ("alchemlyb analysis of previously collected samples", [
+            "match the recorded data to the estimator",
+            "analyse reduced potentials with MBAR or BAR, or energy derivatives with thermodynamic integration",
+        ]),
     }
     if backend not in known:
         raise ValueError(f"unknown FEP backend {backend!r}; expected one of {sorted(known)}")
+    if not ligand_a.strip() or not ligand_b.strip() or ligand_a == ligand_b:
+        raise ValueError("two distinct ligand names are required")
+    description, stages = known[backend]
+    analysis_commands = {"openfe": "rbfe", "pmx": "pmx-bar", "alchemlyb": "ti"}
     return {
         "method": "rbfe_scaffold_v1",
         "status": "scaffold_only",
         "edge": {"ligand_a": ligand_a, "ligand_b": ligand_b},
         "backend": backend,
-        "backend_plan": known[backend],
-        "backend_importable": fep_backends_available()[backend],
-        "stages": [
-            "atom-mapping between ligand_a and ligand_b",
-            "solvate and parameterise both legs (complex, solvent)",
-            "run lambda-windowed MD (out of this pass's compute budget)",
-            "estimate dG with MBAR via alchemlyb",
-        ],
-        "note": "no free energy is computed here; this is a plan, not a result",
+        "backend_plan": description,
+        "backend_importable": _fep_importable(backend),
+        "stages": stages,
+        "completed_analysis_command": f"scripts/screen_pose_safety.py {analysis_commands[backend]}",
+        "note": "This entry point describes the backend. Its analysis command reads completed simulation data.",
     }
 
 
 def verdicts(result: MMGBSAResult) -> dict[str, dict[str, object]]:
-    """Apply the suggested dg_bind bar, carrying that it is only suggested."""
+    """Withhold a verdict for independently prepared subsystem energies."""
     record = result.as_record()
     out: dict[str, dict[str, object]] = {}
     for name, rule in RESCORING_BARS.items():
         value = record.get(name)
         minimum = rule.get("min")
         maximum = rule.get("max")
-        if value is None:
+        independent = result.preparation == "independent_subsystems" or (
+            result.preparation is None and any("NOT REPRODUCIBLE" in note for note in result.notes)
+        )
+        if value is None or not math.isfinite(value) or independent:
             state = "untested"
         else:
             low_ok = minimum is None or value >= minimum
@@ -349,4 +325,8 @@ def verdicts(result: MMGBSAResult) -> dict[str, dict[str, object]]:
             "max": maximum,
             "threshold_source": rule["source"],
         }
+        if independent:
+            out[name].update(
+                min=None, max=None, threshold_source=None, blocker="independently_prepared_subsystems"
+            )
     return out

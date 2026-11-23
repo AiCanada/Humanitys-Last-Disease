@@ -33,8 +33,7 @@ def _get_binder_target_mask(
     """Identify binder vs target atoms.
 
     Uses ``chain_of_interest`` (chain label string) as the binder when provided.
-    Falls back to ``chain_iid`` (chain 0 = binder) if available, then to the
-    first alphabetical ``chain_id`` as a last resort.
+    With no explicit selection, use the first chain instance or chain label.
 
     Args:
         atom_array: Multi-chain structure.
@@ -44,22 +43,17 @@ def _get_binder_target_mask(
         binder_mask = atom_array.chain_id == chain_of_interest
         if binder_mask.any():
             return binder_mask, ~binder_mask
-        else:
-            binder_mask = atom_array.chain_iid == chain_of_interest
+        if "chain_iid" in atom_array.get_annotation_categories():
+            binder_mask = atom_array.chain_iid.astype(str) == chain_of_interest
             if binder_mask.any():
                 return binder_mask, ~binder_mask
+        raise ValueError(f"Contact molecular surface: requested chain {chain_of_interest!r} is absent.")
 
-    if hasattr(atom_array, "chain_iid"):
-        binder_mask = atom_array.chain_iid == 0
-        target_mask = atom_array.chain_iid != 0
-        return binder_mask, target_mask
-
-    unique_chains = np.unique(atom_array.chain_id)
-    if len(unique_chains) >= 2:
-        binder_mask = atom_array.chain_id == unique_chains[0]
-        return binder_mask, ~binder_mask
-
-    return np.ones(len(atom_array), dtype=bool), np.zeros(len(atom_array), dtype=bool)
+    if not len(atom_array):
+        raise ValueError("Contact molecular surface requires two chains with coordinates.")
+    instances = atom_array.chain_iid if "chain_iid" in atom_array.get_annotation_categories() else atom_array.chain_id
+    binder_mask = instances == np.unique(instances)[0]
+    return binder_mask, ~binder_mask
 
 
 class ContactMolecularSurfaceMetric(Metric):
@@ -134,7 +128,9 @@ class ContactMolecularSurfaceMetric(Metric):
         target_xyz, target_radii = extract_cms_inputs(predicted_atom_array, target_mask)
 
         if len(binder_xyz) == 0 or len(target_xyz) == 0:
-            return self._default_metrics()
+            raise ValueError("Contact molecular surface requires measurable heavy atoms on both sides.")
+        if not np.isfinite(binder_xyz).all() or not np.isfinite(target_xyz).all():
+            raise ValueError("Contact molecular surface requires finite coordinates on both sides.")
 
         dev = self._device
         calc = TorchCMS(device=dev)
@@ -169,13 +165,4 @@ class ContactMolecularSurfaceMetric(Metric):
             results["max_contact_ms_target"] = max_cms
             results["contact_ms_fraction"] = cms / max_cms if max_cms > 0 else 0.0
 
-        return results
-
-    def _default_metrics(self) -> dict[str, float]:
-        results: dict[str, float] = {"contact_ms": 0.0}
-        if self.compute_binder_side:
-            results["contact_ms_binder"] = 0.0
-        if self.compute_max_target_cms:
-            results["max_contact_ms_target"] = 0.0
-            results["contact_ms_fraction"] = 0.0
         return results

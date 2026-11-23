@@ -26,11 +26,12 @@ from rfproteina.disease.publish import (
     scrubbed_json,
     write_text_atomically,
 )
+from rfproteina.disease.refold import row_pass_flag, trace_metric_kind
 from rfproteina.disease.research import SOURCE_LABELS, SOURCE_ORDER, SourceHit
 from rfproteina.disease.screen import (
     _PPI_COLUMN,
     _PRE_ORACLE_COLUMN,
-    _flag_cell,
+    _design_rows,
     _metric_rows,
     _row_for_cif,
     base_name,
@@ -92,12 +93,6 @@ UNREADABLE_NOTE = "The generated binder list could not be read."
 
 _SEQUENCE = re.compile(r"[ACDEFGHIKLMNPQRSTVWY]{30,}", re.IGNORECASE)
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
-#: A git object name, so a ref file holding anything else is not stored as one.
-_CONFIDENCE = re.compile(
-    r"plddt|iptm|(?<![A-Za-z])ptm(?![A-Za-z])|ipae|(?<![A-Za-z])pae(?![A-Za-z])|confidence",
-    re.IGNORECASE,
-)
-_SKIP_METRIC = re.compile(r"sequence|path|cif|structure", re.IGNORECASE)
 _RELEASE_KEYS = ("hf_ckpt_path", "hf_ckpt_revision", "ckpt_name", "autoencoder_ckpt_path")
 #: The verdict fields copied into a trace. The last four were added because
 #: this block is a stored verdict and was not a readable one: a ``bar`` with no
@@ -265,6 +260,7 @@ def write_research_traces(
             written.append(path)
             print(f"Research trace recorded. {UNREADABLE_NOTE if listing_failed else NO_BINDER_NOTE}")
         return written
+    bindings, _ = _design_rows(rows, list(samples.values()))
     used: set[str] = set()
     for example_id, structure in samples.items():
         file_id = _file_id(example_id, used)
@@ -285,7 +281,7 @@ def write_research_traces(
             digest=digest,
             example_id=example_id,
             structure_file=_relative(output_dir, structure),
-            row=_row_for_cif(rows, structure),
+            row=bindings[structure][0],
             kind="binder",
             note="",
         )
@@ -335,6 +331,8 @@ def restamp_screening(output_dir: Path, screen: Mapping[str, object] | None) -> 
     if not paths:
         return []
     rows = _metric_rows(output_dir)
+    samples, _ = _samples(output_dir)
+    bindings, _ = _design_rows(rows, list(samples.values()))
     digest = screen_digest(output_dir)
     written: list[Path] = []
     for path in paths:
@@ -348,7 +346,7 @@ def restamp_screening(output_dir: Path, screen: Mapping[str, object] | None) -> 
             continue
         name = record.get("example_id")
         example_id = name if isinstance(name, str) and name != NOT_RECORDED else ""
-        record["screening"] = _screening(screen, example_id, _traced_row(output_dir, record, rows), digest)
+        record["screening"] = _screening(screen, example_id, _traced_row(output_dir, record, rows, bindings), digest)
         # The rewritten block is the current shape, so the record says so. A
         # version-1 record carrying a version-2 screening block is the version
         # lying in the worst direction: a reader keying on the number skips
@@ -379,12 +377,16 @@ def _stored_trace(path: Path) -> dict[str, object] | None:
     return payload
 
 
-def _traced_row(output_dir: Path, record: Mapping[str, object], rows: list[dict[str, str]]) -> dict[str, str]:
+def _traced_row(
+    output_dir: Path, record: Mapping[str, object], rows: list[dict[str, str]],
+    bindings: Mapping[Path, tuple[dict[str, str], str | None]],
+) -> dict[str, str]:
     """This binder's metrics row, found through the file the trace already names."""
     stored = record.get("structure_file")
     if not isinstance(stored, str) or not stored or stored == NOT_RECORDED:
         return {}
-    return _row_for_cif(rows, output_dir / stored)
+    path = output_dir / stored
+    return bindings[path][0] if path in bindings else _row_for_cif(rows, path)
 
 
 def _service_notes(
@@ -932,6 +934,8 @@ def _sample(screen: Mapping[str, object] | None, example_id: str, row: Mapping[s
         if not isinstance(item, Mapping) or item.get("example_id") != example_id:
             continue
         found["status"] = "recorded"
+        if item.get("row_blocker"):
+            found["pre_oracle_pass"] = found["ppi_pass"] = NOT_RECORDED
         for key in _SAMPLE_FIELDS:
             found[key] = _plain(item.get(key)) if key in item else NOT_RECORDED
         return found
@@ -947,7 +951,7 @@ def _row_flag(row: Mapping[str, str], column: str) -> object:
     """
     if column not in row:
         return NOT_RECORDED
-    flag = _flag_cell(row.get(column))
+    flag = row_pass_flag(row, column)
     return NOT_RECORDED if flag is None else flag
 
 
@@ -1028,9 +1032,7 @@ def _confidence(row: Mapping[str, str]) -> dict[str, object]:
     """Numeric confidence columns on this sample. An absent column is not a zero."""
     metrics: dict[str, float] = {}
     for key, raw in row.items():
-        if not key or key.startswith("generation.") or _SKIP_METRIC.search(key):
-            continue
-        if _CONFIDENCE.search(key) is None:
+        if trace_metric_kind(key) != "confidence":
             continue
         number = _finite(raw)
         if number is not None:
@@ -1044,9 +1046,7 @@ def _design_metrics(row: Mapping[str, str]) -> dict[str, str]:
     """Seed and generation settings present on this sample's metrics row."""
     found: dict[str, str] = {}
     for key, raw in row.items():
-        if key != "seed" and not key.startswith("generation."):
-            continue
-        if _SKIP_METRIC.search(key):
+        if trace_metric_kind(key) != "generation":
             continue
         stored = _metric_text(raw)
         if stored != NOT_RECORDED:

@@ -321,6 +321,18 @@ def test_blank_tokens_are_absent_and_a_repeated_notes_column_stays_readable(tmp_
     )
 
 
+def test_different_panel_methods_retain_both_results(tmp_path: Path) -> None:
+    (tmp_path / "toxicology.tsv").write_text(
+        "axis\tnm\tmethod\nherg\t50\tassay A\nherg\t50000\tassay B\n", encoding="utf-8"
+    )
+    panel = measure_toxicology(tmp_path)["herg"]
+    assert panel["measurement"] is None
+    assert panel["state"] == "hit" and panel["disagreement"]
+    assert [(entry["method"], entry["measurement"]) for entry in panel["opinions"]] == [
+        ("assay A", 50), ("assay B", 50000)
+    ]
+
+
 def test_the_lowest_of_several_cells_records_how_many(tmp_path: Path) -> None:
     output = new_folder(tmp_path, "count")
     _table(output, "axis\tnm\nherg\t50000\nherg\t10\npgp\t20000\nbcrp\t20000\n")

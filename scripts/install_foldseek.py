@@ -18,8 +18,8 @@ gigabytes:
     python scripts/install_foldseek.py --database PDB
     python scripts/install_foldseek.py --have
 
-**No database over 25 GB is downloaded.** That is this project's install limit,
-and it is enforced here rather than left to care: ``Alphafold/UniProt50`` is
+**Database downloads must be smaller than 25 decimal GB.** This transfer limit
+is checked before fetching the binary or database. ``Alphafold/UniProt50`` is
 114.1 GB and its name gives no hint of that. The size is read from the figure
 ``novelty.FOLDSEEK_DATABASES`` records for each set, and a size that cannot be
 read refuses the download rather than guessing it is small.
@@ -54,7 +54,7 @@ DOWNLOAD_CAP_GB = 25.0
 #: ``"pdb100.tar.gz 2.2 GB"`` -> 2.2. Anchored on the unit so a version number
 #: in the file name cannot be read as the size.
 _SIZE = re.compile(r"(\d+(?:\.\d+)?)\s*(GB|MB|TB)\b", re.IGNORECASE)
-_SCALE = {"MB": 1 / 1024, "GB": 1.0, "TB": 1024.0}
+_SCALE = {"MB": 0.001, "GB": 1.0, "TB": 1000.0}
 
 
 def _unquote(value: str) -> str:
@@ -148,7 +148,7 @@ def _list_databases() -> int:
         size = declared_gb(name)
         if size is None:
             verdict = "REFUSED (size unreadable)"
-        elif size > DOWNLOAD_CAP_GB:
+        elif size >= DOWNLOAD_CAP_GB:
             verdict = f"REFUSED ({size:.1f} GB, over the cap)"
         else:
             verdict = f"allowed ({size:.1f} GB)"
@@ -200,7 +200,7 @@ def _install_binary(destination: Path) -> None:
     print(f"ready  {destination}")
 
 
-def _install_database(binary: Path, database: str) -> None:
+def _database_download(database: str) -> tuple[float, str]:
     from rfproteina.disease.novelty import FOLDSEEK_DATABASES
 
     if database not in FOLDSEEK_DATABASES:
@@ -212,15 +212,22 @@ def _install_database(binary: Path, database: str) -> None:
             f"{database} records no readable download size, so it is refused rather than guessed at. "
             f"Record one in novelty.FOLDSEEK_DATABASES first."
         )
-    if size > DOWNLOAD_CAP_GB:
+    if size >= DOWNLOAD_CAP_GB:
         raise SystemExit(
-            f"{database} is {size:.1f} GB, over this project's {DOWNLOAD_CAP_GB:.0f} GB download limit. "
+            f"{database} is {size:.1f} GB, at or over this project's {DOWNLOAD_CAP_GB:.0f} GB download limit. "
             f"Nothing was downloaded. Smaller sets: "
-            f"{', '.join(n for n in FOLDSEEK_DATABASES if (declared_gb(n) or 1e9) <= DOWNLOAD_CAP_GB)}."
+            f"{', '.join(n for n in FOLDSEEK_DATABASES if (declared_gb(n) or 1e9) < DOWNLOAD_CAP_GB)}."
         )
     alias = database_alias(database)
     if alias is None:
         raise SystemExit(f"{database} records no command to read its alias from.")
+    return size, alias
+
+
+def _install_database(binary: Path, database: str) -> None:
+    from rfproteina.disease.novelty import FOLDSEEK_DATABASES
+
+    size, alias = _database_download(database)
 
     root = _install_dir() / "databases" / alias
     root.mkdir(parents=True, exist_ok=True)
@@ -234,7 +241,7 @@ def _install_database(binary: Path, database: str) -> None:
     if scratch.is_dir():
         shutil.rmtree(scratch, ignore_errors=True)
     on_disk = sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
-    print(f"ready  {target}  ({on_disk / 1024**3:.2f} GB on disk)")
+    print(f"ready  {target}  ({on_disk / 1_000_000_000:.2f} GB on disk)")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -261,6 +268,9 @@ def main(argv: list[str] | None = None) -> int:
         return _have(destination)
 
     from rfproteina.disease.novelty import foldseek_command
+
+    if args.database:
+        _database_download(args.database)
 
     if destination.is_file():
         print(f"have   {destination}")

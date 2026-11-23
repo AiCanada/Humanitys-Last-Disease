@@ -340,10 +340,11 @@ def _compara_record(singleton: dict[str, object], read: ReadJson, accession: str
         return singleton
 
     closest = scored[0] if scored else None
-    record = _axis("untested", closest[0] if closest else 0.0, None)
+    record = _axis("untested", closest[0] if closest else None, None)
     record["cluster"] = singleton["cluster"]
     record["paralogs"] = singleton["paralogs"]
     record["compara_examined"] = examined
+    record["compara_scored"] = len(scored)
     record["method"] = "ensembl_compara_paralogues_identity"
     record["units"] = _COMPARA_UNITS
     if closest is not None:
@@ -352,6 +353,9 @@ def _compara_record(singleton: dict[str, object], read: ReadJson, accession: str
     if closest is not None and closest[0] >= limit:
         record["state"] = "hit"
         record["paralogs"] = sorted({*singleton["paralogs"], closest[1]})  # type: ignore[misc]
+        return record
+    if len(scored) < examined:
+        record["blocker"] = "compara_identities_incomplete"
         return record
     # Compara examined this gene's tree and found nothing at or above the cut,
     # which is a measurement rather than an absence of one. It is the first
@@ -391,10 +395,8 @@ def _primary_symbol(read: ReadJson, accession: str) -> str | None:
 def _compara_paralogs(read: ReadJson, gene: str) -> tuple[int, list[tuple[float, str]]]:
     """How many paralogs Compara holds for a gene, and their identities.
 
-    The second value is sorted loudest first. An empty list with a nonzero
-    count cannot happen; an empty list with a zero count is Compara having
-    examined the gene and found none, which is a measurement and not an
-    absence of one -- the distinction this axis turns on.
+    The count includes every returned homology. The sorted list includes
+    named records with a usable percent identity within the processing limit.
     """
     found = read(_COMPARA.format(gene=_quote(gene)))
     if not isinstance(found, dict):
@@ -416,7 +418,7 @@ def _compara_paralogs(read: ReadJson, gene: str) -> tuple[int, list[tuple[float,
         if not isinstance(target, dict):
             continue
         named = target.get("id")
-        if not isinstance(named, str):
+        if not isinstance(named, str) or not named.strip():
             continue
         # Both directions, from the one response that carries them, and the
         # higher is kept. Compara's ``perc_id`` is identity over the length of
@@ -430,7 +432,10 @@ def _compara_paralogs(read: ReadJson, gene: str) -> tuple[int, list[tuple[float,
         identities = [
             float(value)
             for block in (target, source)
-            if isinstance(block, dict) and isinstance(value := block.get("perc_id"), int | float)
+            if isinstance(block, dict)
+            and isinstance(value := block.get("perc_id"), int | float)
+            and not isinstance(value, bool)
+            and 0 <= value <= 100
         ]
         if not identities:
             continue
@@ -514,6 +519,8 @@ def _abundance_record(target_id: str, read: ReadJson, limit: float | None) -> di
         assay = "mass_spectrometry"
     if concentration is None:
         return _axis("untested", None, "concentration_not_reported")
+    if concentration < 0:
+        return _axis("untested", None, "concentration_invalid")
     if limit is None:
         record = _axis("untested", concentration, "threshold_not_set")
     else:
@@ -598,14 +605,20 @@ def _hub_record(target_id: str, read: ReadJson, limit: int | None) -> dict[str, 
         return _axis("untested", None, "lookup_unavailable")
     if not isinstance(payload, list):
         return _axis("untested", None, "lookup_unavailable")
-    partners = {
-        str(row.get("preferredName_B")) for row in payload if isinstance(row, dict) and row.get("preferredName_B")
-    }
-    queried = {
-        str(row.get("preferredName_A")).strip()
-        for row in payload
-        if isinstance(row, dict) and str(row.get("preferredName_A") or "").strip()
-    }
+    uses_ids = any(isinstance(row, dict) and ("stringId_A" in row or "stringId_B" in row) for row in payload)
+    left, right = ("stringId_A", "stringId_B") if uses_ids else ("preferredName_A", "preferredName_B")
+    queried: set[str] = set()
+    partners: set[str] = set()
+    for row in payload:
+        if not isinstance(row, dict):
+            return _axis("untested", None, "partners_not_listed")
+        source, partner = row.get(left), row.get(right)
+        if not isinstance(source, str) or not isinstance(partner, str) or not source.strip() or not partner.strip():
+            return _axis("untested", None, "partners_not_listed")
+        source, partner = source.strip(), partner.strip()
+        queried.add(source)
+        if partner != source:
+            partners.add(partner)
     if len(queried) > 1:
         # One identifier was asked about and the rows name more than one
         # protein, so the partners are not one neighbourhood and the degree is
@@ -622,7 +635,7 @@ def _hub_record(target_id: str, read: ReadJson, limit: int | None) -> dict[str, 
         # count is reported and the axis stays untested.
         return _axis("untested", 0, "partners_not_listed")
     degree = len(partners)
-    if degree >= _STRING_LIMIT:
+    if len(payload) >= _STRING_LIMIT:
         return _axis("untested", degree, "degree_censored")
     if limit is None:
         record = _axis("untested", degree, "threshold_not_set")
@@ -716,12 +729,12 @@ def _fold_record(target_id: str, directory: Path, limit: float | None) -> dict[s
     sourced = [cell for cell in cells if cell[2]]
     column, fold, source = max(sourced or cells, key=lambda item: _linear_fold(item[0], item[1]))
     if not source:
-        return _axis("untested", fold, "source_not_named")
+        return _fold_axis("untested", column, fold, "source_not_named")
     magnitude = _linear_fold(column, fold)
     if limit is None:
-        record = _axis("untested", fold, "threshold_not_set")
+        record = _fold_axis("untested", column, fold, "threshold_not_set")
     elif magnitude >= limit:
-        record = _axis("hit", fold, None)
+        record = _fold_axis("hit", column, fold, None)
         record["threshold"] = limit
     else:
         # The sourced rows clear the cut, but a clear speaks for the whole
@@ -736,8 +749,8 @@ def _fold_record(target_id: str, directory: Path, limit: float | None) -> dict[s
         denied = [cell for cell in cells if not cell[2] and _linear_fold(cell[0], cell[1]) >= limit]
         if denied:
             loudest = max(denied, key=lambda item: _linear_fold(item[0], item[1]))
-            return _axis("untested", loudest[1], "source_not_named")
-        record = _axis("clear", fold, None)
+            return _fold_axis("untested", loudest[0], loudest[1], "source_not_named")
+        record = _fold_axis("clear", column, fold, None)
         record["threshold"] = limit
     # Not "source": every axis record passes through ``screen._stamp_source``,
     # which writes that key to say whether the STATE was measured, curated or
@@ -750,6 +763,14 @@ def _fold_record(target_id: str, directory: Path, limit: float | None) -> dict[s
     # into the column would carry it into both.
     record["fold_source"] = _short_text(source)
     return record
+
+
+def _fold_axis(state: str, column: str, value: float, blocker: str | None) -> dict[str, object]:
+    return {
+        **_axis(state, value, blocker),
+        "fold_column": column,
+        "linear_fold_magnitude": _number(_linear_fold(column, value)),
+    }
 
 
 def _names_target(row: dict[str, str], target_id: str) -> bool:

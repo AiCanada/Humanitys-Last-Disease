@@ -176,13 +176,16 @@ def test_the_note_is_on_the_screen_and_does_not_change_the_call(tmp_path: Path, 
     assert str(output) not in text
     assert _SEQUENCE not in text
     lines = "\n".join(format_screen_lines("1ABC", "A", record))
-    assert "paralog coevolution most_likely_toxic." in lines
-    assert "most likely toxic in people." in lines
+    assert paralog["human_toxicity_state"] == "untested"
+    assert "toxicity in the other species." in lines
+    assert "Human toxicity is untested by this comparison." in lines
+    assert "most likely toxic in people" not in lines
     page = render_closing(
         format_screen_lines("1ABC", "A", record),
         [{"entry_id": "1ABC", "chain": "A", "screen": record}],
     )
-    assert "most likely toxic in people." in page
+    assert "Human toxicity is untested by this comparison." in page
+    assert "most likely toxic in people" not in page
     assert "This note is stored beside the UniRef50 count." in page
     assert "Mus musculus" in page
     assert "cure" not in page.casefold()

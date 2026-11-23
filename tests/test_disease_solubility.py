@@ -80,6 +80,24 @@ def test_a_missing_table_says_so(tmp_path: Path) -> None:
     assert read_solubility(new_folder(tmp_path, "run"))["solubility_blocker"] == "solubility_not_configured"
 
 
+@pytest.mark.parametrize("fields,values", [
+    ("score,value", "0.000019,0.000011"), ("score,value", "0.7,bad"), ("method,tool", "CamSol,A3D"),
+])
+def test_conflicting_or_invalid_aliases_do_not_supply_a_result(tmp_path, fields, values):
+    tail = "method,source\nCamSol,paper" if fields.startswith("score") else "score,source\n0.7,paper"
+    headings, data = tail.split("\n")
+    directory = _table(tmp_path, f"{fields},{headings}\n{values},{data}\n", name="solubility.csv")
+    assert read_solubility(directory)["solubility_blocker"] == "cell_unparsed"
+
+
+def test_small_nonzero_readings_and_last_line_quotes(tmp_path):
+    directory = _table(tmp_path, _HEAD + "0.000019\tCamSol\tpaper\n")
+    assert read_solubility(directory)["scores"][0]["score"] == 0.000019
+    assert "0.0000" not in solubility_phrase(read_solubility(directory))
+    _table(tmp_path, _HEAD + '0.7\tCamSol\t"unclosed')
+    assert read_solubility(directory)["solubility_blocker"] == "solubility_unreadable"
+
+
 def test_a_cell_that_is_not_a_number_names_its_column(tmp_path: Path) -> None:
     found = read_solubility(_table(new_folder(tmp_path, "run"), _HEAD + "high\tCamSol\tSormanni 2015\n"))
     assert found["solubility_blocker"] == "cell_unparsed"

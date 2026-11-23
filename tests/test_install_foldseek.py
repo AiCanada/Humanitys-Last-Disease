@@ -52,6 +52,15 @@ def test_the_oversized_database_is_refused_by_its_recorded_size():
     assert INSTALL.declared_gb("Alphafold/UniProt50") > INSTALL.DOWNLOAD_CAP_GB
 
 
+def test_exact_decimal_limit_is_refused_before_installing_anything(data_path, monkeypatch):
+    monkeypatch.setitem(FOLDSEEK_DATABASES, "Boundary", {"download": "set.tar.gz 25000 MB"})
+    monkeypatch.setattr(INSTALL, "_install_binary", lambda *_: pytest.fail("download began"))
+    assert INSTALL.declared_gb("Boundary") == 25
+    with pytest.raises(SystemExit, match="Nothing was downloaded"):
+        INSTALL.main(["--database", "Boundary"])
+    assert not (data_path / "foldseek").exists()
+
+
 def test_every_small_database_is_inside_the_cap():
     for name in ("PDB", "Alphafold/Swiss-Prot", "Alphafold/Proteome"):
         size = INSTALL.declared_gb(name)
@@ -190,7 +199,8 @@ def test_the_screen_runs_the_resolved_binary_not_the_bare_name(data_path, tmp_pa
         from rfproteina.disease.screening_tools import ToolResult
 
         seen.append(command[0])
-        Path(command[4]).write_text("d1\t8bbb\t0.95\t0.77\t1e-20\t400\n", encoding="utf-8")
+        assert command[command.index("--format-output") + 1] == "query,target,fident,qtmscore,ttmscore,evalue,bits"
+        Path(command[4]).write_text("d1\t8bbb\t0.95\t0.77\t0.83\t1e-20\t400\n", encoding="utf-8")
         return ToolResult(True, 0, "", "")
 
     monkeypatch.setattr(novelty, "run_tool", fake_run_tool)

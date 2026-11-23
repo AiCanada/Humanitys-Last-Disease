@@ -28,22 +28,17 @@ COEVOLUTION_TABLE = "paralog_coevolution"
 COEVOLUTION_ROW_LIMIT = 256
 COEVOLUTION_FILE_LIMIT = 1_048_576
 
-#: Human sentences for the four rules. The board and the measured line share
-#: this map. None of these sentences is a clinical assay.
+#: Historical identifiers are retained for stored records. Each sentence
+#: describes the supplied observations and their species scope.
 COEVOLUTION_SENTENCES: dict[str, str] = {
-    "most_likely_toxic": (
-        "Same shape in another species, co-evolution high, and toxic there: most likely toxic in people."
-    ),
-    "lowest_signal_toxic": (
-        "Same shape in another species, co-evolution low, and toxic there: lowest signal of toxicity in people."
-    ),
-    "probably_non_toxic": (
-        "Same shape in another species, co-evolution high, and non-toxic there: probably non-toxic in people."
-    ),
+    "most_likely_toxic": "The table reports a shared shape, high co-evolution and toxicity in the other species.",
+    "lowest_signal_toxic": "The table reports a shared shape, low co-evolution and toxicity in the other species.",
+    "probably_non_toxic": "The table reports a shared shape, high co-evolution and no toxicity in the other species.",
     "lowest_signal_non_toxic": (
-        "Same shape in another species, co-evolution low, and non-toxic there: " "lowest signal, non-toxic in people."
+        "The table reports a shared shape, low co-evolution and no toxicity in the other species."
     ),
 }
+HUMAN_TOXICITY_SCOPE = "Human toxicity is untested by this comparison."
 
 _SHAPE_COLUMNS = ("same_shape", "same_shapes", "shape", "shapes")
 _LEVEL_COLUMNS = ("coevolution", "co_evolution")
@@ -102,6 +97,10 @@ class _TableTooLargeError(Exception):
     """The file could not be held in memory."""
 
 
+class _UnrelatedTableError(Exception):
+    """A readable table contains none of the study fields this reader uses."""
+
+
 @dataclass
 class _Parsed:
     """One data row, after the four columns have been classified."""
@@ -117,12 +116,12 @@ class _Parsed:
 def coevolution_phrase(record: Mapping[str, object]) -> str | None:
     """The measured-line sentence for a stored note, or None when there is none."""
     signal = record.get("coevolution_signal")
-    if not isinstance(signal, str):
+    if record.get("coevolution_blocker") or not isinstance(signal, str):
         return None
     sentence = COEVOLUTION_SENTENCES.get(signal)
     if sentence is None:
         return None
-    return f"paralog coevolution {signal}. {sentence}"
+    return f"Paralog coevolution. {sentence} {HUMAN_TOXICITY_SCOPE}"
 
 
 def read_paralog_coevolution(directory: Path) -> dict[str, object]:
@@ -136,6 +135,10 @@ def read_paralog_coevolution(directory: Path) -> dict[str, object]:
     :data:`COEVOLUTION_ROW_LIMIT` is withheld whole. The returned keys never
     include ``state``, ``measurement``, or ``blocker``.
     """
+    return {"human_toxicity_state": "untested", **_read_study_table(directory)}
+
+
+def _read_study_table(directory: Path) -> dict[str, object]:
     path = _table_path(directory)
     if path is None:
         return {"coevolution_blocker": "coevolution_not_configured"}
@@ -146,6 +149,8 @@ def read_paralog_coevolution(directory: Path) -> dict[str, object]:
         return {"coevolution_blocker": "coevolution_too_large"}
     try:
         rows = _rows(path)
+    except _UnrelatedTableError:
+        return {"coevolution_blocker": "coevolution_missing_columns"}
     except _TableTooLargeError:
         return {"coevolution_blocker": "coevolution_too_large"}
     if rows is None:
@@ -213,7 +218,11 @@ def _table_path(directory: Path) -> Path | None:
 def _rows(path: Path) -> list[dict[str, str]] | None:
     """Rows with normalised keys, or None when the file did not parse."""
     try:
-        text = path.read_text(encoding="utf-8-sig")
+        with path.open("rb") as stream:
+            raw = stream.read(COEVOLUTION_FILE_LIMIT + 1)
+        if len(raw) > COEVOLUTION_FILE_LIMIT:
+            raise _TableTooLargeError
+        text = raw.decode("utf-8-sig")
     except MemoryError as exc:
         raise _TableTooLargeError from exc
     except (OSError, UnicodeError):
@@ -224,15 +233,13 @@ def _rows(path: Path) -> list[dict[str, str]] | None:
         return []
     dialect = csv.excel_tab if "\t" in lines[0] else csv.excel
     try:
-        reader = csv.DictReader(io.StringIO("\n".join(lines)), dialect=dialect, restkey=_EXTRA)
+        reader = csv.DictReader(io.StringIO("\n".join(lines)), dialect=dialect, restkey=_EXTRA, strict=True)
         if _duplicate_keys(reader.fieldnames):
             return None
-        if not any(_column_key(name) in _USED_COLUMNS for name in reader.fieldnames or ()):
-            # The header holds none of the columns this reads, which is what a
-            # semicolon export and an unmarked banner line both look like.
-            # Read on, and the answer is "no usable row for this check" -- which
-            # sends the reader to add three columns the file already has, and
-            # rules out the delimiter, the one thing actually wrong.
+        fields = reader.fieldnames or []
+        recognized = any(_column_key(name) in _USED_COLUMNS for name in fields)
+        if not recognized and len(fields) < 2:
+            # A banner or an unsupported delimiter can look like a single column.
             return None
         found: list[dict[str, str]] = []
         for row in reader:
@@ -258,6 +265,8 @@ def _rows(path: Path) -> list[dict[str, str]] | None:
             # banner strip above has already corrupted by then, so the reader
             # never supported one.
             return None
+        if not recognized:
+            raise _UnrelatedTableError
         return found
     except csv.Error:
         return None

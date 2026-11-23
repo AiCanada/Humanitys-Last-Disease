@@ -7,8 +7,11 @@ Import these directly or pass to :py:func:`~atomworks.io.parser.parse` as the
     result = parse(path, config=RCSB_WITH_METALS)
 """
 
+from pathlib import Path
+
 from atomworks.constants import CCD_MIRROR_PATH, CRYSTALLIZATION_AIDS
 from atomworks.io.config import ParseConfig
+from atomworks.io.utils.io_utils import infer_pdb_file_type
 
 # A preset below sets ``load_standard_annotations=True``, and the parser resolves those
 # annotations by name out of the registry rfproteina's own annotations join on import.
@@ -79,6 +82,13 @@ STANDARD_ANNOTATIONS_ONLY: ParseConfig = DISTILLATION.replace(
 
 Used for parsing oracle-predicted structures (RF3, AF3 outputs).
 """
+
+
+def evaluation_parse_config(path: Path) -> ParseConfig:
+    """Read available annotations while keeping deposited PDB coordinates intact."""
+    if infer_pdb_file_type(path) == "pdb":
+        return STANDARD_ANNOTATIONS_ONLY.replace(load_standard_annotations=False)
+    return STANDARD_ANNOTATIONS_ONLY
 
 
 def rcsb_with_metals(**overrides) -> dict:

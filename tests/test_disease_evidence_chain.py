@@ -208,3 +208,14 @@ class TestChangedInputs:
         screen_protein_run(output)
         (output / "axis_evidence.json").write_text(json.dumps({"paralog": "clear"}), encoding="utf-8")
         assert "inputs" not in screen_protein_run(output)["replaced"]
+
+    def test_an_identical_retry_keeps_the_last_change(self, tmp_path: Path) -> None:
+        from rfproteina.disease.screen import screen_generation
+
+        screen_generation(tmp_path, binder_kind="other", target_id="")
+        (tmp_path / "notes.txt").write_text("reviewed", encoding="utf-8")
+        changed = screen_generation(tmp_path, binder_kind="other", target_id="")
+        previous_bytes = (tmp_path / "screen.json").read_bytes()
+        assert changed["replaced"]["changed_inputs"] == [{"file": "notes.txt", "change": "added"}]
+        assert screen_generation(tmp_path, binder_kind="other", target_id="") == changed
+        assert (tmp_path / "screen.json").read_bytes() == previous_bytes

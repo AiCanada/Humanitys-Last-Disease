@@ -125,7 +125,7 @@ class _AxisCells:
     bad: float | None = None
 
 
-def measure_toxicology(directory: Path) -> dict[str, dict[str, object]]:
+def measure_toxicology(directory: Path, *, ligand_smiles: str | None = None) -> dict[str, dict[str, object]]:
     """One record per panel axis, in panel order.
 
     ``toxicology.tsv`` is read before ``toxicology.csv``. Cells are nM. The
@@ -154,6 +154,66 @@ def measure_toxicology(directory: Path) -> dict[str, dict[str, object]]:
         return _every("toxicology_unreadable")
     if not rows:
         return _every("toxicology_not_reported")
+    from rfproteina.disease.octant import OCTANT_CURATION
+
+    keys = {row["inchikey"] for row in rows if row.get("inchikey")}
+    if len(keys) > 1:
+        return _every(blocker="ligand_identity_mismatch")
+    if ligand_smiles is not None and (keys or any(row.get("source") == OCTANT_CURATION for row in rows)):
+        from rfproteina.disease.ligand_safety import LigandUnreadableError, _inchikey
+
+        try:
+            key = _inchikey(ligand_smiles)
+        except LigandUnreadableError:
+            key = ""
+        if not key or not keys:
+            return _every(blocker="ligand_identity_unverified")
+        if keys != {key}:
+            return _every(blocker="ligand_identity_mismatch")
+        if any(not row.get("inchikey") for row in rows):
+            return _every(blocker="ligand_identity_unverified")
+
+    groups: dict[tuple[str, str, str, str], list[dict[str, str]]] = {}
+    for row in rows:
+        method = row.get("method") or TOXICOLOGY_METHOD
+        group = (method, row.get("source", ""), row.get("standard_type", ""), row.get("assay_id", ""))
+        groups.setdefault(group, []).append(row)
+    by_axis: dict[str, list[dict[str, object]]] = {axis: [] for axis in LIGAND_AXES}
+    for (method, source, endpoint, assay), group_rows in groups.items():
+        opinions = _measure_group(group_rows)
+        if opinions is None:
+            return _every("toxicology_unreadable")
+        for axis, opinion in opinions.items():
+            if opinion["blocker"] == "toxicology_not_reported":
+                continue
+            opinion["method"] = method
+            if source:
+                opinion["assay_source"] = source
+            if endpoint:
+                opinion["endpoint"] = endpoint
+            if assay:
+                opinion["assay_id"] = assay
+            if keys:
+                opinion["inchikey"] = next(iter(keys))
+            by_axis[axis].append(opinion)
+
+    result = _every("toxicology_not_reported")
+    for axis, opinions in by_axis.items():
+        if len(opinions) == 1:
+            result[axis] = opinions[0]
+        elif opinions:
+            states = {opinion["state"] for opinion in opinions}
+            state = HIT if HIT in states else "clear" if states == {"clear"} else "untested"
+            result[axis] = {
+                **_record(state, None, "panel_opinions_incomplete" if state == "untested" else None, axis=axis),
+                "method": "separate_panel_readings",
+                "opinions": opinions,
+                "disagreement": "clear" in states and HIT in states,
+            }
+    return result
+
+
+def _measure_group(rows: list[dict[str, str]]) -> dict[str, dict[str, object]] | None:
     found, unattributed = _collect(rows)
     if unattributed:
         # A concentration on a row that names no protein, or that names two of
@@ -161,7 +221,7 @@ def measure_toxicology(directory: Path) -> dict[str, dict[str, object]]:
         # reports whatever its other rows say while silently holding a reading
         # nothing accounts for, and that reading is as likely to be the
         # liability as not.
-        return _every("toxicology_unreadable")
+        return None
     judged: dict[str, float] = {}
     best: dict[str, tuple[float, float, str, int]] = {}
     for axis in LIGAND_AXES:
@@ -281,7 +341,7 @@ def _rows(path: Path) -> list[dict[str, str]] | None:
         return []
     dialect = csv.excel_tab if "\t" in lines[0] else csv.excel
     try:
-        reader = csv.DictReader(io.StringIO("\n".join(lines)), dialect=dialect, restkey=_EXTRA)
+        reader = csv.DictReader(io.StringIO("\n".join(lines)), dialect=dialect, restkey=_EXTRA, strict=True)
         if _duplicate_keys(reader.fieldnames):
             return None
         if any("\n" in (name or "") for name in reader.fieldnames or ()):
@@ -298,7 +358,7 @@ def _rows(path: Path) -> list[dict[str, str]] | None:
             return None
         found: list[dict[str, str]] = []
         for row in reader:
-            if _surplus(row.get(_EXTRA)):
+            if _EXTRA in row or None in row.values():
                 # Every field after the first unquoted separator is one column
                 # left of where it belongs, so one protein is judged on
                 # another's number. A misaligned row is not partly usable.
@@ -345,21 +405,12 @@ def _spans_lines(row: dict[str, object]) -> bool:
     return False
 
 
-def _surplus(extra: object) -> bool:
-    """Whether a row carried a field the header has no column for."""
-    if isinstance(extra, str):
-        return bool(extra.strip())
-    if isinstance(extra, list):
-        return any(isinstance(item, str) and item.strip() for item in extra)
-    return extra is not None
-
-
 def _duplicate_keys(fieldnames: list[str] | None) -> bool:
     """Refuse a repeated column this reader uses. A repeated notes column stays."""
     seen: set[str] = set()
     for raw in fieldnames or ():
         key = _column_key(raw)
-        if not key or not _read_column(key):
+        if not _read_column(key) and key not in {"method", "source", "inchikey", "standard_type", "assay_id"}:
             continue
         if key in seen:
             return True

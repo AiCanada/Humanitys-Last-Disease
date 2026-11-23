@@ -70,6 +70,7 @@ from rfproteina.disease import (
     results_retrieve,
     screen_board,
 )
+from rfproteina.utils.metrics_files import MetricsBlocker
 
 _PACKAGE = Path(screen_board.__file__).parent
 
@@ -288,8 +289,10 @@ _HELPERS = _blocker_helpers()
 
 
 def _blocker_names() -> dict[str, set[str]]:
-    """Every blocker name written as a literal, and the files writing it."""
-    found: dict[str, set[str]] = {}
+    """Typed report blockers and literal blockers, with the files that declare them."""
+    # Aggregation and the screen share these codes with a producer outside
+    # the disease package. Every member must have a sentence on the board.
+    found = {code.value: {"metrics_files.py"} for code in MetricsBlocker}
 
     def note(name: str, where: str) -> None:
         found.setdefault(name, set()).add(where)

@@ -22,6 +22,7 @@ from atomworks.io.utils.compression import transfer_with_compression
 from atomworks.io.utils.io_utils import infer_pdb_file_type
 from atomworks.ml.utils.misc import hash_sequence
 
+from rfproteina.inference_utils.pass_rates import pass_attempts
 from rfproteina.utils.logging import RankedLogger
 from rfproteina.utils.structure_files import iter_structure_files, structure_file_stem
 
@@ -194,7 +195,7 @@ def add_foldseek_diversity_to_per_example_df(
 
     - **Output-tree mode** (df has ``output_base_dir`` column): auto-discovers
       ``foldseek_input_chains/`` group dirs from the df; cluster IDs are joined by
-      ``(dataset_name, example_id)``.
+      the output tree, dataset, task and example ID.
 
     - **Per-group copy mode** (fallback): groups by ``group_by``, copies each group's chain
       files from ``designed_chain_path`` to a flat temp directory, and runs ``easy-cluster``
@@ -204,7 +205,7 @@ def add_foldseek_diversity_to_per_example_df(
         per_example_df: DataFrame with an ``example_id`` column and (for per-group mode)
             a ``designed_chain_path`` column pointing to single-chain PDB files.
         group_by: Columns to group by when clustering (per-group mode only).
-            Defaults to ``["task"]``.
+            Defaults to dataset and task when both are available.
         timeout: Wall-clock budget in seconds. In per-group mode the remaining budget is
             passed to each per-group subprocess; in output-tree mode it is the total budget.
         **kwargs: Additional arguments forwarded to :py:func:`diversity_foldseek` /
@@ -217,31 +218,21 @@ def add_foldseek_diversity_to_per_example_df(
     cs_kwargs = {k: kwargs[k] for k in ("tm_threshold", "alignment_type", "min_seq_id", "threads") if k in kwargs}
 
     if "output_base_dir" in per_example_df.columns:
-        groups = _partition_groups(per_example_df.to_dict("records"))
-        # Keyed by (dataset_name, example_id): example IDs repeat across datasets.
-        combined_map: dict[tuple[str, str], int] = {}
+        records = per_example_df.to_dict("records")
+        groups = _partition_groups(records)
+        combined_map = {}
         for g in groups:
             gmap = cluster_structures(g["chains_dir"], timeout=timeout, **cs_kwargs)
             if gmap:
-                combined_map.update({(g["dataset_name"], eid): cid for eid, cid in gmap.items()})
+                combined_map.update({(g["group"], eid): cid for eid, cid in gmap.items()})
             else:
                 logger.warning(f"cluster_structures returned None for {g['chains_dir']}; skipping group.")
         out = per_example_df.copy()
-        if "example_id" in out.columns:
-            datasets = (
-                out["dataset_name"].fillna("unknown_dataset")
-                if "dataset_name" in out.columns
-                else pd.Series("unknown_dataset", index=out.index)
-            )
-            out["foldseek_cluster_id"] = [
-                combined_map.get(key) for key in zip(datasets, out["example_id"], strict=True)
-            ]
-        else:
-            out["foldseek_cluster_id"] = None
+        out["foldseek_cluster_id"] = [combined_map.get(_cluster_key(row)) for row in records]
         return out
 
     if group_by is None:
-        group_by = ["task"]
+        group_by = [key for key in ("dataset_name", "task") if key in per_example_df] or ["task"]
 
     if "designed_chain_path" not in per_example_df.columns:
         raise ValueError("designed_chain_path column not found in per_example_df")
@@ -249,8 +240,10 @@ def add_foldseek_diversity_to_per_example_df(
         if col not in per_example_df.columns:
             raise ValueError(f"{col} column not found in per_example_df")
 
-    groups = list(per_example_df.groupby(group_by))
+    groups = list(per_example_df.groupby(group_by, dropna=False))
     n_groups = len(groups)
+    if not n_groups:
+        return per_example_df.assign(foldseek_cluster_id=None)
 
     slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
     if "threads" in kwargs and kwargs["threads"] is not None:
@@ -346,19 +339,19 @@ def add_diversity_summary_metrics(
 ) -> pd.DataFrame:
     """Broadcast per-target diversity metrics onto per-example rows.
 
-    Adds ``cluster_diversity`` and, for each pass criterion, ``{crit}.clustered_pass_rate``
-    (distinct passing foldseek clusters / n).
+    Adds assignment coverage, diversity, and distinct passing clusters per attempted
+    design. An unassigned passer makes its clustered rate indeterminate.
 
     Args:
         per_example_df: DataFrame with a ``foldseek_cluster_id`` column (added by
             :py:func:`add_foldseek_diversity_to_per_example_df`).
         group_by: Columns that define the clustering groups. Must match the ``group_by``
             used in :py:func:`add_foldseek_diversity_to_per_example_df`. Defaults to
-            ``["task"]``.
+            the output tree, dataset and task when available.
         pass_cols: Explicit solve-rate pass columns (see :py:func:`_base_pass_cols`).
     """
     if group_by is None:
-        group_by = ["task"]
+        group_by = [key for key in ("output_base_dir", "dataset_name", "task") if key in per_example_df] or ["task"]
 
     missing_cols = [c for c in group_by if c not in per_example_df.columns]
     if missing_cols:
@@ -381,33 +374,55 @@ def add_diversity_summary_metrics(
     per_example_df = per_example_df.copy()
 
     cluster_rows = []
-    for group_key, group_df in per_example_df.groupby(group_by):
+    for group_key, group_df in per_example_df.groupby(group_by, dropna=False):
         group_vals = group_key if isinstance(group_key, tuple) else (group_key,)
         group_dict = dict(zip(group_by, group_vals, strict=False))
 
         n = len(group_df)
-        all_clusters_missing = group_df["foldseek_cluster_id"].isna().all()
+        clusters = group_df["foldseek_cluster_id"]
+        assigned = clusters.count()
         row: dict = {
             **group_dict,
-            "cluster_diversity": float("nan")
-            if all_clusters_missing
-            else float(group_df["foldseek_cluster_id"].nunique()) / n,
+            "cluster_coverage": assigned / n,
+            "cluster_diversity": clusters.nunique() / n if assigned == n else float("nan"),
         }
         for pass_col in pass_cols:
             prefix = pass_col[: -len("pass")]  # "{crit}." from "{crit}.pass"
             cpr_col = f"{prefix}clustered_pass_rate"
-            if all_clusters_missing or group_df[pass_col].isna().all():
+            attempts = pass_attempts(group_df, pass_col)
+            denominator = attempts.count()
+            passing = clusters.loc[attempts.eq(1)]
+            if not assigned or not denominator or passing.isna().any():
                 cpr_val: float = float("nan")
             else:
-                passing_clusters = group_df.loc[group_df[pass_col] == 1.0, "foldseek_cluster_id"].dropna().nunique()
-                cpr_val = float(passing_clusters) / n
+                cpr_val = passing.nunique() / denominator
             row[cpr_col] = cpr_val
         cluster_rows.append(row)
 
+    if not cluster_rows:
+        return per_example_df.assign(cluster_coverage=np.nan, cluster_diversity=np.nan, **{
+            col.removesuffix("pass") + "clustered_pass_rate": np.nan for col in pass_cols
+        })
     cluster_metrics_df = pd.DataFrame(cluster_rows)
     per_example_df = per_example_df.merge(cluster_metrics_df, on=group_by, how="left")
 
     return per_example_df
+
+
+def cluster_summary_for_group(frame: pd.DataFrame) -> dict[str, float]:
+    """Assignment coverage can span clustering jobs. Cluster IDs and their rates are local to one cohort."""
+    if "foldseek_cluster_id" not in frame or frame.empty:
+        return {}
+    scope = [key for key in ("output_base_dir", "dataset_name", "task") if key in frame]
+    one_cohort = not scope or len(frame[scope].drop_duplicates()) == 1
+    summary = {"cluster_coverage": float(frame["foldseek_cluster_id"].notna().mean())}
+    for column in frame:
+        if column == "cluster_diversity" or column.endswith(".clustered_pass_rate"):
+            values = pd.to_numeric(frame[column], errors="coerce").replace([np.inf, -np.inf], np.nan)
+            summary[column] = (
+                float(values.iloc[0]) if one_cohort and values.notna().all() and values.nunique() == 1 else np.nan
+            )
+    return summary
 
 
 def chain_cif_dir(
@@ -433,8 +448,16 @@ def chain_cif_dir(
     return subdir / ds_seg / (task if task is not None else "unknown_task")
 
 
+def _cluster_key(row: dict) -> tuple[tuple[str, str, str], str]:
+    parts = []
+    for key, fallback in (("output_base_dir", ""), ("dataset_name", "unknown_dataset"), ("task", "unknown_task")):
+        value = row.get(key)
+        parts.append(str(value) if pd.notna(value) else fallback)
+    return (parts[0], parts[1], parts[2]), str(row.get("example_id", ""))
+
+
 def _partition_groups(all_design_metrics: list[dict]) -> list[dict]:
-    """Build ``[{"key": str, "chains_dir": Path, "dataset_name": str}]`` from per-design metrics.
+    """Locate each output tree's dataset and task chain directory.
 
     Derives the group chains directory from ``output_base_dir``, ``dataset_name``,
     and ``task`` columns.  Missing ``dataset_name`` or ``task`` values are replaced
@@ -467,29 +490,33 @@ def _partition_groups(all_design_metrics: list[dict]) -> list[dict]:
         if chains_dir in seen or not chains_dir.is_dir():
             continue
         seen.add(chains_dir)
-        groups.append({"key": f"{chains_dir.parent.name}/{task}", "chains_dir": chains_dir, "dataset_name": str(ds)})
+        groups.append({
+            "key": f"{chains_dir.parent.name}/{task}",
+            "chains_dir": chains_dir,
+            "dataset_name": str(ds),
+            "group": (str(output_base), str(ds), str(task)),
+        })
     return groups
 
 
-def _cluster_groups_locally(groups: list[dict], rank_label: str = "0") -> dict[tuple[str, str], int]:
+def _cluster_groups_locally(groups: list[dict], rank_label: str = "0") -> dict[tuple[tuple[str, str, str], str], int]:
     """Run :py:func:`cluster_structures` on each group directory serially.
 
     Each group's ``chains_dir`` is passed directly to foldseek — no file copying. Results
-    are keyed by ``(dataset_name, example_id)``: example IDs repeat across validation
-    datasets, so merging the group maps on ``example_id`` alone would cross-assign clusters.
+    are keyed by output tree, dataset, task and example because IDs repeat across groups.
     """
     try:
         available_cpus = len(os.sched_getaffinity(0))
     except AttributeError:
         available_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", "0")) or os.cpu_count() or 4
 
-    results: dict[tuple[str, str], int] = {}
+    results = {}
     for g in groups:
         t0 = time.perf_counter()
         try:
             chain_map = cluster_structures(g["chains_dir"], threads=available_cpus)
             if chain_map:
-                results.update({(g["dataset_name"], eid): cid for eid, cid in chain_map.items()})
+                results.update({(g["group"], eid): cid for eid, cid in chain_map.items()})
             logger.info(
                 f"[foldseek] rank{rank_label} group={g['key']} "
                 f"n={len(chain_map or {})} threads={available_cpus} "
@@ -506,12 +533,12 @@ def run_foldseek_distributed(
     world_size: int,
     global_rank: int,
     is_inference: bool,
-) -> dict[tuple[str, str], int] | None:
+) -> dict[tuple[tuple[str, str, str], str], int] | None:
     """Cluster ``(dataset_name, task)`` groups, optionally across DDP ranks.
 
     Each rank receives a slice of the ``foldseek_input_chains/{dataset}/{task}/`` directories and
     runs :py:func:`cluster_structures` on each one independently — no file copying.
-    Rank 0 gathers and returns ``{(dataset_name, example_id): cluster_id}``; other ranks
+    Rank 0 returns cluster assignments keyed by group and example ID. Other ranks
     return ``None``. Returns ``None`` (no-op) for inference or when ``FOLDSEEK_EXEC``
     is unset.
     """
@@ -538,7 +565,7 @@ def run_foldseek_distributed(
     dist.gather_object(my_results, gathered, dst=0)
     if global_rank != 0:
         return None
-    merged: dict[tuple[str, str], int] = {}
+    merged = {}
     for d in gathered or []:
         if d:
             merged.update(d)
@@ -547,15 +574,15 @@ def run_foldseek_distributed(
 
 def apply_cluster_map_to_metrics(
     metrics: list[dict],
-    cluster_map: dict[tuple[str, str], int] | None,
+    cluster_map: dict[tuple[tuple[str, str, str], str], int] | None,
 ) -> None:
-    """Write ``foldseek_cluster_id`` onto rows whose ``(dataset_name, example_id)`` is in ``cluster_map``.
+    """Write each matched group's cluster assignment to the corresponding design.
 
     Mutates ``metrics`` in place. No-op when ``cluster_map`` is ``None`` or empty.
     """
     if not cluster_map:
         return
     for m in metrics:
-        cluster_id = cluster_map.get((m.get("dataset_name") or "unknown_dataset", m.get("example_id")))
+        cluster_id = cluster_map.get(_cluster_key(m))
         if cluster_id is not None:
             m["foldseek_cluster_id"] = cluster_id

@@ -18,7 +18,7 @@ refold metrics.
 Field provenance (verified from Boltz ``main`` / ``docs/prediction.md`` on 2026-11-16)
 -------------------------------------------------------------------------------------
 * CLI: ``boltz predict <input.yaml> --out_dir <dir> --output_format mmcif``.
-* Per-sample outputs under ``<out>/predictions/<stem>/``:
+* Boltz 2.2.1 writes per-sample outputs under ``<out>/boltz_results_<stem>/predictions/<stem>/``:
   ``<stem>_model_0.cif`` (best sample) and
   ``confidence_<stem>_model_0.json`` with ``confidence_score``, ``ptm``,
   ``iptm``, ``complex_plddt``, ``chains_ptm`` and ``pair_chains_iptm``. All in
@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import shutil
 from pathlib import Path
 
@@ -41,6 +42,7 @@ from rfproteina.metrics.oracles.free_oracle_common import (
     PredictOutput,
     SequenceRefoldOracle,
 )
+from rfproteina.metrics.oracles.imported_refolds import read_confidence_json
 from rfproteina.utils.ddp import RankedLogger
 
 logger = RankedLogger(__name__, rank_zero_only=True)
@@ -55,6 +57,27 @@ def _chain_key(mapping: dict, chain_id: str, index: int) -> object | None:
     if chain_id in mapping:
         return mapping[chain_id]
     return mapping.get(str(index))
+
+
+def _number(value: object) -> float:
+    if type(value) not in (int, float):
+        raise ValueError("expected a numeric Boltz score")
+    try:
+        number = float(value)
+    except OverflowError as error:
+        raise ValueError("Boltz score exceeds the numeric range") from error
+    if not math.isfinite(number):
+        raise ValueError("expected a finite Boltz score")
+    return number
+
+
+def _fraction(value: object) -> float | None:
+    if value is None:
+        return None
+    number = _number(value)
+    if not 0 <= number <= 1:
+        raise ValueError("Boltz confidence or probability falls outside the 0 to 1 scale")
+    return number
 
 
 class Boltz2Oracle(SequenceRefoldOracle):
@@ -205,15 +228,19 @@ def parse_affinity(predictions_dir: Path, stem: str) -> dict[str, float] | None:
 
     Returns ``{"affinity_log10_ic50_um", "affinity_binder_probability"}`` or
     ``None`` when no affinity file exists. ``affinity_log10_ic50_um`` is
-    ``log10(IC50)`` with IC50 in micromolar (Boltz convention, lower = stronger);
-    it must never be dropped into a nanomolar panel. Boltz also documents a
-    conversion to pIC50 in kcal/mol: ``(6 - y) * 1.364``.
+    the model's predicted log10(IC50 in micromolar). On that scale a value
+    of ``y`` corresponds to dimensionless pIC50 ``6 - y``.
     """
     affinity_path = Path(predictions_dir) / f"affinity_{stem}.json"
     if not affinity_path.exists():
         return None
-    data = json.loads(affinity_path.read_text())
+    data = read_confidence_json(affinity_path)
+    if not isinstance(data, dict):
+        raise ValueError("expected a Boltz affinity object")
+    probability = _fraction(data.get("affinity_probability_binary"))
+    if probability is None:
+        raise ValueError("Boltz did not report a binding probability")
     return {
-        "affinity_log10_ic50_um": float(data["affinity_pred_value"]),
-        "affinity_binder_probability": float(data["affinity_probability_binary"]),
+        "affinity_log10_ic50_um": _number(data.get("affinity_pred_value")),
+        "affinity_binder_probability": probability,
     }

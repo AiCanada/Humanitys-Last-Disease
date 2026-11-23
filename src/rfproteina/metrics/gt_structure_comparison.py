@@ -159,6 +159,36 @@ def align_structures_by_annotations(
     )
 
 
+def _match_selected_positions(
+    gt: AtomArrayPlusStack, pred: AtomArrayPlusStack, align_mask: str | None, subset_mask: str | None
+) -> tuple[AtomArrayPlusStack, AtomArrayPlusStack] | None:
+    """Order complete, resolved selections by residue position, including insertion codes."""
+    depth = pred.stack_depth()
+    if not depth or gt.stack_depth() not in (1, depth):
+        return None
+    chain_key = "chain_iid" if all("chain_iid" in s.get_annotation_categories() for s in (gt, pred)) else "chain_id"
+
+    def selected(stack: AtomArrayPlusStack) -> tuple[AtomArrayPlusStack, list[tuple]]:
+        if subset_mask:
+            mask = resolve_mask(stack, subset_mask)
+            if align_mask and align_mask != subset_mask:
+                mask = mask | resolve_mask(stack, align_mask)
+            stack = stack[:, mask]
+        keys = list(zip(stack.get_annotation(chain_key), stack.res_id, stack.ins_code, stack.atom_name, strict=True))
+        return stack, keys
+
+    gt, gt_keys = selected(gt)
+    pred, pred_keys = selected(pred)
+    if not gt_keys or len(gt_keys) != len(pred_keys) or len(set(gt_keys)) != len(gt_keys):
+        return None
+    positions = {key: i for i, key in enumerate(pred_keys)}
+    if positions.keys() != set(gt_keys) or not np.isfinite(gt.coord).all() or not np.isfinite(pred.coord).all():
+        return None
+    if gt.stack_depth() == 1 and depth > 1:
+        gt = gt[np.zeros(depth, dtype=int)]
+    return gt, pred[:, [positions[key] for key in gt_keys]]
+
+
 def compute_rmsd(gt_array_stack: AtomArrayStack, pred_array_stack: AtomArrayStack, **kwargs) -> float:
     """
     Compute RMSD between two atom array stacks. Returns the RMSD for each atom array in the stack.
@@ -304,6 +334,8 @@ class StructureComparisonMetric(Metric):
             "predicted_atom_array": "predicted_atom_array"}``.
         verbose_naming: Emit verbose metric keys
             (e.g. ``rmsd_align=<is_backbone>_subset=<is_backbone>`` instead of ``rmsd``).
+        match_selected_positions: Require complete, unique and finite atom positions in the
+            alignment and scoring selections. Residue substitutions retain their backbone positions.
         restrict_to_common_atoms: Before comparing, restrict both structures to the atoms they
             share by ``(chain_iid, res_id, res_name, atom_name)`` (or ``chain_id`` when ``chain_iid`` is
             absent), in correspondence. Needed when a
@@ -338,6 +370,7 @@ class StructureComparisonMetric(Metric):
         restrict_to_common_atoms: bool = False,
         resolve_symmetry: Sequence[SymmetryLevel] = ("subunit", "atom"),
         max_subunit_permutations: int = 720,
+        match_selected_positions: bool = False,
         **kwargs,
     ):
         if metric_type != "rmsd":
@@ -347,6 +380,7 @@ class StructureComparisonMetric(Metric):
             raise ValueError(f"Unknown symmetry level(s) {sorted(unknown)}; expected 'atom' and/or 'subunit'")
         self.resolve_symmetry = tuple(resolve_symmetry)
         self.max_subunit_permutations = max_subunit_permutations
+        self.match_selected_positions = match_selected_positions
 
         self._input_kwarg_names = input_kwarg_names or {
             "ground_truth_atom_array": "ground_truth_atom_array",
@@ -505,8 +539,17 @@ class StructureComparisonMetric(Metric):
             Dictionary with comparison results.
         """
         metric_kwargs = self.metric_kwargs.get("rmsd", {})
+        if self.match_selected_positions and any(
+            isinstance(arrays, list) and not arrays for arrays in (ground_truth_atom_array, predicted_atom_array)
+        ):
+            return {}
         gt_stack = self._prepare_gt_stack(ground_truth_atom_array)
         pred_stack = as_atom_array_plus_stack(predicted_atom_array).copy()
+        if self.match_selected_positions:
+            pair = _match_selected_positions(gt_stack, pred_stack, self.align_mask, self.subset_mask)
+            if pair is None:
+                return {}
+            gt_stack, pred_stack = pair
 
         # Drop atoms one side lacks (e.g. a crop refold vs the full design) so the positional
         # matching below lines up; leaves aligned inputs untouched.

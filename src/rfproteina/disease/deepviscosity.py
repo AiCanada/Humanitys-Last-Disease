@@ -413,15 +413,22 @@ def feature_matrix(rows: Sequence[Mapping[str, object]]) -> Any:
 
     if not rows:
         raise DeepViscosityUnavailableError("deepviscosity_no_rows")
+    limit = float(np.finfo(np.float32).max)
     out = np.zeros((len(rows), FEATURE_COUNT), dtype=np.float32)
     for position, row in enumerate(rows):
         for index, column in enumerate(DEEPVISCOSITY_FEATURES):
             if column not in row:
                 raise DeepViscosityUnavailableError(f"deepviscosity_feature_absent:{column}")
+            value = row[column]
+            if isinstance(value, bool | np.bool_):
+                raise DeepViscosityUnavailableError(f"deepviscosity_feature_unparsed:{column}")
             try:
-                out[position, index] = float(row[column])  # type: ignore[arg-type]
-            except (TypeError, ValueError) as error:
+                number = float(value)  # type: ignore[arg-type]
+            except (TypeError, ValueError, OverflowError) as error:
                 raise DeepViscosityUnavailableError(f"deepviscosity_feature_unparsed:{column}") from error
+            if not -limit <= number <= limit:
+                raise DeepViscosityUnavailableError(f"deepviscosity_feature_out_of_range:{column}")
+            out[position, index] = number
     return out
 
 
@@ -441,6 +448,8 @@ def scale_features(matrix: Any, scaler: Scaler) -> Any:
     scaled = np.array(matrix, dtype=np.float32, copy=True)
     scaled -= np.asarray(scaler.mean, dtype=np.float64)
     scaled /= np.asarray(scaler.scale, dtype=np.float64)
+    if not np.isfinite(scaled).all():
+        raise DeepViscosityUnavailableError("deepviscosity_scaled_features_nonfinite")
     return scaled
 
 

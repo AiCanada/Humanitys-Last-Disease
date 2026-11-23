@@ -34,7 +34,7 @@ from tests.helpers.disease import (
 )
 
 #: Raised whenever either set below changes. See the module docstring.
-_EXPECTED_VERSION = 4
+_EXPECTED_VERSION = 11
 
 _REQUIRED = (
     "bar",
@@ -65,16 +65,23 @@ _OPTIONAL = (
     "design_diversity",
     "job_mismatch",
     "ligand_alerts",
+    "ligand_solubility",
     "metrics_blocker",
     "mhc_class_i",
     "modality_screen",
     "nucleic_liability",
+    "prodigy_affinity",
+    "protein_sol",
+    "qupkake",
     "replaced",
     "sequence_liability",
+    "sygma",
     "synthesis",
     "target_accession",
     "target_liability",
+    "tnp_profile",
     "toxicology",
+    "vina_pose",
 )
 
 _PROTEIN = UBIQUITIN

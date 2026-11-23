@@ -371,6 +371,24 @@ def _suffix(path: Path) -> str:
     return path.name[len(structure_file_stem(path)) :]
 
 
+def read_confidence_json(path: Path) -> object:
+    """Read a bounded JSON score file, rejecting duplicate fields and nonfinite numbers."""
+    def unique_keys(pairs: list) -> dict:
+        values = dict(pairs)
+        if len(values) != len(pairs):
+            raise ValueError("duplicate confidence field")
+        return values
+
+    with path.open("rb") as handle:
+        raw = handle.read(CONFIDENCE_BYTE_LIMIT + 1)
+    if len(raw) > CONFIDENCE_BYTE_LIMIT:
+        raise ValueError("confidence record exceeds size limit")
+    loaded = json.loads(raw.decode("utf-8-sig"), object_pairs_hook=unique_keys)
+    # Reject NaN, Infinity and numeric literals that overflow even in nested values.
+    json.dumps(loaded, allow_nan=False)
+    return loaded
+
+
 def _confidence_payload(oracle: OracleMetric, confidence: Path | None) -> dict[str, object] | str:
     """The record to write, or a blocker name when the supplied file is unusable."""
     base: dict[str, object] = {IMPORT_MARK: True, "oracle_name": oracle.oracle_name}

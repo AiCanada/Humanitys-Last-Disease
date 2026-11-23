@@ -1,7 +1,7 @@
 """Interface terms the pass criteria do not carry, measured without PyRosetta.
 
-Buried area, interface residue counts, polar satisfaction and Lawrence-Colman
-shape complementarity are computed from geometry alone, so these run on a
+Buried area, interface residue counts, polar contacts and a contact-surface
+shape score are computed from geometry alone, so these run on a
 hand-written PDB in about a second and need no model, no network and no weights.
 What is checked is that the numbers move the way geometry says they must: two
 chains pushed apart bury nothing and have no interface, two chains in contact
@@ -95,6 +95,26 @@ def test_chains_pulled_far_apart_bury_nothing(tmp_path: Path) -> None:
     assert measured.buried_unsatisfied_polar_atoms == 0
 
 
+def test_unmeasured_surface_area_never_becomes_measured_zero(tmp_path: Path, monkeypatch) -> None:
+    import biotite.structure
+
+    monkeypatch.setattr(biotite.structure, "sasa", lambda atoms, **kw: np.full(len(atoms), np.nan))
+    with pytest.raises(InterfaceUnreadableError, match="sasa_nonfinite"):
+        measure_interface(_complex(tmp_path / "close.pdb", 4.5), "A")
+
+
+def test_interface_cli_reports_contact_and_abstains_without_calibration(tmp_path: Path, capsys) -> None:
+    import json
+
+    from scripts.screen_extras import main
+
+    close = _complex(tmp_path / "close.pdb", 4.5)
+    assert main(["interface", str(close), "--binder", "A"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["measured"]["dsasa_total_a2"] > 0
+    assert report["verdicts"]["dsasa_total_a2"]["state"] == "no_cut"
+
+
 def test_contact_counts_fall_as_the_chains_separate(tmp_path: Path) -> None:
     close = measure_interface(_complex(tmp_path / "a.pdb", 4.5), "A")
     apart = measure_interface(_complex(tmp_path / "b.pdb", 9.0), "A")
@@ -133,6 +153,36 @@ def test_far_apart_chains_have_no_shape_complementarity(tmp_path: Path) -> None:
     measured = measure_interface(_complex(tmp_path / "far.pdb", 60.0), "A")
     assert measured.shape_complementarity is None
     assert measured.shape_complementarity_reason
+
+
+def test_a_tangent_probe_is_only_buried_by_the_other_chain() -> None:
+    from rfproteina.disease.interface_quality import _shape_complementarity
+
+    # Within the neighbour search but beyond 2 * (1.7 A radius + 1.7 A probe).
+    coords = np.array([[0.0, 0.0, 0.0], [7.0, 0.0, 0.0]])
+    sc = _shape_complementarity(coords, np.array([1.7, 1.7]), np.array([True, False]))
+    assert (sc.binder_dots, sc.target_dots) == (0, 0)
+    assert sc.value is None
+
+
+def test_reference_defaults_do_not_classify_geometry_proxies(tmp_path: Path) -> None:
+    items = verdicts(measure_interface(_complex(tmp_path / "close.pdb", 4.5), "A"))
+    for name in ("interface_polar_contacts", "buried_unsatisfied_polar_atoms", "interface_residues_binder"):
+        assert items[name]["state"] == "no_cut"
+        assert items[name]["threshold"] is None
+
+
+@pytest.mark.parametrize("suffix", [".gz", ".gzip", ".zst"])
+def test_compression_preserves_interface_measurements(tmp_path: Path, suffix: str) -> None:
+    from atomworks.io.utils.compression import open_compressed
+    from biotite.structure.io import load_structure, save_structure
+
+    cif = tmp_path / "input.cif"
+    save_structure(str(cif), load_structure(str(_complex(tmp_path / "input.pdb", 4.5)), model=1))
+    packed = cif.with_name(cif.name + suffix)
+    with open_compressed(packed, "wb") as output:
+        output.write(cif.read_bytes())
+    assert measure_interface(packed, "A") == measure_interface(cif, "A")
 
 
 def test_a_packed_slab_interface_has_a_positive_defined_sc(tmp_path: Path) -> None:

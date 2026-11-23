@@ -1,26 +1,18 @@
 """Solubility and aggregation scores supplied for a finished design.
 
-Aggregation is the developability failure that ends a binder quietly: it
-expresses, it aggregates, and nothing before the bench said so. CamSol,
-Aggrescan3D, and Protein-Sol are not run here. Their coefficient tables are
-not in this program, and a designed sequence does not leave the machine. A
-supplied score for any of them, including a supplied AGGRESCAN row, comes from
-a table beside the run, the way ``plasma_fold.tsv`` carries a fold change. The
-sequence AGGRESCAN is computed separately and stored on the modality report.
+A table beside a run supplies method-labelled solubility and aggregation scores.
+Native Protein-Sol output also carries predictions for individual sequences.
+The reader checks the sequence identity before reporting the four native fields.
+Sequence AGGRESCAN is computed separately and stored on the modality report.
 
-Every row has to name its method as well as its score. A solubility number is
-meaningless without the tool that produced it: 0.4 is a poor CamSol score and a
-low AGGRESCAN one, and the two mean opposite things. For the same reason this
-module judges nothing. It reports what the table says, with the method and the
-provenance attached, and no cut turns it into a hit or a clear -- the scales are
-not comparable to each other and no published threshold spans them. It is a
-report, like the chemical liabilities, not an axis: the screen's call does not
-move.
+Each supplied score retains its method, source and reported scale. The reader
+displays those observations without applying a cross-method threshold.
 """
 
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import math
 from collections.abc import Mapping, Sequence
@@ -29,6 +21,7 @@ from pathlib import Path
 from rfproteina.disease.liability import _column_key, _table_lines
 
 SOLUBILITY_TABLE = "solubility"
+PROTEIN_SOL_METHOD = "Protein-Sol"
 #: Rows one table may carry. A predictor panel is a handful of scores, not a
 #: dataset, and a file past this is withheld whole so an earlier row cannot
 #: stand in for a later one.
@@ -47,6 +40,117 @@ _ABSENT = frozenset({"", "nan", "none", "null", "na", "n/a", "n.a.", "n.d.", "nd
 #: another column's name.
 _EXTRA = "\x00extra"
 _TEXT_LIMIT = 120
+
+_PROTEIN_SOL_FIELDS = {"ID", "percent-sol", "scaled-sol", "population-sol", "pI"}
+_PROTEIN_SOL_SOURCE = "Hebditch et al. 2017, doi:10.1093/bioinformatics/btx345"
+
+
+def read_protein_sol(directory: Path, chains: Sequence[tuple[str, str | None]]) -> dict[str, object] | None:
+    """Attach already-computed native Protein-Sol predictions to the matching sample sequences."""
+    try:
+        report = _protein_sol_text(directory / "seq_prediction.txt")
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, OverflowError):
+        return {"blocker": "protein_sol_report_unreadable"}
+    try:
+        predictions = _protein_sol_predictions(report)
+    except (ValueError, csv.Error):
+        return {"blocker": "protein_sol_report_invalid"}
+    if not chains:
+        return {"blocker": "protein_sol_samples_missing"}
+    try:
+        fasta = _protein_sol_fasta(_protein_sol_text(directory / "protein_sol.fasta"))
+    except FileNotFoundError:
+        fasta = {}
+    except (OSError, ValueError, OverflowError):
+        return {"blocker": "protein_sol_fasta_invalid"}
+
+    samples: list[dict[str, object]] = []
+    for example_id, sequence in chains:
+        item: dict[str, object] = {"example_id": example_id}
+        samples.append(item)
+        if not sequence or len(sequence) < 21 or set(sequence).difference("ACDEFGHIKLMNPQRSTVWY"):
+            item["blocker"] = "protein_sol_sequence_unresolved"
+            continue
+        digest = hashlib.sha256(sequence.encode("ascii")).hexdigest()
+        digest_id = f"sha256:{digest}"
+        candidates = {digest_id} & predictions.keys()
+        if example_id in predictions and example_id != digest_id:
+            if fasta.get(example_id) != sequence:
+                item["blocker"] = "protein_sol_input_unverified"
+                continue
+            candidates.add(example_id)
+        if len(candidates) != 1:
+            item["blocker"] = "protein_sol_ambiguous" if candidates else "protein_sol_sample_missing"
+            continue
+        identifier = candidates.pop()
+        item.update(predictions[identifier])
+        item.update(method=PROTEIN_SOL_METHOD, sequence_sha256=digest, input_id=identifier, unit="scaled-sol")
+    return {"source": _PROTEIN_SOL_SOURCE, "samples": samples}
+
+
+def _protein_sol_text(path: Path) -> str:
+    with path.open("rb") as stream:
+        data = stream.read(SOLUBILITY_FILE_LIMIT + 1)
+    if len(data) > SOLUBILITY_FILE_LIMIT:
+        raise OverflowError("Protein-Sol artifact exceeds the file size limit")
+    return data.decode("utf-8-sig")
+
+
+def _protein_sol_fasta(text: str) -> dict[str, str]:
+    """Use the complete FASTA header and sequence from the predictor input."""
+    entries: dict[str, list[str]] = {}
+    name = ""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith(">"):
+            name = line[1:]
+            if not name or name in entries:
+                raise ValueError("Empty or repeated FASTA identifier")
+            entries[name] = []
+        elif name:
+            entries[name].append(line.upper())
+        else:
+            raise ValueError("Missing FASTA header")
+    return {key: "".join(parts) for key, parts in entries.items()}
+
+
+def _protein_sol_predictions(report: str) -> dict[str, dict[str, float]]:
+    fields: list[str] = []
+    predictions: dict[str, dict[str, float]] = {}
+    for line in report.splitlines():
+        tag = line.partition(",")[0].strip()
+        if tag not in {"HEADERS PREDICTIONS LINE", "SEQUENCE PREDICTIONS"}:
+            continue
+        cells = [s.strip() for s in next(csv.reader([line], strict=True))][1:]
+        if tag == "HEADERS PREDICTIONS LINE":
+            if fields or len(cells) != len(_PROTEIN_SOL_FIELDS) or set(cells) != _PROTEIN_SOL_FIELDS:
+                raise ValueError("Ambiguous Protein-Sol prediction columns")
+            fields = cells
+            continue
+        if not fields or len(cells) != len(fields):
+            raise ValueError("Protein-Sol prediction row does not match its header")
+        row = dict(zip(fields, cells, strict=True))
+        identifier = row["ID"].removeprefix(">")
+        if not row["ID"].startswith(">") or not identifier or identifier in predictions:
+            raise ValueError("Missing or duplicate Protein-Sol sequence identifier")
+        score, population, percent, pi = (
+            float(row[key]) for key in ("scaled-sol", "population-sol", "percent-sol", "pI")
+        )
+        if not (0 <= score <= 1 and 0 <= population <= 1 and 0 <= percent <= 100 and 0 <= pi <= 14):
+            raise ValueError("Invalid Protein-Sol measurement")
+        predictions[identifier] = {
+            "score": score,
+            "population_scaled_sol": population,
+            "predicted_percent_sol": percent,
+            "predicted_pI": pi,
+        }
+    if not predictions:
+        raise ValueError("No native Protein-Sol predictions")
+    return predictions
 
 
 def read_solubility(directory: Path) -> dict[str, object]:
@@ -71,6 +175,12 @@ def read_solubility(directory: Path) -> dict[str, object]:
         return {"solubility_blocker": "solubility_unreadable"}
     if not rows:
         return {"solubility_blocker": "solubility_not_reported"}
+    # The native Aggrescan3D CSV contains a separate score for each residue.
+    # Adding a method and citation to those rows cannot turn them into whole-structure scores.
+    if {"protein", "chain", "residue", "residue_name", "score"} <= rows[0].keys() and any(
+        row.get("residue", "").strip() for row in rows
+    ):
+        return {"solubility_blocker": "solubility_residue_profile"}
     if len(rows) > SOLUBILITY_ROW_LIMIT:
         return {"solubility_blocker": "solubility_truncated"}
     scored: list[dict[str, object]] = []
@@ -109,7 +219,8 @@ def solubility_phrase(record: Mapping[str, object]) -> str | None:
             continue
         method = item.get("method")
         score = item.get("score")
-        if not isinstance(method, str) or not isinstance(score, int | float):
+        if (not isinstance(method, str) or not method.strip() or not isinstance(score, int | float)
+                or isinstance(score, bool) or not math.isfinite(score)):
             continue
         piece = f"{method} {_number(score)}"
         unit = item.get("unit")
@@ -127,21 +238,19 @@ def _score_row(row: Mapping[str, str]) -> tuple[dict[str, object] | None, list[s
     if not filled:
         return None, []
     numbers = {name: _number_cell(row.get(name, "")) for name in filled}
+    invalid = [name for name, value in numbers.items() if value is None]
+    if invalid:
+        return None, invalid
     column = filled[0]
     number = numbers[column]
-    if number is None:
-        return None, [column]
-    # A row carries one method, and the column the number came from is what
-    # says which scale it is on: 0.4 is a poor CamSol score and a low
-    # AGGRESCAN one. Two score columns holding different numbers leave nothing
-    # here able to say which of them the method names, and the first in a
-    # fixed alias order was being published while the other was dropped
-    # without a word -- a solubility of 0.1 reported from a row that also said
-    # aggregation 0.9. The same number written into two aliases is one
-    # measurement and is kept.
+    # Distinct scores in one row cannot both be attributed to its single method.
     disagreeing = {name for name, value in numbers.items() if value is not None and value != number}
     if disagreeing:
         return None, sorted({column, *disagreeing})
+    for aliases in (_METHOD_COLUMNS, _UNIT_COLUMNS):
+        used = [key for key in aliases if _filled(row, key)]
+        if len({row[key].strip() for key in used}) > 1:
+            return None, used
     method = _text(_first_filled(row, _METHOD_COLUMNS)[1])
     source = _text(_first_filled(row, _SOURCE_COLUMNS)[1])
     if not method or not source:
@@ -182,7 +291,7 @@ def _number_cell(raw: str) -> float | None:
         return None
     if not math.isfinite(number):
         return None
-    return float(f"{number:.4f}")
+    return number
 
 
 def _text(raw: str) -> str:
@@ -227,7 +336,7 @@ def _rows(path: Path) -> list[dict[str, str]] | None:
         return []
     dialect = csv.excel_tab if "\t" in lines[0] else csv.excel
     try:
-        reader = csv.DictReader(io.StringIO("\n".join(lines)), dialect=dialect, restkey=_EXTRA)
+        reader = csv.DictReader(io.StringIO("\n".join(lines)), dialect=dialect, restkey=_EXTRA, strict=True)
         names = list(reader.fieldnames or ())
         if _duplicate_keys(names):
             return None
@@ -244,8 +353,6 @@ def _rows(path: Path) -> list[dict[str, str]] | None:
                     if isinstance(key, str) and key != _EXTRA
                 }
             )
-        if len(found) != len(lines) - 1:
-            return None
         return found
     except csv.Error:
         return None
@@ -275,4 +382,4 @@ def _surplus(extra: object) -> bool:
 def _number(value: float) -> str:
     if float(value).is_integer():
         return str(int(value))
-    return f"{value:.4f}".rstrip("0").rstrip(".")
+    return str(value)

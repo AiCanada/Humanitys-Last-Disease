@@ -5,9 +5,7 @@ Evaluates a single threshold criterion against an already-computed metrics dict
 MetricManager, which runs last in the validation flow.
 """
 
-from collections.abc import Callable, Sequence
 from pathlib import Path
-from statistics import fmean
 from tempfile import TemporaryDirectory
 from typing import Any
 from uuid import uuid4
@@ -17,38 +15,9 @@ from biotite.structure import AtomArray
 from rfproteina.metrics.metric import Metric
 from rfproteina.metrics.utils.metrics_utils import _write_chain_only_cif_if_unambiguous
 from rfproteina.utils.logging import RankedLogger
+from rfproteina.utils.metric_thresholds import COMPARISONS, MetricThreshold
 
 logger = RankedLogger(__name__, rank_zero_only=False)
-
-# Reductions a threshold spec may apply to a list of metric keys instead of naming one.
-_REDUCERS: dict[str, Callable[[Sequence[float]], float]] = {
-    "min_of": min,
-    "max_of": max,
-    "mean_of": fmean,
-}
-
-
-def _resolve_reduction(label: str, spec: dict[str, Any]) -> tuple[list[str], Callable[[Sequence[float]], float] | None]:
-    """Resolve which metric keys a threshold spec covers, and how to reduce them.
-
-    Args:
-        label: The ``metric_thresholds`` key; the metric key itself if *spec* has no reducer.
-        spec: Threshold spec, optionally carrying one :data:`_REDUCERS` key.
-
-    Returns:
-        Metric keys to look up, and the reduction over their values, or ``None`` if
-        *spec* has no reducer -- there's a single key and nothing to reduce.
-    """
-    reducers = [name for name in _REDUCERS if name in spec]
-    if len(reducers) > 1:
-        raise ValueError(f"Threshold spec '{label}' carries more than one of {sorted(_REDUCERS)}: {reducers}.")
-    if not reducers:
-        return [label], None
-    name = reducers[0]
-    keys = list(spec[name])
-    if not keys:
-        raise ValueError(f"Threshold spec '{label}' has an empty '{name}' key list.")
-    return keys, _REDUCERS[name]
 
 
 class PassCriterionMetric(Metric):
@@ -96,12 +65,14 @@ class PassCriterionMetric(Metric):
         super().__init__(**kwargs)
         self.metric_thresholds = metric_thresholds
         # Resolved here so a malformed spec fails at config load rather than mid-validation.
-        self._reductions = {label: _resolve_reduction(label, spec) for label, spec in metric_thresholds.items()}
+        self._thresholds = {label: MetricThreshold.parse(label, spec) for label, spec in metric_thresholds.items()}
+        if not self._thresholds:
+            raise ValueError("A pass criterion requires at least one threshold.")
 
     @property
     def required_metric_keys(self) -> set[str]:
         """Metric keys required by direct thresholds and reductions."""
-        return {key for keys, _ in self._reductions.values() for key in keys}
+        return {key for spec in self._thresholds.values() for key in spec.keys}
 
     @property
     def kwargs_to_compute_args(self) -> dict:
@@ -125,25 +96,14 @@ class PassCriterionMetric(Metric):
         """
         all_present = True
         passed = True
-        for label, thresholds in self.metric_thresholds.items():
-            keys, reduce = self._reductions[label]
-            values = [metrics.get(key) for key in keys]
-            if missing := [key for key, val in zip(keys, values, strict=True) if val is None]:
-                logger.warning(
-                    f"Metric key(s) {missing} absent from metrics. Treating as indeterminate (not a hard fail)."
-                )
+        for label, spec in self._thresholds.items():
+            value = spec.measurement(metrics)
+            if value is None:
+                logger.warning(f"Missing or non-finite input for criterion metric {label!r}.")
                 all_present = False
                 passed = False
-            else:
-                val = values[0] if reduce is None else reduce(values)
-                min_val = thresholds.get("min")
-                max_val = thresholds.get("max")
-                if not ((min_val is None or val >= min_val) and (max_val is None or val <= max_val)):
-                    passed = False
-                if (min_exclusive := thresholds.get("min_exclusive")) is not None and not val > min_exclusive:
-                    passed = False
-                if (max_exclusive := thresholds.get("max_exclusive")) is not None and not val < max_exclusive:
-                    passed = False
+            elif not all(COMPARISONS[bound](value, cut) for bound, cut in spec.bounds):
+                passed = False
 
         if passed and self.archive_dir is not None:
             if atom_array is None:

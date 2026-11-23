@@ -650,7 +650,7 @@ build_container_mounts_string() {
     fi
     
     # Ensure enroot config is mounted when available for Docker/Pyxis profiles.
-    local enroot_host="/home/${USER}/.config/enroot"
+    local enroot_host="${XDG_CONFIG_HOME:-$HOME/.config}/enroot"
     local enroot_mount="${enroot_host}:${enroot_host}:ro"
     if [ -d "$enroot_host" ]; then
         if [[ ",$mounts," != *",$enroot_mount,"* ]]; then
@@ -751,6 +751,56 @@ build_container_env_cmds() {
     done
     
     echo "$cmds"
+}
+
+# Emit the CPU report job used by both generation and offline evaluation.
+write_metrics_batch() {
+    local code_dir="$1" metrics_dir="$2" cluster_with_foldseek="$3"
+    local -a command=("$code_dir/src/rfproteina/inference_utils/aggregate_metrics.py" --input "$metrics_dir")
+    if [[ "$cluster_with_foldseek" == true ]]; then
+        command+=(--cluster-with-foldseek)
+    fi
+
+    echo '#!/bin/bash'
+    printf '#SBATCH --job-name %q\n' "concat-$RUN_NAME"
+    if [[ "$SKIP_ACCOUNT" != true && -n "$ACCOUNT" ]]; then
+        printf '#SBATCH --account %q\n' "$ACCOUNT"
+    fi
+    if [[ -n "${CPU_PARTITION:-${PARTITION:-}}" ]]; then
+        printf '#SBATCH --partition %q\n' "${CPU_PARTITION:-$PARTITION}"
+    fi
+    cat <<'HEADER'
+#SBATCH --time 04:00:00
+#SBATCH --nodes 1
+#SBATCH --ntasks-per-node 1
+#SBATCH --cpus-per-task 4
+#SBATCH --mem 16g
+#SBATCH --output ./slurm_run_outputs/slurm_concat.out
+#SBATCH --error ./slurm_run_outputs/slurm_concat.err
+#SBATCH --open-mode append
+
+set -e
+export PYTHONFAULTHANDLER=1
+HEADER
+    printf 'export PYTHONPATH=%q:%q:"${PYTHONPATH:-}"\n' "$code_dir/src" "$code_dir"
+    printf 'echo %q\n' "Running result concatenation for: $RUN_NAME" "Concat dir: $metrics_dir"
+    if [[ "$CONTAINER_TYPE" == docker ]]; then
+        local image mounts setting inner='set -e'
+        local -a launch=(srun --ntasks=1)
+        image=$(get_srun_cmd) || return 1
+        mounts=$(build_container_mounts_string) || return 1
+        if [[ -n "$image" ]]; then launch+=("$image"); fi
+        if [[ -n "$mounts" ]]; then launch+=("--container-mounts=$mounts"); fi
+        for setting in "${CONTAINER_ENV[@]}"; do
+            inner+=$'\n'"$setting"
+        done
+        inner+=$'\n''exec python "$@"'
+        command=("${launch[@]}" "--container-workdir=$RUN_DIR" bash -c "$inner" bash "${command[@]}")
+    else
+        printf 'export CLUSTER=%q CONTAINER_TYPE=%q\n' "$CLUSTER" "$CONTAINER_TYPE"
+    fi
+    printf '%q ' "${command[@]}"
+    printf '\necho "Concatenation complete!"\n'
 }
 
 # Copy codebase to a target directory (used by launch_generate.sh and launch_sweep.sh)

@@ -10,6 +10,7 @@ body, so a deleted entry fails as loudly as an unregistered one.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 from pathlib import Path
 
@@ -35,20 +36,47 @@ def _slugs_the_package_names() -> set[str]:
         deepviscosity,
         developability,
         humanness,
+        ligand_metabolites,
         ligand_regressor,
         ligand_safety,
+        ligand_solubility,
         mhc_tables,
         octant,
+        prodigy,
+        qupkake,
+        solubility,
         stability,
+        tnp,
+        vina_pose,
     )
+    # Importing the CATH metric initializes the training framework. Read only its
+    # published method constants and require both names, also on a CPU-only install.
+    source = REPO / "src" / "rfproteina" / "metrics" / "cath_metric.py"
+    cath_ids = {
+        target.id: ast.literal_eval(node.value)
+        for node in ast.parse(source.read_text(encoding="utf-8")).body
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name) and target.id in {"FOLDSEEK_METHOD", "PROTEINA_CLASSIFIER"}
+    }
 
     return {
+        prodigy.METHOD,
+        qupkake.METHOD,
+        ligand_metabolites.METHOD,
+        vina_pose.METHOD,
+        tnp.METHOD,
+        solubility.PROTEIN_SOL_METHOD,
+        ligand_safety.BAYESHERG_METHOD,
+        cath_ids["FOLDSEEK_METHOD"],
+        cath_ids["PROTEINA_CLASSIFIER"],
         developability.CROSSABSENSE_METHOD,
         developability.DEEPSP_READER_METHOD,
         developability.NUMBERING_METHOD,
         deepsp.DEEPSP_METHOD,
         deepviscosity.VISCOSITY_METHOD,
         ligand_safety.ADMET_AI_METHOD,
+        ligand_solubility.METHOD,
         ligand_regressor.METHOD_FOREST,
         ligand_regressor.METHOD_CHEMPROP,
         class_ii.CLASS_II_METHOD,

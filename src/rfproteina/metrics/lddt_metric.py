@@ -94,34 +94,33 @@ class AllAtomLDDT(Metric):
         Returns:
             Dictionary with 'all_atom_lddt' score.
         """
-        # Convert to stacks for uniform handling
+        if (isinstance(predicted, list) and not predicted) or (isinstance(ground_truth, list) and not ground_truth):
+            return {"all_atom_lddt": float("nan")}
         pred_stack = as_atom_array_plus_stack(predicted)
         gt_stack = as_atom_array_plus_stack(ground_truth)
+        n_predictions = pred_stack.stack_depth()
         if (
-            "subunit" in self.resolve_symmetry
-            and pred_stack.array_length() == gt_stack.array_length()
-            and gt_stack.stack_depth() in (1, pred_stack.stack_depth())
+            not n_predictions
+            or gt_stack.stack_depth() not in (1, n_predictions)
+            or not pred_stack.array_length()
+            or pred_stack.array_length() != gt_stack.array_length()
         ):
+            logger.warning("lDDT needs matching atom counts and one shared reference or a reference per prediction.")
+            return {"all_atom_lddt": float("nan")}
+        if "subunit" in self.resolve_symmetry:
             gt_stack = as_atom_array_plus_stack(
                 permute_gt_subunits(pred_stack, gt_stack, max_permutations=self.max_subunit_permutations)
             )
-        if "atom" in self.resolve_symmetry and (
-            pred_stack.array_length() == gt_stack.array_length()
-            and (pred_stack.stack_depth() == gt_stack.stack_depth() or gt_stack.stack_depth() == 1)
-        ):
+        if "atom" in self.resolve_symmetry:
             gt_stack = permute_gt_atoms(pred_stack, gt_stack)
 
         # Compute LDDT for each pair
         scores = []
-        for i in range(len(pred_stack)):
+        shared_reference = gt_stack.stack_depth() == 1
+        for i in range(n_predictions):
             # Convert to plain AtomArray for compatibility with Biotite lddt function
             pred = _to_plain_atom_array(pred_stack[i])
-            gt = _to_plain_atom_array(gt_stack[i])
-            # lddt requires matching atom counts
-            if len(pred) != len(gt):
-                logger.warning(f"Atom count mismatch: predicted={len(pred)}, ground_truth={len(gt)}. Returning NaN.")
-                scores.append(float("nan"))
-                continue
+            gt = _to_plain_atom_array(gt_stack[0 if shared_reference else i])
             # Use occupancy mask if available
             atom_mask = _get_occupancy_mask(gt)
             # ... and score

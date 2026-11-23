@@ -259,6 +259,8 @@ _BLOCKER_TEXT = {
         "The conformers do not all have the same number of residues, so they are not an "
         "ensemble of one chain and no fluctuation can be taken across them."
     ),
+    "frames_disagree_on_identity": "The chain label and residue sequence must match across all conformers.",
+    "frame_coordinates_invalid": "Each residue needs one alpha carbon with three finite coordinates.",
     "chain_too_short": (
         f"Fewer than {MIN_RESIDUES} residues. A superposition over a handful of points says "
         "more about the arithmetic than about the structures."
@@ -509,9 +511,26 @@ def frames_from_structures(
         return (), refusal("ensemble_not_supplied")
     if len(found[0]) < MIN_RESIDUES:
         return (), refusal("chain_too_short")
-    if len({len(frame) for frame in found}) != 1:
-        return (), refusal("frames_disagree_on_length")
+    blocker = _frame_blocker(found)
+    if blocker:
+        return (), blocker
     return tuple(found), ""
+
+
+def _frame_blocker(frames: Sequence[Frame]) -> str:
+    reference = frames[0]
+    for frame in frames:
+        if len(frame) != len(reference):
+            return refusal("frames_disagree_on_length")
+        if frame.chain != reference.chain or frame.sequence != reference.sequence:
+            return refusal("frames_disagree_on_identity")
+        try:
+            coords = np.asarray(frame.coords)
+            if coords.shape != (len(frame), 3) or coords.dtype.kind not in "fiu" or not np.isfinite(coords).all():
+                return refusal("frame_coordinates_invalid")
+        except (TypeError, ValueError):
+            return refusal("frame_coordinates_invalid")
+    return ""
 
 
 def _superposed(frames: Sequence[Frame]) -> np.ndarray:
@@ -644,8 +663,9 @@ def measure(ensemble: Ensemble) -> tuple[Measured | None, str]:
         return None, refusal("ensemble_too_small")
     if len(frames) > MAX_FRAMES:
         return None, refusal("ensemble_too_large")
-    if len({len(frame) for frame in frames}) != 1:
-        return None, refusal("frames_disagree_on_length")
+    blocker = _frame_blocker(frames)
+    if blocker:
+        return None, blocker
     if len(frames[0]) < MIN_RESIDUES:
         return None, refusal("chain_too_short")
     try:
@@ -659,7 +679,7 @@ def measure(ensemble: Ensemble) -> tuple[Measured | None, str]:
         # OSError or a ValueError, and the alternative is a traceback out of a
         # page.
         return None, f"{refusal('generator_failed')}:{type(error).__name__}"
-    if not all(math.isfinite(value) for value in (*fluctuation, drift, spread, gyration)):
+    if not all(math.isfinite(value) for value in (*fluctuation, drift, spread, gyration, gyration_spread)):
         return None, refusal("generator_failed")
     return (
         Measured(

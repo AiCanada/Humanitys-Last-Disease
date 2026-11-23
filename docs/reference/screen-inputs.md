@@ -12,6 +12,12 @@ axis with no input stays `untested`, and a bar with an untested axis never clear
 **Contents**
 
 - [Where the files go](#where-the-files-go)
+- [PRODIGY protein-pair affinity](#prodigy-protein-pair-affinity)
+- [AutoDock Vina fixed-pose score](#autodock-vina-fixed-pose-score)
+- [Small-molecule aqueous solubility](#small-molecule-aqueous-solubility)
+- [QupKake microscopic pKa](#qupkake-microscopic-pka)
+- [SyGMa human metabolite predictions](#sygma-human-metabolite-predictions)
+- [Therapeutic Nanobody Profiler](#therapeutic-nanobody-profiler)
 - [How a verdict is reached](#how-a-verdict-is-reached)
 - [Class I and class II predictor tables](#class-i-and-class-ii-predictor-tables)
 - [Reference tables](#reference-tables)
@@ -59,9 +65,357 @@ object must start the file.
 | `ada.tsv` | overrides the computed ADA measurement |
 | `plasma_fold.tsv` | `plasma_fold` |
 | `toxicology.tsv` | the ligand safety panel (`herg`, `nav1_5`, `cyp3a4`, `cyp2d6`, `cyp2c9`, `cyp1a2`, `cyp2c19`, `pgp`, `bcrp`, `bsep`) |
+| `ligand_candidates.tsv` or `ligand_smiles.txt` | ADMET-AI aqueous solubility for the nominated small molecules in a ligand run |
+| `qupkake.json` and a nominated ligand input | QupKake microscopic pKa for individual proton transfers in a ligand run |
+| `sygma.json` and a nominated ligand input | SyGMa ranked human metabolite structures and their predicted formation pathways |
 | `solubility.tsv` | supplied solubility and aggregation scores, reported and not judged |
+| `seq_prediction.txt` | native Protein-Sol report for the matching sample sequences |
+| `prodigy_partners.json` | optional protein-pair affinity estimates for each generated structure |
+| `vina_poses.json` | optional empirical score of an explicitly selected small-molecule pose in each finished structure |
 | `paralog_coevolution.tsv` | a co-evolution note stored on `paralog` |
 | `axis_evidence.json` | any axis, as a curated judgement |
+
+## Small-molecule aqueous solubility
+
+For a finished ligand run, place one SMILES in `ligand_smiles.txt` and run
+`human --screen RUN --binder-kind ligand`. A fixed conditioning ligand receives one
+prediction across all generated pockets. To nominate several compounds, supply a
+UTF-8 `ligand_candidates.tsv` with this exact tab-separated header and a unique ID
+per nomination. When both files exist, this screen reads the TSV. The single-ligand
+file accepts an optional title after the SMILES. The TSV requires a plain SMILES
+in each structure cell. Candidate IDs describe the supplied list independently of
+the pocket files.
+
+```tsv
+candidate_id	smiles
+aspirin	CC(=O)Oc1ccccc1C(=O)O
+caffeine	Cn1c(=O)c2c(ncn2C)n(C)c1=O
+```
+
+For a standalone check with the installed `ligand-safety` extra, run
+`python scripts/screen_extras.py admet-solubility 'CC(=O)Oc1ccccc1C(=O)O'`.
+The CPU worker loads the bundled ADMET-AI v2 ensemble locally. It checks the
+endpoint definition and the five regression checkpoint hashes against the installed
+distribution. Each result names the method, endpoint and unit.
+
+`screen.json.ligand_solubility` reports the native `Solubility_AqSolDB` prediction
+as `predicted_log_s`, the base-10 logarithm of aqueous molar solubility. For example,
+−2 on this scale means 0.01 mol/L. The model takes the molecular graph as its input.
+The AqSolDB measurements come from nine sources with differing experimental conditions.
+Solubility at a specified pH or temperature, the behavior of a formulation and
+prospective prediction error require separate evidence. This measurement has no
+pass threshold. [AqSolDB dataset](https://doi.org/10.7910/DVN/OVHAW8) ·
+[ADMET-AI endpoint definitions](https://github.com/swansonk14/admet_ai/blob/main/admet_ai/resources/data/admet.csv)
+
+`inputs` maps every nomination to its compound ID or a blocker. Equivalent isomeric
+SMILES share a result, including equivalent atom orderings and atom-map annotations.
+Stereochemistry, isotopes, charge and salt fragments are retained. The local
+`structures` map identifies the graph behind each compound ID. The ID contains the
+SHA-256 of its canonical isomeric SMILES and is stable across input orderings made
+with the same canonicalizer. The service exposes
+the IDs, predictions and coverage. Invalid molecules, repeated candidate IDs and
+unavailable predictions remain visible. `partial` means some nominations or compounds
+lack results. The standalone command exits with status 2 for partial or untested output.
+
+## QupKake microscopic pKa
+
+Place `qupkake.json` containing `{}` beside the finished ligand run, then run
+`human --screen RUN --binder-kind ligand`. Supply `ligand_candidates.tsv` with
+the header `candidate_id<TAB>smiles`, or one structure in `ligand_smiles.txt`.
+The candidate table takes precedence when both exist. To use an SDF, set
+`{"input":"sdf"}` and supply `ligand_candidates.sdf`. The record title identifies
+each candidate. An untitled record receives an ID from its file ordinal.
+One distinct molecular graph is scored once across all pocket designs.
+
+The default profiles the supplied protonation state and tautomer. Setting
+`"tautomerize": true` asks the upstream workflow to enumerate tautomers and rank
+them with GFN2-xTB in implicit water when several exist. Both input formats
+regenerate coordinates with the recorded RDKit seed. The output names the input
+and selected states, including when the tautomer search changes the structure.
+Submit a single connected, closed-shell species with explicit charge and the
+intended stereochemistry. Submit each desired salt component or protomer separately.
+
+Each value in `screen.json.qupkake` describes one aqueous microscopic pKa,
+on the dimensionless acid-dissociation scale. A `basic` nomination adds a proton
+to the selected state. An `acidic` nomination removes one. Each site identifies
+the protonated and deprotonated structures, the actual atom that gains or loses
+hydrogen and the atoms nominated by the site model. Atom maps start at one.
+For an individual nomination, `source_atom_indices_by_map[map - 1]` gives the
+zero-based atom ordinal in its original SMILES or SDF, including any preceding
+explicit hydrogens. The local record contains the atom-mapped structures. The MCP
+views return their identifiers, site values and coverage.
+
+A compound with two successful site-head evaluations and zero nominations is
+recorded as `no_sites`. An unscored nomination carries a blocker. Site coverage
+can be incomplete even for a compound with several predictions. A `complete`
+batch means that every input and every model nomination was processed. The screen
+supplies no macroscopic pKa, pH-dependent species fractions or pass threshold.
+The authors used ChEMBL structures, CREST assignments and predicted pKa labels
+for pretraining, followed by experimental pKa fine-tuning. Their pretraining
+assigned each most acidic or most basic estimate to the lowest-energy conjugate.
+Additional transitions in polyprotic compounds have weaker support. Aliphatic
+carbon acids were absent from training. Screening accepts the represented
+elements H, C, N, O, S, P, F, Cl, Br and I. SAMPL6 was one of the authors'
+published benchmarks. [Method and training](https://doi.org/10.1021/acs.jctc.4c00328) ·
+[Release data](https://github.com/Shualdon/QupKake/tree/f7a294e91929e4e4f0a7100ad5cf5a64a34a7d4f/data)
+
+### Local CPU runtime
+
+The reviewed backend uses the released Linux x86-64 xTB 6.4.1 executable and a
+separate Python 3.10 environment. On Linux or WSL, the following commands prepare
+a new installation with `uv` and Git. Run them once from the project root.
+
+```bash
+qupkake_root="$HOME/.local/share/rfproteina/qupkake-f7a294e-cpu"
+mkdir -p "$qupkake_root"
+git clone https://github.com/Shualdon/QupKake.git "$qupkake_root/source"
+git -C "$qupkake_root/source" checkout --detach f7a294e91929e4e4f0a7100ad5cf5a64a34a7d4f
+uv venv --python 3.10 "$qupkake_root/env"
+qpython="$qupkake_root/env/bin/python"
+UV_CACHE_DIR="$qupkake_root/cache" uv pip install --python "$qpython" \
+  'torch @ https://download.pytorch.org/whl/cpu/torch-2.1.2%2Bcpu-cp310-cp310-linux_x86_64.whl' \
+  torch-geometric==2.4.0 pytorch-lightning==2.1.0 torchmetrics==1.2.1 rdkit==2022.9.5 \
+  numpy==1.26.4 pandas==2.1.4 scipy==1.11.4 scikit-learn==1.3.2 'setuptools<81'
+qpackages=$("$qpython" -c 'import sysconfig; print(sysconfig.get_path("purelib"))')
+printf '%s\n' "$qupkake_root/source" > "$qpackages/qupkake-release.pth"
+chmod u+x "$qupkake_root/source/qupkake/xtb-641/bin/xtb"
+.venv/bin/python scripts/screen_extras.py qupkake 'c1ccncc1'
+```
+
+Set `QUPKAKE_PYTHON` to the worker interpreter for a custom installation.
+The worker verifies the scientific modules, the three checkpoints, the xTB binary
+and its GFN2 parameter file before scoring. Each distinct compound gets its own
+scratch directory, a single CPU thread and a ten-minute timeout. The standalone
+CLI also accepts `--sdf FILE` and `--tautomerize`. It exits with code 2 for a
+partial or untested batch and retains per-input results in its JSON output.
+
+## SyGMa human metabolite predictions
+
+SyGMa proposes structures to check in a human metabolite-identification experiment.
+Install the project’s `sygma` extra to obtain RDKit with InChI support. From the
+project environment, install the release rule tables and try one parent compound.
+
+```bash
+python scripts/install_sygma.py
+python scripts/screen_extras.py sygma 'CC(=O)Nc1ccc(O)cc1'
+```
+
+The installer checks the SHA-256 of the official SyGMa 1.1.0 source archive.
+For an offline installation use `--from-archive SyGMa-1.1.0.tar.gz`.
+Set `SYGMA_RULE_ARCHIVE` to select a custom archive location. Each worker verifies
+the two rule tables before use. Inference runs on CPU. The release contains 148
+phase I and 27 phase II transformations. Ridder and Wagener used human metabolism
+records in the MDL Metabolite Database to assign empirical rule scores.
+Training membership for an individual compound is
+unknown. [Method](https://pubmed.ncbi.nlm.nih.gov/18311745/) · [Release](https://pypi.org/project/SyGMa/1.1.0/)
+
+For a finished ligand run, create `sygma.json` containing `{}` beside the
+generated structures and run `human --screen RUN --binder-kind ligand`. Provide
+`ligand_candidates.tsv` with columns `candidate_id` and `smiles`, or one
+structure in `ligand_smiles.txt`. The table takes precedence. To nominate
+`ligand_candidates.sdf`, set `"input": "sdf"` in the manifest. The standalone
+command accepts the same file through `--sdf FILE`. Each nomination retains its
+ID or SDF title. An untitled SDF record receives a file ordinal. Aliases of one
+isomeric structure share one calculation across all pockets. Submit individual
+connected, closed-shell organic molecules in their intended protonation and
+stereochemical states. A disconnected salt receives a named blocker.
+
+The default runs one phase I cycle followed by one phase II cycle. Set
+`phase1_cycles` and `phase2_cycles` to nonnegative integers totalling one to
+four. For example, `{"phase1_cycles":0,"phase2_cycles":1}` requests direct
+phase II products. The corresponding CLI options are `--phase1-cycles` and
+`--phase2-cycles`. For each product the screen reports the permitted pathway
+with the largest product of empirical rule scores. Ranking starts at one for
+each parent. Equal scores share a rank. Intermediates can skip a phase or cycle.
+Each reported structure retains more than 15% of the input’s heavy atoms,
+traced across transformations. The unchanged parent is excluded from the count.
+
+Read `screen.json.sygma.parents[].products` for the rank, score, rule-by-rule
+pathway, standard InChIKey, formula, exact mass in Da for the represented charge,
+and number of unspecified stereoelements. Look up each `product_id` in the
+local `structures` dictionary for isomeric SMILES. The local MCP service returns
+the ranked identifiers and pathways and keeps the SMILES dictionary on disk.
+SyGMa can propose a glucuronide while leaving the sugar stereochemistry
+unspecified. Check the full stereochemical structure as well as connectivity
+when comparing with an authentic standard. Scores alone establish neither
+metabolite abundance nor toxicity.
+
+A completed parent with no eligible product reports `no_products`. Missing or
+damaged rules, unsupported inputs, and exceeded computation limits report a
+named blocker. Limits include 256 parent heavy atoms, 120 seconds per parent,
+2,048 distinct combinations of a structure and its surviving parent atoms, 1,024 matches per rule application
+and 25,000 cumulative reaction matches per parent. Incomplete parents receive
+no ranking. Failed nominations remain in the reported input count.
+
+## AutoDock Vina fixed-pose score
+
+For a finished ligand run, put `vina_poses.json` beside `inference_samples/`. Give each
+design its exact sample ID, the mmCIF `label_asym_id` for each partner, the ligand component
+ID, and the paths to its prepared PDBQT files relative to the manifest. A single author
+chain can contain both a protein and several ligand copies. The label IDs identify which
+copy supplied the coordinates. This example selects the mouse Abl kinase domain labelled
+A and the imatinib copy labelled G in the deposited structure. [PDB 1IEP](https://www.rcsb.org/structure/1IEP)
+
+```json
+{
+  "samples": {
+    "binder_0": {
+      "receptor": "prepared/receptor.pdbqt",
+      "ligand": "prepared/ligand.pdbqt",
+      "receptor_chains": ["A"],
+      "ligand_chain": "G",
+      "ligand_component": "STI",
+      "center": [15.190, 53.903, 16.917],
+      "size": [20, 20, 20]
+    }
+  }
+}
+```
+
+Install the project's `vina` Python extra and the upstream AutoDock Vina 1.2.7 CPU executable.
+Set `AUTODOCK_VINA_EXEC` to that executable, place it under `autodock-vina/` in the local
+screening tools directory, or put `vina` on `PATH`. On Windows the binary name is `vina.exe`.
+Both commands use the same scorer.
+
+```bash
+python scripts/screen_pose_safety.py vina complex.cif --manifest vina_poses.json --sample binder_0
+human --screen finished-run --binder-kind ligand
+```
+
+The receptor comprises the selected standard protein chains. The ligand is a single
+noncovalent organic component. Select a single model and resolve alternative conformers
+before preparation. Supply the rigid receptor and one unwrapped PDBQT pose in the same
+coordinate frame as the finished complex. Protonation, charges, donor and acceptor types,
+and the torsion tree come from that preparation. Water, cofactors and other chains lie
+outside this protein-only receptor model. A declared covalent or metal link to the ligand
+blocks a score.
+
+Every observed heavy atom must match exactly once by element and position to within
+0.000501 Å per Cartesian axis, the rounding allowance for PDBQT. Receptor residue and
+atom names must also agree. The report identifies whether an embedded component atom
+list, a molecular formula, or only the observed coordinates supported the ligand inventory.
+Where the CIF supplies bond data, it also reports the number of aromatic/aliphatic carbon
+types and heavy-atom torsion bonds checked against the component.
+
+The `center` and `size` arrays use Å in x, y, z order. The supplied box must contain
+the ligand heavy atoms. The executable uses `--score_only`, the original Vina function,
+one CPU thread, seed 1 and 0.375 Å grid spacing. The adapter limits each PDBQT file to
+32 MiB, grid allocations to four million points and execution to 120 seconds per pose.
+It records the score in kcal/mol, preparation and executable hashes, and the version.
+The original function was fitted on PDBbind affinities. Interpreting its score as a
+measured affinity or applying a selection cutoff requires separate assay calibration.
+[Vina method](https://doi.org/10.1002/jcc.21334) · [Upstream fixed-pose example](https://autodock-vina.readthedocs.io/en/latest/docking_python.html) · [Executable release](https://github.com/ccsb-scripps/AutoDock-Vina/releases/tag/v1.2.7)
+
+`screen.json` stores per-design results under `vina_pose.samples`. Each discovered
+structure counts once, including unreadable files and designs missing settings.
+`unmatched_manifest_ids` lists manifest entries with no corresponding structure.
+Rows with a blocker carry `status: untested`. These descriptive scores have no
+pass/fail threshold and do not enter the screening verdict.
+
+## PRODIGY protein-pair affinity
+
+Install the project's `prodigy` extra in the local screening environment. To score a finished
+complex once, supply both protein partners. A partner can contain several chains.
+
+```bash
+python scripts/screen_extras.py prodigy complex.cif --binder H,L --target A
+```
+
+For a finished protein or peptide run, save the following as `prodigy_partners.json` in its
+run directory, then run `human --screen <run-directory>`. The screen uses those exact chain
+groups for each sample. Other chains stay outside both the contact and surface calculations.
+
+```json
+{"binder_chains":["H","L"],"target_chains":["A"],"chain_namespace":"author","temperature_c":25}
+```
+
+Author chain identifiers are the default. Use `chain_namespace` set to `label` for mmCIF label
+identifiers. Supply a one-based `model_index` for a multi-model file and an `altloc` identifier
+when a residue has multiple conformers. The standalone options are `--chain-namespace`,
+`--model-index`, `--altloc` and `--temperature-c`. PDB and mmCIF inputs may use gzip or Zstandard.
+
+`screen.json` records each estimate under `prodigy_affinity.samples`, with its method, partner
+groups, structure digest, software versions, model ordinal and residue counts. The model estimates
+binding free energy in kcal/mol. It derives a dissociation constant in mol/L at the specified
+temperature. This empirical result has no pass threshold. The report counts every attempted
+design and names the blocker for each untested one.
+The local MCP `read_verdict` tool exposes these samples as a list with an `example_id` on each
+row. Its residue counts use a list of chain names and counts.
+
+The calculation uses standard protein heavy atoms. It excludes waters and nonpolymer components
+and preserves insertion-coded residues and multi-character chain IDs through a temporary internal
+renumbering. A missing heavy atom, a zero-occupancy atom, an unsupported polymer residue or a
+pair without contacts yields an untested result. The source structure is read-only.
+For Zstandard inputs the reader verifies every frame, including the final one. An interrupted
+file yields an untested sample even when the first frame contains readable coordinates.
+Generated coordinates may omit crystallographic B factors, which the predictor never reads.
+The residue check covers the atoms of residues present in the coordinate file. An unresolved
+segment can still affect the estimate. On the deposited durvalumab fragment (5XJ4) the model
+returned 142.8 nM at 25 °C. The authors measured 0.667 nM by surface plasmon resonance.
+[Durvalumab structure and assay](https://pmc.ncbi.nlm.nih.gov/articles/PMC5777972/)
+[PRODIGY method](https://doi.org/10.7554/eLife.07454) · [Upstream software](https://github.com/haddocking/prodigy)
+
+## Therapeutic Nanobody Profiler
+
+TNP profiles an explicitly nominated therapeutic VHH domain after generation. Give each
+sample its mmCIF label chain and the SHA-256 of its preselected, complete domain sequence.
+Compute the digest over uppercase one-letter ASCII residues without spaces, a FASTA
+header or a trailing newline. Determine it from the intended sequence independently of
+the structure being checked. IMGT heavy-chain numbering alone cannot establish that a
+domain is a VHH. The caller makes that declaration.
+
+Place `tnp_domains.json` beside the finished protein run's `inference_samples/` directory.
+Replace the placeholder with the 64 hexadecimal digits of the intended domain's digest.
+
+```json
+{
+  "samples": {
+    "binder_0": {
+      "domain_type": "VHH",
+      "label_asym_id": "H",
+      "sequence_sha256": "<SHA-256 of the intended full VHH sequence>"
+    }
+  }
+}
+```
+
+Run `human --screen RUN_DIRECTORY --binder-kind protein`. For a single finished mmCIF,
+use `python scripts/screen_extras.py tnp DESIGN.cif --chain H --sequence-sha256 DIGEST`.
+Both entry points accept gzip and Zstandard files. The adapter checks polymer declarations,
+observed residue identities and domain coverage. Coordinates can be incomplete when the
+full polymer sequence is independently declared and verified. Fusions, partial numbering
+and ambiguous polymer ordinals receive a named blocker. The output records the full
+chain length and the number of residues with at least one finite atom coordinate triple.
+Atoms with an explicit zero occupancy contribute no observed residue.
+
+Install the project's `tnp` extra for the mmCIF reader. The native engine runs in a
+separate Linux CPU environment. The reviewed package combination can be installed with
+`micromamba create -n tnp-cpu -c conda-forge -c bioconda python=3.12 tnp=0.1.0 immunebuilder=1.2 dssp=4.6.1 'pytorch=*=cpu*'`.
+Set `TNP_PYTHON` to that environment's absolute `bin/python`. Before screening, install
+the four released `nanobody_model_1` through `nanobody_model_4` files in the provider's
+`ImmuneBuilder/trained_model/` directory. The worker verifies their published checksums
+before invoking the model. It also verifies IMGT numbering and the native DSSP annotation.
+[TNP release](https://github.com/oxpig/TNP/releases/tag/v0.1.0) · [NanoBodyBuilder2 checkpoints](https://zenodo.org/records/7258553)
+
+The `tnp_profile` block in `screen.json` reports total CDR length, CDR3 length, CDR3
+compactness, and three CDR-vicinity surface patch scores for hydrophobicity, positive
+charge and negative charge. The inputs to the structural calculations are TNP's own
+NanoBodyBuilder2 coordinates. The native CLI exposes no seed. Fresh CPU models of the
+same reference domain gave different patch scores, so use the recorded model SHA-256
+when comparing runs. Each measurement carries its native flag. Missing
+compactness with a native grey flag yields a partial profile with five other readings.
+The standalone command exits 0 for a full profile and 2 for a partial or untested sample.
+The finished-run report retains every attempted sample and the IDs of manifest entries
+that had no matching design. These descriptors have no vote in the screening verdict.
+
+The flag ranges were calibrated on 36 clinical-stage VHHs. Those 36 also contributed to
+the 108-domain experimental panel. One of the 72 proprietary candidates failed to
+express. The assays used Fc fusions. On the
+archived caplacizumab VHH1 structure, TNP 0.1.0 reproduced both published loop lengths.
+The published positive-charge score was 0.5694 (amber under the released thresholds).
+Recalculation on the archived coordinates gave 0.0000 (green). Keep the native release,
+model hash and reference table with any interpretation of the flags.
+[TNP study](https://doi.org/10.1038/s42003-026-09594-y) · [Authors' reference data](https://github.com/oxpig/TNP/tree/ea619d119b9e9da00b0d40961769d7166ce7677f/paper/paper_data)
 
 ## How a verdict is reached
 
@@ -71,8 +425,14 @@ protein binder that is `immunogenicity`, `proteome_offtarget`, `mhc_i`, `mhc_ii`
 One axis reading `hit` makes the call `axis_hit` regardless of the bar; every axis
 clear makes it `screened_clear`; anything else stays `untested`.
 
-Every screen records `screen_version`, the shape of the record. It is **3**. Version 3
-adds `refold`, every declared pass criterion with its bounds and which were missed.
+New screens record `screen_version: 11` with optional SyGMa metabolite predictions.
+Version 10 added QupKake microscopic pKa.
+Version 9 added compound-level aqueous solubility.
+Version 8 added the optional TNP domain profile.
+Version 7 added the optional Vina fixed-pose score. Version 6 added the per-design PRODIGY affinity report.
+Version 5 distinguishes incomplete refold results,
+unapplied interface reference thresholds and assay-specific ligand readings. Version 4
+added the interface and ligand report blocks. Version 3 added `refold` and its criterion bounds.
 Version 2 is
 the shape that can account for its own verdict: it adds `cuts`, `bar_axes`, `metrics_file`,
 `metrics_blocker`, `chain_blocker`, `inputs`, `code`, `replaced` and `nucleic_liability` at
@@ -99,33 +459,35 @@ produced it — edit one of those constants later and every stored screen silent
 changes meaning. The recorded values are the constants themselves, not copies, so
 what is written cannot drift from what was applied.
 
-`metrics_file` names the per-design table the numbers came from, relative to the
-run. The primary file wins and `per_example_metrics_reeval.csv` stands in when it
-is absent, so two verdicts on one run can rest on different measurements, and
-only this says which.
+`metrics_file` records the selected table relative to the run. The reader tries
+the generation primary, its standalone re-evaluation, then the offline evaluator's
+primary. Pending generation jobs also block the offline fallback.
 
-That table is the one input that moves the verdict, so it is read strictly and
-`metrics_blocker` names why it yielded no rows: `metrics_not_configured`,
-`metrics_not_reported` (a header with nothing under it), `metrics_unreadable`,
-`metrics_too_large` (past 16 MiB), `metrics_columns_repeated`,
-`metrics_row_too_long` or `metrics_row_too_short`. The last three are refusals
-rather than failures to read. A header that repeats a column this screen reads
-leaves the verdict resting on whichever copy `csv` kept, which is the last one,
-so a `False` in the first is invisible. A row wider or narrower than its own
-header is misaligned, and a flag is then read under another column's name — and
-a row short of its header is also what an unterminated quote leaves behind,
-having swallowed the rows after it, so a failing design can disappear and leave
-the passes behind it looking like the whole run. A refused table measures
-nothing: every flag stores `absent` and the call stays `untested`.
+`metrics_blocker` distinguishes a missing table (`metrics_not_configured`) and
+an empty one (`metrics_not_reported`) from a read error (`metrics_unreadable`).
+The reader checks the 16 MiB limit, repeated columns used by the screen or trace,
+CSV quoting and row widths. The corresponding blockers are `metrics_too_large`,
+`metrics_columns_repeated`, `metrics_row_too_long` and `metrics_row_too_short`.
+A refused table leaves its flags absent.
 
-`row_blocker` sits on a design whose metrics row was not exactly one.
-`metrics_row_absent` means no row named it. `metrics_row_ambiguous` means two
-rows named it and disagreed about its chain, its identity to the input or its
-Ca RMSD; the first used to win in silence, which is wrong as soon as two job
-tables are concatenated and a re-run's rows sit beside the ones they replaced.
-Rows that name a design and agree about it are still that design's row, so an
-exact duplicate loses no verdict. A run whose table is missing or refused
-records no `row_blocker` at all: the run-level reason says it once.
+`metrics_publication_pending` identifies an unfinished publication.
+`metrics_aggregation_required` identifies job files whose inclusion is unverified.
+`metrics_provenance_mismatch` identifies a primary table whose digest differs from
+the recorded one. `metrics_provenance_unreadable` identifies a receipt or source
+that could not be verified. [Recovery and export behavior](../how-to/advanced/offline-metrics.md#retrying-and-exporting-reports)
+
+The screen matches structures by their recorded path, relocated run-relative path,
+offline evaluator ID or historical bare name. `metrics_row_absent` means no row
+matched a discovered design. `metrics_row_ambiguous` identifies conflicting rows
+for one design. `metrics_row_shared` means the same evidence matches multiple
+files. Their per-design traces withhold the disputed values.
+
+Run coverage counts each discovered design once, includes unmeasured designs and
+retains table-only observations. Identical rows for one structure count once.
+A known failure remains visible. A whole-run pass requires complete applicable
+coverage. Offline tables can also name standalone inputs outside the generated-CIF
+layout. When the screen reads only their stored measurements, its structure blocks
+report `evaluation_structure_table_only`.
 
 `chain_blocker` is `chain_disagreement` when the table names more than one
 `chain_of_interest`. A design's own row still wins; the fallback across the
@@ -753,7 +1115,8 @@ written `0.2` and a fivefold rise `5`, and both are measured as five. In a `log2
 column the symmetric point is 0, and `-2.32` and `2.32` are both about fivefold. Where a table
 holds several rows, the row judged is the one with the largest magnitude on that scale, so a
 downward row is not passed over for a smaller upward one. The stored measurement is always the
-number in the cell.
+number in the cell. `fold_column` identifies its input scale. `linear_fold_magnitude` records
+the magnitude used for comparison when it can be represented as a finite number.
 
 ## Toxicology panel
 
@@ -786,8 +1149,11 @@ thousandfold too strictly. The axis ids are `herg`,
 `nav1_5`, `cyp3a4`, `cyp2d6`, `cyp2c9`, `cyp1a2`, `cyp2c19`, `pgp`, `bcrp`, and `bsep`.
 `Nav1.5` matches `nav1_5`, and `P-gp` matches `pgp`. Where a row carries more than one axis
 column, every one is read, so a table naming the gene in `protein` and the panel id in `panel`
-resolves on the `panel` cell. Several nM cells for one axis use the lowest, and the record
-stores that count as `n_readings`. A blank cell, `n.a.`, `true`, or `false` is no reading.
+resolves on the `panel` cell. Within one method, source, endpoint and assay, the reader
+uses the most potent determinate reading and records `n_readings`. Across groups it
+retains each opinion and any disagreement. Exact-ligand exports carry the InChIKey. A
+compound mismatch or unverified identity in an automatically written Octant table leaves
+the panel untested. A blank cell, `n.a.`, `true`, or `false` is no reading.
 `0` is a reading, and at or below 10_000 nM it is a hit. A banner of blank lines and lines
 beginning `#`, `---`, `//`, or `;;` is skipped, and the file is UTF-8 with or without a
 byte-order mark.
@@ -861,14 +1227,10 @@ high or low. Two alias columns that name different classes leave the note unset,
 and `unparsed_columns` names them. Two different organism names on one row are
 omitted. A pasted sequence in an organism cell is omitted.
 
-When the same shape is present, the note is one of these four:
-
-| Same shape | Co-evolution | Other species | Note |
-|---|---|---|---|
-| yes | high | toxic | most likely toxic in people |
-| yes | low | toxic | lowest signal of toxicity in people |
-| yes | high | non-toxic | probably non-toxic in people |
-| yes | low | non-toxic | lowest signal, non-toxic in people |
+For a shared shape, the note identifies the supplied co-evolution level and the
+reported outcome in the other species. The human outcome is recorded as
+`human_toxicity_state: untested`. The historical `coevolution_signal` values
+identify these four combinations for readers of earlier records.
 
 Several agreeing rows store `coevolution_rows` and the species names. Rows that name
 different notes stay untested with `coevolution_disagreement`, which records both notes
@@ -1130,16 +1492,8 @@ cannot read milder than the designs it summarizes.
 columns with a bound on every one. `rfd4-evaluate` evaluates them and writes a
 `<name>.pass` column for each into `per_example_metrics.csv`.
 
-This screen read two of them. `ppi.pass` became `ppi_pass`, `pre_oracle_pass` was read
-directly, and the other nine were computed, written into the file this screen opens, and
-discarded. `developability` is the pointed one: it bounds Rosetta SAP at 50 and
-hydrophobic exposed SASA at 1500 alongside the same GRAVY and instability index this
-screen recomputes from the sequence, so the screen was recomputing half of a criterion
-while throwing away the whole of it.
-
-A bare `ppi_pass: false` also said nothing about **which** bound was missed. `ptm_coi` at
-80, `min_ipae_coi` at 1.5 and the aligned binder RMSD at 2.5 decide very different things
-about a design, and a reader deciding whether to re-fold or redesign needs to know which.
+The screen reads each criterion and its companion `<name>.all_metrics_present` column.
+The separate `pre_oracle_pass` flag records the earlier filtering step.
 
 `refold` now carries every declared criterion:
 
@@ -1158,31 +1512,22 @@ about a design, and a reader deciding whether to re-fold or redesign needs to kn
 }
 ```
 
-The criteria, their columns and their cuts are read from that config at screen time, never
-copied into the code: a cut written into this module would become a second opinion about
-the same bar the moment someone edited the config. `internal_coords` borrows
-`motif_scaffold`'s thresholds through a Hydra interpolation, which is followed once by
-name; any other interpolation is reported as `thresholds_not_resolved` rather than parsed.
-A bound this reader does not understand — a `min_of` reduction, or two bounds on one
-column — is recorded as `unsupported` and claims nothing, because reading a reduction as a
-plain cut would compare the wrong number.
+The stored pass flag belongs to the evaluated run. The diagnostic bounds come from the
+checkout at screen time, identified by `threshold_source: repository_defaults`. A run
+with overrides can legitimately disagree with those comparisons. The reader resolves
+the same-file threshold reference used by `internal_coords`. It supports inclusive and
+exclusive ranges and per-design `min_of`, `max_of` and `mean_of` reductions. Each operand
+must be finite. The reported measurement is the least favorable value among applicable
+designs for each bound.
 
-`measured` is the **worst** value any design in the run reached against that bound, the
-same rule `rollup_axis` applies to an axis, so the report cannot read milder than the
-designs it summarizes. A criterion is `fail` if any design failed it: a run is not a passer
-because one of its designs was.
-
-A criterion whose `<name>.pass` column is absent was not evaluated. On a run with no
-refolding oracle that is all eleven, so the reason is given once as
-`refold_blocker: "not_evaluated"` rather than eleven times — but every criterion still
-carries its bounds, so you can see what would have to hold before paying for an oracle.
-`criteria_not_found` means the config itself could not be read, which is a different
-silence: an installed copy with no `configs/` tree.
-
-**None of this moves the call.** `ppi_pass` has always been recorded without changing the
-verdict, and the other ten are recorded on the same terms. They are the evaluation's
-verdict, not this screen's, and a screen that silently adopted nine new ways to fail would
-change the meaning of every stored call that had none of them.
+`rows_measured` counts determinate pass flags and `rows_expected` counts applicable
+rows. A measured failure sets the criterion to `fail`. A whole-run `pass` requires
+a measured pass on every applicable design. A partial evaluation reports
+`incomplete`, including a stored zero with `all_metrics_present=0`. Legacy tables
+without a presence column can still supply a binary flag. Missing rows cannot
+establish that a bound held. A run without flags reports `not_evaluated`, and an
+unreadable criteria file reports `criteria_not_found`. These entries are evidence
+alongside the separately chosen screening bar.
 
 ## Folding a design somewhere else
 
@@ -1297,13 +1642,23 @@ used for. This reads and writes files you already have.
 
 ## Solubility and aggregation
 
-Aggregation is the developability failure that ends a binder quietly: it
-expresses, it aggregates, and nothing before the bench said so. CamSol,
-Aggrescan3D, and Protein-Sol are not run here. Their coefficient tables are
-not in this program. A supplied score for any of them, including a supplied
-AGGRESCAN row, comes from `solubility.tsv`, or `solubility.csv` when no `.tsv`
-is present, in the run's own output directory. The sequence AGGRESCAN described
-under drug-type reports is a separate calculation and does not fill this table.
+A run folder accepts supplied scores from CamSol, Aggrescan3D, Protein-Sol
+and AGGRESCAN in `solubility.tsv`, with `solubility.csv` as a fallback.
+The drug-type report includes its own sequence AGGRESCAN calculation.
+
+For native Protein-Sol output, put the authors' `seq_prediction.txt` in the
+run folder. For an ordinary FASTA header, also supply the predictor input as
+`protein_sol.fasta`. The full header must match the sample ID and its sequence
+must match the resolved chain. A report with the FASTA header
+`>sha256:<lowercase SHA-256 of the uppercase sequence>` can establish that
+identity directly. Both inputs are limited to 1 MiB each.
+
+The `protein_sol.samples` records preserve the native `scaled-sol` score,
+the population reference, predicted percent solubility and predicted pI in
+separate fields. A missing or ambiguous match carries a blocker for the
+sample. The population value describes the authors' reference dataset.
+These predicted properties have no pass threshold in the screen.
+[University of Manchester software and paper](https://protein-sol.manchester.ac.uk/software)
 
 Each row needs three things: a score (`score`, `solubility`, `solubility_score`,
 `aggregation`, `aggregation_score` or `value`), the method that produced it
@@ -1343,8 +1698,9 @@ shots.
 
 It is written whenever two or more designed chains could be read, for any binder
 kind, and is left out otherwise: one design has nothing to differ from, and a
-record saying so would read as a measurement. A design whose chain could not be
-read is left out of every count.
+record saying so would read as a measurement. When any chains could not be
+read, `unreadable_designs` counts them separately. The total attempted is
+`designs` plus `unreadable_designs`.
 
 `designs` and `distinct` are how many chains were read and how many of them are
 different strings. Identity is counted position by position between two chains of
@@ -1546,6 +1902,7 @@ rather than relying on the warning.
 | `structure_unparsed` | a loop in the generated file does not divide into rows | check the data lines for a trailing comment or an unclosed quote |
 | `not_a_polypeptide` | the designed chain is not a protein or peptide, so GRAVY and the instability index do not apply | expected for a nucleic or small-molecule design; read its own triage report instead |
 | `designs_absent` | the run holds no generated design | check the run produced designs |
+| `evaluation_structure_table_only` | The evaluator recorded inputs and the screen read their table. | Read the per-design measurements in the evaluator CSV. |
 | `designs_compressed` | every design in the run is one this screen cannot read: a binary `.bcif`, a `.cif.zst` on a machine without `zstandard`, or an archive that does not decompress — most often a plain CIF renamed rather than compressed | `.cif` and `.cif.gz` are always read and `.cif.zst` is read where `zstandard` is installed; otherwise decompress the designs beside the run and screen it again. An archive whose header is good and whose tail is truncated is a per-design `structure_unreadable` instead, because that one really is a damaged compressed design |
 | `no_pass_cut` | a number with no threshold that applies to it | informational |
 | `cpg_not_consensus` | the design holds CpG and none of it is one of the two consensus hexamers | a cut does apply on this axis — one hexamer is a hit — so this is not `no_pass_cut`. Zero hexamers is not an absence of innate-immune signal, because the other sensors are not scored here. Curate the call if you want a state |
@@ -1584,6 +1941,10 @@ rather than relying on the warning.
 | `coevolution_too_large` | The co-evolution file is larger than this screen will read. | Keep the file within 1 MiB. |
 | `metrics_not_configured` | No per-design metrics table was found in the output folder. | Evaluate the run to write `inference_metrics/per_example_metrics.csv`. |
 | `metrics_not_reported` | The metrics table holds no rows. | Check the run wrote a row per design. |
+| `metrics_publication_pending` | A publication is unfinished. | Let the writer finish or rerun the in-place writer to recover it. |
+| `metrics_aggregation_required` | Inclusion of the current job files is unverified. | Aggregate the source directory. |
+| `metrics_provenance_mismatch` | The primary table differs from its recorded digest. | Restore the verified table and receipt or rebuild from the original jobs in a fresh directory. |
+| `metrics_provenance_unreadable` | The receipt or a source file could not be verified. | Check both and recover from verified copies. |
 | `metrics_unreadable` | The metrics table could not be read. | Check the encoding and the delimiter. |
 | `metrics_too_large` | The metrics file is larger than this screen will read. | Keep the file within 16 MiB. |
 | `metrics_columns_repeated` | The metrics table names a column this screen reads more than once. | Keep one copy of each column and screen again. |
@@ -1591,6 +1952,7 @@ rather than relying on the warning.
 | `metrics_row_too_short` | A metrics row stops short of its own header. | Export the table again with every row the width of its header. |
 | `metrics_row_absent` | No row of the metrics table names this design. | Check the table names this design in `example_id`. |
 | `metrics_row_ambiguous` | Two metrics rows name this design and disagree about it. | Screen one job's table at a time, or drop the row that is out of date. |
+| `metrics_row_shared` | The same evidence matches multiple structure files. | Export a separate row with its structure path for each design. |
 | `chain_disagreement` | The metrics table names more than one chain of interest. | Screen one target at a time, or name the chain in every row. |
 | `chain_shorter_than_window` | the chain is shorter than the 19-residue window | a span cannot be claimed or ruled out below 19 residues |
 | `hydropathy_unknown` | the chain carries a letter with no hydropathy value | check the designed chain is a standard protein sequence |

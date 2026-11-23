@@ -104,9 +104,10 @@ sequence_similarity_to_input:
 
 # The structural companion to sequence_similarity_to_input: under partial diffusion the input is the
 # structure being re-noised, so CA RMSD to it says how much of that backbone the output kept.
-# Returns nothing (rather than a wrong number) if the CA counts differ, e.g. after an insertion.
+# Require a one-to-one match of resolved C-alpha positions, including residue insertion codes.
 ca_rmsd_to_input:
   _target_: rfproteina.metrics.gt_structure_comparison.StructureComparisonMetric
+  match_selected_positions: true
   align_mask: "is_protein & (atom_name == 'CA')"
   subset_mask: "is_protein & (atom_name == 'CA')"
   metric_type: rmsd
@@ -116,7 +117,6 @@ ca_rmsd_to_input:
 cath_metric:
   _target_: rfproteina.metrics.cath_metric.CathMetric
   required_tags_any: ["cath"]
-  # foldseek: full C/A/T/H, but only for folds precisely matching a T-level fold in the CATH foldseekdb -- ~3.7 s/call on one CPU core.
-  # proteina_classifier: NVIDIA Proteina's GearNet classifier, C/A/T only, always answers -- ~0.2 s/call
-  # foldseek_with_fallback: foldseek first, classifier only where foldseek finds no match.
+  # Foldseek assigns H-level matches through superfamily and T-level matches through topology.
+  # The optional GearNet classifier reports levels with verified label mappings.
   annotator: foldseek_with_fallback

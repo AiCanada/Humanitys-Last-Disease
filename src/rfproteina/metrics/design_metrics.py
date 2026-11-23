@@ -33,7 +33,9 @@ def _bond_spatial_masks(
     )
 
     same_chain = chain_identifier[a1] == chain_identifier[a2]
-    same_res = same_chain & (atom_array.res_id[a1] == atom_array.res_id[a2])
+    same_res = same_chain & (atom_array.res_id[a1] == atom_array.res_id[a2]) & (
+        atom_array.ins_code[a1] == atom_array.ins_code[a2]
+    )
 
     cross_chain = ~same_chain
     is_poly_a1 = atom_array.is_polymer[a1]
@@ -67,6 +69,8 @@ def compute_bond_length_stats(atom_array: AtomArray, verbose: bool = False) -> d
     bond_arr = atom_array.bonds.as_array()
     if len(bond_arr) == 0:
         return {}
+    if not np.isfinite(atom_array.coord[bond_arr[:, :2]]).all():
+        raise ValueError("Cannot classify every bond with missing endpoint coordinates.")
 
     arr_copy = atom_array.copy()
     filter_bonds_by_distance(arr_copy, policy="filter")
@@ -113,6 +117,12 @@ def compute_clash_stats(atom_array: AtomArray, threshold: float = 1.5) -> dict[s
     """
     n_atoms = atom_array.array_length()
     coords = atom_array.coord
+    if not np.isfinite(threshold) or threshold <= 0:
+        raise ValueError("Clash distance must be finite and positive.")
+    if n_atoms == 0:
+        return {}
+    if not np.isfinite(coords).all():
+        raise ValueError("Cannot measure the clash fraction with missing atom coordinates.")
     key = _threshold_key(threshold)
 
     # Encode bonded pairs as i * n_atoms + j (i < j) for vectorised isin lookup
@@ -178,7 +188,10 @@ def _threshold_key(thresh: float) -> str:
 
     Avoids ``.`` (the metric-system namespace separator) and ``,`` (a CSV delimiter).
     """
-    return f"{thresh:.1f}".replace(".", "p") + "A"
+    value = np.format_float_positional(float(thresh), trim="-")
+    if "." not in value:
+        value += ".0"
+    return value.replace(".", "p") + "A"
 
 
 def _clash_category_masks(
@@ -205,7 +218,11 @@ def _clash_category_masks(
     both_polymer = is_poly_a1 & is_poly_a2
     both_ligand = ~is_poly_a1 & ~is_poly_a2
     polymer_ligand = is_poly_a1 ^ is_poly_a2
-    same_res = (chain_identifier[a1] == chain_identifier[a2]) & (atom_array.res_id[a1] == atom_array.res_id[a2])
+    same_res = (
+        (chain_identifier[a1] == chain_identifier[a2])
+        & (atom_array.res_id[a1] == atom_array.res_id[a2])
+        & (atom_array.ins_code[a1] == atom_array.ins_code[a2])
+    )
 
     return {
         "intra_residue_polymer": same_res & both_polymer,

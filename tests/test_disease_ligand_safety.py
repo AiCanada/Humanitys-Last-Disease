@@ -41,20 +41,22 @@ class _FakeOpener:
         return _Resp(json.dumps({}).encode("utf-8"))
 
 
-def _herg_activities():
+def _herg_activities(second_endpoint="IC50"):
     return {
         "activities": [
             {
                 "standard_type": "IC50",
                 "standard_relation": "=",
                 "standard_value": "50",
+                "assay_chembl_id": "ASSAY1" if second_endpoint == "IC50" else "",
                 "standard_units": "nM",
                 "activity_id": 1,
             },
             {
-                "standard_type": "Ki",
-                "standard_relation": None,
+                "standard_type": second_endpoint,
+                "standard_relation": "=",
                 "standard_value": "150",
+                "assay_chembl_id": "ASSAY1" if second_endpoint == "IC50" else "",
                 "standard_units": "nM",
                 "activity_id": 2,
             },
@@ -100,6 +102,55 @@ def test_axes_without_activity_stay_untested():
     result = ls.fetch_measured_nm(ASPIRIN, opener=opener)
     assert result.axes["cyp3a4"]["value_nm"] is None
     assert result.axes["cyp3a4"]["n_values"] == 0
+
+
+def test_chembl_keeps_unidentified_assays_separate_and_requires_an_exact_relation():
+    rows = _herg_activities()["activities"][:2]
+    for row in rows:
+        row.pop("assay_chembl_id")
+    opener = _FakeOpener([("molecule?", {"molecules": [{"molecule_chembl_id": "CHEMBL25"}]}),
+                          ("target_chembl_id=CHEMBL240", {"activities": rows})])
+    result = ls.fetch_measured_nm(ASPIRIN, opener=opener).axes["herg"]
+    assert result["value_nm"] is None and len(result["opinions"]) == 2
+    rows[1]["standard_relation"] = None
+    assert ls._nanomolar(rows)[0] == [50.0]
+    rows[1]["activity_id"] = rows[0]["activity_id"]
+    with pytest.raises(ls.SafetyBackendUnavailableError, match="duplicate_activity_id"):
+        ls._axis_activities("CHEMBL25", "CHEMBL240", opener, 100)
+
+
+def test_every_advertised_chembl_page_contributes_to_the_assay():
+    pages = _herg_activities()["activities"]
+    opener = _FakeOpener([
+        ("offset=0", {"activities": pages[:1], "page_meta": {"next": "?offset=1", "total_count": 2}}),
+        ("offset=1", {"activities": pages[1:2], "page_meta": {"next": None, "total_count": 2}}),
+    ])
+    result = ls._axis_activities("CHEMBL25", "CHEMBL240", opener, 1)
+    assert [activity["activity_id"] for activity in result] == [1, 2]
+    assert len(opener.seen) == 2
+
+
+def test_truncated_chembl_result_cannot_clear_an_axis():
+    opener = _FakeOpener([("offset=0", {"activities": [], "page_meta": {"next": None, "total_count": 3}})])
+    with pytest.raises(ls.SafetyBackendUnavailableError, match="chembl_activities_incomplete"):
+        ls._axis_activities("CHEMBL25", "CHEMBL240", opener, 1)
+
+
+def test_different_chembl_endpoints_and_assays_survive_export_at_their_own_values():
+    activities = _herg_activities(second_endpoint="Ki")
+    activities["activities"].append({**activities["activities"][0], "assay_chembl_id": "second",
+                                     "standard_value": "20000", "activity_id": 5})
+    opener = _FakeOpener([
+        ("molecule?molecule_structures__standard_inchi_key", {"molecules": [{"molecule_chembl_id": "CHEMBL25"}]}),
+        ("target_chembl_id=CHEMBL240", activities),
+    ])
+    panel = ls.fetch_measured_nm(ASPIRIN, opener=opener)
+    assert panel.axes["herg"]["value_nm"] is None
+    assert panel.axes["herg"]["n_values"] == 3
+    rows = ls.to_toxicology_rows(panel)
+    assert {(r["standard_type"], r["assay_id"], float(r["nm"])) for r in rows} == {
+        ("IC50", "", 50), ("Ki", "", 150), ("IC50", "second", 20000),
+    }
 
 
 def test_molecule_unknown_to_chembl_leaves_all_axes_untested():
@@ -159,10 +210,11 @@ def test_bayesherg_and_admet_refuse_loudly_when_absent(monkeypatch):
     """
     import sys
 
-    for name in ("bayesherg", "admet_ai"):
-        monkeypatch.setitem(sys.modules, name, None)
+    monkeypatch.delenv("BAYESHERG_ROOT", raising=False)
+    monkeypatch.delenv("BAYESHERG_PYTHON", raising=False)
+    monkeypatch.setitem(sys.modules, "admet_ai", None)
     ls.reset_admet_model()
-    with pytest.raises(ls.SafetyBackendUnavailableError):
+    with pytest.raises(ls.SafetyBackendUnavailableError, match="BAYESHERG_ROOT and BAYESHERG_PYTHON"):
         ls.bayesherg_probability("CCO")
     with pytest.raises(ls.SafetyBackendUnavailableError):
         ls.admet_ai_predictions("CCO")
@@ -525,6 +577,17 @@ def test_bindingdb_lookup_leaves_an_unmeasured_ligand_untested(tmp_path):
     assert ls.to_toxicology_rows(panel) == [], "nothing measured writes no row, rather than a zero"
 
 
+def test_bindingdb_keeps_endpoint_specific_medians_in_the_export(tmp_path):
+    key = ls._inchikey(ASPIRIN)
+    path = _subset(tmp_path / "s.tsv", [_bdb_reading(key, nm="100", assay="Ki"),
+                                        _bdb_reading(key, nm="20000", assay="IC50")])
+    panel = ls.measured_nm_from_bindingdb(ASPIRIN, path)
+    assert panel.axes["herg"]["value_nm"] is None
+    assert {(r["standard_type"], float(r["nm"])) for r in ls.to_toxicology_rows(panel)} == {
+        ("Ki", 100), ("IC50", 20000),
+    }
+
+
 def test_bindingdb_lookup_excludes_a_bound_and_counts_it(tmp_path):
     key = ls._inchikey(ASPIRIN)
     path = _subset(
@@ -641,8 +704,12 @@ def test_bindingdb_lookup_reads_what_the_reduction_wrote(tmp_path):
     subset = bindingdb_panel_subset(download, tmp_path / "out")
     assert subset.rows == 2
     panel = ls.measured_nm_from_bindingdb(ASPIRIN, subset.path)
-    assert panel.axes["herg"]["value_nm"] == 300.0
+    assert panel.axes["herg"]["value_nm"] is None
     assert panel.axes["herg"]["n_values"] == 2
+    measurements = {float(row["nm"]): row["source"] for row in ls.to_toxicology_rows(panel)}
+    assert set(measurements) == {250, 350}
+    assert "10.1/x" in measurements[250]
+    assert "10.1/y" in measurements[350]
     assert panel.axes["bsep"]["value_nm"] is None
 
 

@@ -48,6 +48,7 @@ from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -234,6 +235,7 @@ _BDB_CHAIN_PREFIXES = (
     "UniProt (SwissProt) Primary ID of Target Chain ",
     "UniProt (TrEMBL) Primary ID of Target Chain ",
 )
+_BDB_CHAIN_COUNT = "Number of Protein Chains in Target (>1 implies a multichain complex)"
 
 #: BindingDB writes the relation **inside** the value cell -- ``>10000``,
 #: ``<0.5``, and ``> 10000`` with a space -- so ``float`` on the cell raises and
@@ -427,7 +429,7 @@ SOURCES: tuple[Source, ...] = (
             "scale: at 2026.3.1 the usable Human counts are hERG 17, CYP3A4 13, Nav1.5 10, P-gp "
             "9, BCRP 5, CYP2D6 and CYP2C9 4 each, CYP1A2 and CYP2C19 3 each, and BSEP 1. Ten "
             "compounds cannot calibrate a cut and one cannot anchor anything, so what it adds "
-            "beside BindingDB's 29,393 compounds is a hand-checked, PubMed-cited second opinion "
+            "beside the BindingDB measurements is a hand-checked, PubMed-cited second opinion "
             "on the same axes, not coverage. It does NOT close the gap its catalogue row claims: "
             "ligand_safety.CHEMBL_TARGETS already covers all ten axes measured, nav1_5 included, "
             "and ADMET-AI's hole is in prediction, which measured per-compound data cannot fill "
@@ -518,38 +520,13 @@ SOURCES: tuple[Source, ...] = (
             "ChEMBL-derived rows, so the share-alike rows govern any redistribution"
         ),
         note=(
-            "3.2M measured Ki, IC50, Kd and EC50 values over 1.44M compounds and 11,509 targets, "
-            "keyed to UniProt, so it joins onto all ten panel proteins -- an offline stand-in for "
-            "the live ChEMBL fetch in ligand_safety.fetch_measured_nm. 594,284,548 bytes on the "
-            "wire by Content-Length, unpacking to 9,004,582,822 -- 8.39 GB, read off the zip's own "
-            "central directory and not the 2 GB the download page implies. fetch extracts the named "
-            "member and deletes the archive, so that 8.39 GB is what sits on disk; "
-            "bindingdb_panel_subset reads the member from inside the zip instead, so keeping the "
-            "567 MB archive and pointing the reduction at it costs 8.39 GB less. Reduce first with "
-            "bindingdb_panel_subset, then read the subset one of two ways. "
-            "ligand_safety.measured_nm_from_bindingdb matches a ligand exactly, which answers only "
-            "for molecules already measured; match='connectivity' widens that to the InChIKey "
-            "skeleton where one drug is spelled several ways. Mind single_chain_only: 99.0% of the "
-            "subset's hERG rows and 97.8% of its CYP3A4 rows name more than one chain, because "
-            "these targets are assayed with an accessory subunit or redox partner, so excluding "
-            "them discards almost the whole file -- it defaults to off, and ketoconazole reads "
-            "48.0 nM on CYP3A4 over 72 readings with them and nothing at all without. "
-            "ligand_safety.nearest_measured_neighbours is the one that earns "
-            "its keep on a design -- Morgan/Tanimoto against the 29,393 measured compounds, 4.4 s "
-            "to index and 15 ms a query, and on a novel ketoconazole analogue it returned a 0.878 "
-            "analogue carrying 0.18 nM CYP3A4 over 72 readings. That is an analogy, never a "
-            "reading of the design, which is why its values are called neighbour_nanomolar. "
-            "640 columns, and three of "
-            "them bite: the UniProt accession is repeated per target chain (50 chains at this "
-            "release, and a quarter of a sampled 23,736 rows kept theirs outside chain 1), the "
-            "relation is written inside the value cell as >10000 or even '> 10000', and "
-            "Curation/DataSource is the licence marking a derived table has to keep. A fourth "
-            "bites hardest: its own Ligand InChI Key is stereo-blind and agrees with RDKit on "
-            "only 64.60% of rows, so the subset recomputes the join key from the SMILES rather "
-            "than trusting it. Measured over the real 2026-11 file: 3,243,660 rows scanned, "
-            "60,095 panel measurements over 29,393 distinct compounds, every axis populated -- "
-            "hERG 14,190 ligands down to BSEP 1,129 -- and 48,462 of those rows are "
-            "ChEMBL-derived, so four fifths of any derived table is the share-alike half."
+            "The November 2026 ZIP is 594,284,548 bytes. Its TSV member is 9,004,582,822 bytes. "
+            "bindingdb_panel_subset streams the member directly and retains human panel measurements of Ki, "
+            "IC50 and Kd, including the reported relation, assay and curation source. Chain accessions identify "
+            "the panel targets. BindingDB's declared number of protein chains describes the target preparation. "
+            "measured_nm_from_bindingdb matches the full InChIKey derived from the ligand SMILES by default. "
+            "Connectivity matching can include stereoisomers. A fingerprint neighbour's reported activity "
+            "belongs to that neighbour."
         ),
         hazard=(
             "The subset is not the panel table and cannot be mistaken for it: its columns are "
@@ -1577,22 +1554,22 @@ class SubsetResult:
 
 
 def _bdb_open(table: Path) -> tuple[Any, Any]:
-    """A text handle on BindingDB's TSV, from the plain file or inside its zip.
-
-    Reading the member straight out of the archive is the difference between a
-    567 MB download and a 2.5 GB one: the TSV unpacks to about 2 GB and nothing
-    here needs it on disk.
-    """
+    """Stream the release TSV from the original archive or a plain export."""
     if table.suffix.lower() == ".zip":
         archive = zipfile.ZipFile(table)
-        names = archive.namelist()
-        name = next((item for item in names if item.endswith(".tsv")), "")
-        if not name:
+        members = [i for i in archive.infolist() if not i.is_dir() and i.filename.lower().endswith(".tsv")]
+        full = [i for i in members if Path(i.filename).name.casefold() == "bindingdb_all.tsv"]
+        candidates = full or members
+        if len(candidates) != 1:
             archive.close()
-            raise KeyError(f"no .tsv member in {table.name}")
-        handle = io.TextIOWrapper(archive.open(name), encoding="utf-8", errors="replace", newline="")
+            raise KeyError("missing or ambiguous BindingDB release TSV")
+        try:
+            handle = io.TextIOWrapper(archive.open(candidates[0]), encoding="utf-8-sig", newline="")
+        except (OSError, ValueError, RuntimeError, zipfile.BadZipFile):
+            archive.close()
+            raise
         return archive, handle
-    return None, table.open("r", encoding="utf-8", errors="replace", newline="")
+    return None, table.open("r", encoding="utf-8-sig", newline="")
 
 
 def _bdb_source(row: Sequence[str], idx: Mapping[str, int], mark: str) -> str:
@@ -1630,7 +1607,7 @@ def _inchikey_factory() -> Callable[[str], str]:
     14-character skeleton would match either enantiomer, and enantiomers do not
     share a hERG liability.
 
-    Memoised because 60,095 panel rows carry only 29,393 distinct compounds.
+    A compound can occur in many assays, so its structure is parsed once.
     """
     from rdkit import Chem
 
@@ -1685,7 +1662,9 @@ def bindingdb_panel_subset(
       :attr:`SubsetResult.curation`. A derived table that drops it cannot be
       redistributed honestly.
 
-    ``chains`` records how many target chains the row named. A measurement
+    ``chains`` records the release's declared number of protein chains. An
+    invalid or conflicting declaration is encoded as zero (unknown). Older exports
+    without the field use the highest populated chain slot. A measurement
     against a complex is an affinity for the complex, not for one chain of it,
     so the lookup can keep to single-chain rows; the count is kept here rather
     than the decision.
@@ -1730,7 +1709,15 @@ def bindingdb_panel_subset(
             for column in (_BDB_INCHIKEY, _BDB_SMILES, _BDB_CURATION, _BDB_ORGANISM):
                 if column not in idx:
                     return SubsetResult(None, 0, 0, (), 0, f"column_absent:{column}")
-            chains = [position for name, position in idx.items() if name.startswith(_BDB_CHAIN_PREFIXES)]
+            chain_slots = {}
+            chains = []
+            for name, position in idx.items():
+                if name.startswith((*_BDB_CHAIN_PREFIXES, "BindingDB Target Chain Sequence ")):
+                    slot = name.rsplit(" ", 1)[-1]
+                    if re.fullmatch(r"[1-9][0-9]*", slot):
+                        chain_slots[position] = int(slot)
+                        if name.startswith(_BDB_CHAIN_PREFIXES):
+                            chains.append(position)
             if not chains:
                 return SubsetResult(None, 0, 0, (), 0, "column_absent:target chain accession")
             assays = [(label, idx[column]) for label, column in _BDB_ASSAYS if column in idx]
@@ -1740,6 +1727,12 @@ def bindingdb_panel_subset(
             smiles_at = idx[_BDB_SMILES]
             organism_at = idx[_BDB_ORGANISM]
             curation_at = idx[_BDB_CURATION]
+            chain_count_at = idx.get(_BDB_CHAIN_COUNT)
+            counts = Counter(header)
+            used = {_BDB_INCHIKEY, _BDB_SMILES, _BDB_CURATION, _BDB_ORGANISM, _BDB_CHAIN_COUNT,
+                    _BDB_TARGET_NAME, _BDB_DOI, *(column for _, column in _BDB_ASSAYS)}
+            if any(n > 1 and (key in used or key.startswith(_BDB_CHAIN_PREFIXES)) for key, n in counts.items()):
+                return SubsetResult(None, 0, 0, (), 0, "ambiguous_header")
             try:
                 inchikey_of = _inchikey_factory()
             except ImportError as error:
@@ -1769,7 +1762,16 @@ def bindingdb_panel_subset(
                 if not inchikey:
                     skipped["smiles_unparsed"] += 1
                     continue
-                named_chains = sum(1 for at in chains if at < len(row) and row[at].strip())
+                last_chain = max(slot for at, slot in chain_slots.items() if at < len(row) and row[at].strip())
+                chain_count = last_chain
+                if chain_count_at is not None:
+                    declared = row[chain_count_at].strip() if chain_count_at < len(row) else ""
+                    try:
+                        chain_count = int(declared) if declared.isascii() and declared.isdecimal() else 0
+                    except ValueError:
+                        chain_count = 0
+                    if chain_count < last_chain:
+                        chain_count = 0
                 mark = row[curation_at].strip() if curation_at < len(row) else ""
                 source_text = _bdb_source(row, idx, mark)
                 wrote = False
@@ -1797,7 +1799,7 @@ def bindingdb_panel_subset(
                                 found.group(2),
                                 relation,
                                 label,
-                                str(named_chains),
+                                str(chain_count),
                                 mark,
                                 source_text,
                             )
@@ -1808,7 +1810,7 @@ def bindingdb_panel_subset(
                     ligands.add(inchikey)
         finally:
             handle.close()
-    except (OSError, UnicodeError, csv.Error, KeyError, zipfile.BadZipFile) as exc:
+    except (OSError, UnicodeError, csv.Error, KeyError, RuntimeError, zipfile.BadZipFile) as exc:
         return SubsetResult(None, 0, 0, (), scanned, f"table_unreadable:{type(exc).__name__}")
     finally:
         if archive is not None:
@@ -1819,10 +1821,13 @@ def bindingdb_panel_subset(
 
     destination.mkdir(parents=True, exist_ok=True)
     out = destination / _BDB_SUBSET_FILE
-    with out.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
-        writer.writerow(PANEL_SUBSET_COLUMNS)
-        writer.writerows(kept)
+    with TemporaryDirectory(dir=destination) as staging:
+        pending_path = Path(staging) / out.name
+        with pending_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+            writer.writerow(PANEL_SUBSET_COLUMNS)
+            writer.writerows(kept)
+        pending_path.replace(out)
 
     found = {row[3] for row in kept}
     return SubsetResult(
@@ -1894,8 +1899,7 @@ def gtopdb_panel_subset(
     :func:`~rfproteina.disease.ligand_safety.nearest_measured_neighbours`
     instead of sitting in a reference table with no reader.
 
-    What it adds is curation, not coverage. Sixty-nine usable rows against
-    BindingDB's 60,095 will not widen the panel; every one of them is
+    The 69 usable GtoPdb rows carry independent curation. Each row is
     hand-checked against the primary literature with a PubMed id attached,
     which is worth having as a second opinion on the same compounds.
 
@@ -2034,9 +2038,8 @@ def gtopdb_panel_subset(
 def merge_panel_subsets(sources: Sequence[Path], destination: Path) -> SubsetResult:
     """Concatenate panel subsets into one file the readers can take.
 
-    Volume and curation answer different questions and there is no reason to
-    choose: BindingDB brings 29,393 compounds, GtoPdb brings a few dozen that
-    somebody checked by hand, and merged they reach the same lookup and the
+    BindingDB supplies the larger set of compounds. GtoPdb contributes
+    measurements curated from the primary literature. Both sources reach the same lookup and the
     same read-across. ``curation`` keeps saying which source and which licence
     each row came from, which matters because the obligations differ -- ODbL
     share-alike on GtoPdb's rows, CC BY-SA on BindingDB's ChEMBL-derived ones.

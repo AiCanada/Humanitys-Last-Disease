@@ -4,7 +4,8 @@ from typing import Any, Literal
 
 import numpy as np
 from atomworks.constants import METAL_ELEMENTS
-from atomworks.io.tools.posebusters import DEFAULT_EXCLUDED_CHECKS, validate_molecule
+from atomworks.io.tools.posebusters import DEFAULT_EXCLUDED_CHECKS, validate_organic_fragments
+from atomworks.io.tools.rdkit import atom_array_to_rdkit
 from atomworks.io.utils.annotator import ensure_annotations
 from atomworks.ml.utils.timer import timeout
 from beartype.typing import Sequence
@@ -13,6 +14,7 @@ from biotite.structure import AtomArray, AtomArrayStack
 from rfproteina.metrics.metric import Metric
 from rfproteina.metrics.utils.metrics_utils import normalize_to_atom_array_list
 from rfproteina.utils.ddp import RankedLogger
+from rfproteina.utils.pose_checks import PoseBustersResultError, PoseBustersUnavailableError, pose_checks
 
 ranked_logger = RankedLogger(__name__, rank_zero_only=True)
 
@@ -31,8 +33,8 @@ def validate_single_ligand(
 ) -> dict[str, Any]:
     """Validate a single ligand molecule with PoseBusters.
 
-    Delegates to :py:func:`atomworks.io.tools.posebusters.validate_molecule`
-    for RDKit conversion, PoseBusters execution, and metal fallback logic.
+    Report a whole-ligand verdict. AtomWorks' organic-fragment diagnostics for
+    metal-containing ligands are recorded separately when a whole pose fails.
 
     Args:
       ligand_atoms: AtomArray containing a single ligand molecule.
@@ -53,21 +55,55 @@ def validate_single_ligand(
         "n_atoms": len(ligand_atoms),
     }
 
-    def _run() -> tuple[bool, dict[str, bool]]:
-        return validate_molecule(ligand_atoms, excluded_checks=excluded_checks)
+    def _run() -> dict[str, Any]:
+        coordinates = ligand_atoms.coord
+        observed = np.isfinite(coordinates).all(axis=1)
+        # AtomWorks can expand the CCD template with unobserved hydrogens.
+        # Their absent coordinates do not invalidate measured heavy-atom geometry.
+        template_h = (ligand_atoms.element == "H") & np.isnan(coordinates).all(axis=1)
+        if "occupancy" in ligand_atoms.get_annotation_categories():
+            template_h &= ligand_atoms.occupancy == 0
+        if not observed.any() or not (observed | template_h).all():
+            raise PoseBustersResultError("ligand_coordinates_absent_or_nonfinite")
+        base_result["n_unresolved_hydrogens"] = int(template_h.sum())
+        observed_atoms = ligand_atoms[observed] if template_h.any() else ligand_atoms
+        mol = atom_array_to_rdkit(
+            observed_atoms, set_coord=True, hydrogen_policy="keep", infer_bonds=False,
+            sanitize=True, assume_metal_bonds_are_dative=True,
+        )
+        _, checks = pose_checks(mol)
+        reported = {f"pb_{name}": value for name, value in checks.items()}
+        relevant = [value for key, value in reported.items() if key not in excluded_checks]
+        if checks.get("mol_pred_loaded") is False:
+            raise PoseBustersResultError("posebusters_input_not_loaded")
+        passed = None
+        if False in relevant:
+            passed = False
+        elif relevant and all(value is True for value in relevant):
+            passed = True
+        result = {**base_result, **reported, "passes_validation": passed}
+        if passed is None:
+            result.update(skipped=True, blocker="posebusters_checks_incomplete")
+        if passed is not True and _ligand_has_metal(ligand_atoms):
+            try:
+                _, fragments = validate_organic_fragments(mol, excluded_checks=excluded_checks)
+                result["organic_fragment_checks"] = fragments
+            except (TimeoutError, ValueError, RuntimeError) as error:
+                result["organic_fragment_blocker"] = type(error).__name__
+        return result
 
     try:
         if timeout_seconds is not None:
-            failed, check_results = timeout(timeout_seconds, strategy="signal")(_run)()
-        else:
-            failed, check_results = _run()
-        if not check_results:
-            # No checks were run (e.g., metal-only molecule with no organic fragments)
-            return {**base_result, "skipped": True, "passes_validation": True}
-        return {**base_result, "passes_validation": not failed, **check_results}
+            return timeout(timeout_seconds, strategy="signal")(_run)()
+        return _run()
     except TimeoutError:
         ranked_logger.warning(f"Validation timed out for ligand {ligand_id} after {timeout_seconds}s")
-        return {**base_result, "timed_out": True, "passes_validation": True}
+        return {**base_result, "timed_out": True, "passes_validation": None, "blocker": "posebusters_timed_out"}
+    except (PoseBustersResultError, PoseBustersUnavailableError) as error:
+        return {**base_result, "skipped": True, "passes_validation": None, "blocker": str(error)}
+    except (ValueError, RuntimeError, KeyError, IndexError) as error:
+        return {**base_result, "skipped": True, "passes_validation": None,
+                "blocker": f"ligand_conversion_failed:{type(error).__name__}"}
 
 
 def validate_ligands(
@@ -78,7 +114,7 @@ def validate_ligands(
     """Validate all ligands in a structure with PoseBusters.
 
     Identifies ligand molecules by the ``is_ligand`` annotation and validates
-    each unique (chain_id, res_id) combination separately.
+    each distinct chain, residue number, insertion code and residue name separately.
 
     Args:
       atom_array: Structure containing ligands to validate.
@@ -97,18 +133,18 @@ def validate_ligands(
         return []
 
     ligand_atoms = atom_array[ligand_mask]
-    excluded_frozen = frozenset(excluded_checks) if excluded_checks else None
+    excluded_frozen = frozenset(excluded_checks) if excluded_checks is not None else None
 
-    # Get unique ligand molecules using chain_id + res_id combination
-    chain_res_tuples = list(zip(ligand_atoms.chain_id, ligand_atoms.res_id, strict=False))
-    unique_ligands = list(dict.fromkeys(chain_res_tuples))
+    residue_keys = zip(ligand_atoms.chain_id, ligand_atoms.res_id, ligand_atoms.ins_code, ligand_atoms.res_name,
+                       strict=True)
+    groups: dict[tuple, list[int]] = {}
+    for index, key in enumerate(residue_keys):
+        groups.setdefault(key, []).append(index)
 
     results = []
-    for chain_id, res_id in unique_ligands:
-        mol_mask = (ligand_atoms.chain_id == chain_id) & (ligand_atoms.res_id == res_id)
-        single_ligand = ligand_atoms[mol_mask]
-
-        ligand_id = f"{chain_id}/{single_ligand.res_name[0]}/{res_id}"
+    for (chain_id, res_id, ins_code, res_name), indices in groups.items():
+        single_ligand = ligand_atoms[indices]
+        ligand_id = f"{chain_id}/{res_name}/{res_id}{ins_code}"
         result = validate_single_ligand(
             single_ligand,
             ligand_id=ligand_id,
@@ -138,23 +174,17 @@ def aggregate_ligand_results(
     Returns:
       Aggregated results dictionary.
     """
-    if not ligand_results:
-        return {"pass_rate": float("nan"), "n_ligands": 0, "n_passed": 0, "n_timed_out": 0, "n_skipped": 0}
-
-    _base_keys = {"ligand_id", "n_atoms", "passes_validation", "timed_out", "skipped", "has_metal"}
-
-    # Only count ligands that were successfully validated (not crashed, not timed out, not skipped)
-    validated_results = [
-        r
-        for r in ligand_results
-        if not r.get("timed_out", False) and not r.get("skipped", False) and set(r.keys()) - _base_keys
-    ]
-    n_passed = sum(r.get("passes_validation", False) for r in validated_results)
-    pass_rate = n_passed / len(validated_results) if validated_results else float("nan")
-
+    n = len(ligand_results)
+    attempted = [r for r in ligand_results if not r.get("timed_out")]
+    measured = [r for r in attempted if not r.get("skipped") and isinstance(r.get("passes_validation"), bool)
+                and any(k.startswith("pb_") and isinstance(v, bool) for k, v in r.items())]
+    n_passed = sum(r["passes_validation"] for r in measured)
     output: dict[str, Any] = {
-        "pass_rate": float(pass_rate),
-        "n_ligands": len(ligand_results),
+        "pass_rate": n_passed / n if measured else float("nan"),
+        "measured_pass_rate": n_passed / len(measured) if measured else float("nan"),
+        "n_ligands": n,
+        "n_measured": len(measured),
+        "n_unmeasured": n - len(measured),
         "n_passed": n_passed,
         "n_timed_out": sum(r.get("timed_out", False) for r in ligand_results),
         "n_skipped": sum(r.get("skipped", False) for r in ligand_results),
@@ -162,14 +192,10 @@ def aggregate_ligand_results(
 
     # Add per-check pass rates if requested
     if output_level in ("per_check", "per_ligand"):
-        all_check_names: set[str] = set()
-        for r in validated_results:
-            all_check_names.update(k for k in r if k not in _base_keys)
-
-        for check_name in sorted(all_check_names):
-            check_values = [r.get(check_name, True) for r in validated_results]
-            if check_values:
-                output[f"{check_name}_pass_rate"] = float(sum(check_values) / len(check_values))
+        for check_name in sorted({k for r in ligand_results for k in r if k.startswith("pb_")}):
+            values = [r[check_name] for r in attempted if isinstance(r.get(check_name), bool)]
+            output[f"{check_name}_n_measured"] = len(values)
+            output[f"{check_name}_pass_rate"] = sum(values) / n if values else float("nan")
 
     # Add per-ligand results if requested
     if output_level == "per_ligand":
@@ -177,6 +203,11 @@ def aggregate_ligand_results(
             for k, v in r.items():
                 if k == "ligand_id":
                     output[f"ligand_{i}_id"] = v
+                elif k in {"blocker", "organic_fragment_blocker"} or (k == "passes_validation" and v is None):
+                    output[f"ligand_{i}_{k}"] = v
+                elif k == "organic_fragment_checks":
+                    for name, flag in v.items():
+                        output[f"ligand_{i}_organic_fragment_{name}"] = float(flag)
                 elif isinstance(v, bool):
                     output[f"ligand_{i}_{k}"] = float(v)
                 elif isinstance(v, int | float):

@@ -37,10 +37,34 @@ def test_an_unparsable_smiles_is_refused(tmp_path) -> None:
 
 def test_alerts_are_reported_with_the_catalogue_that_raised_them() -> None:
     screened = screen_smiles(_CATECHOL)
+    assert screened.alerts
     for alert in screened.alerts:
         assert alert["name"]
         assert alert["catalogue"]
     assert screened.as_record()["alert_count"] == len(screened.alerts)
+
+
+def test_partial_catalogue_cannot_return_an_exhaustive_zero(monkeypatch):
+    from rfproteina.disease import ligand_alerts
+
+    monkeypatch.setattr(ligand_alerts, "CATALOGUES", (*ligand_alerts.CATALOGUES, "ABSENT"))
+    clear = verdicts(screen_smiles("CCO"))["structure_alerts"]
+    assert clear["state"] == "untested" and clear["value"] is None
+    assert clear["missing_catalogues"] == ["ABSENT"]
+    assert verdicts(screen_smiles(_CATECHOL))["structure_alerts"]["state"] == "hit"
+
+
+def test_descriptor_precision_nonfinite_and_unspecified_atoms(monkeypatch):
+    from dataclasses import replace
+
+    from rdkit.Chem import Crippen
+
+    monkeypatch.setattr(Crippen, "MolLogP", lambda _: 5.0001)
+    screened = screen_smiles("CCO")
+    assert verdicts(screened)["clogp"]["state"] == "hit"
+    assert verdicts(replace(screened, qed=float("nan")))["qed"]["state"] == "untested"
+    with pytest.raises(LigandUnreadableError, match="incomplete_molecule"):
+        screen_smiles("C*")
 
 
 def test_a_clean_molecule_clears_the_alert_line() -> None:

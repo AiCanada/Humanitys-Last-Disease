@@ -3,6 +3,7 @@
 import pandas as pd
 
 from rfproteina.inference_utils.foldseek import _base_pass_cols
+from rfproteina.inference_utils.pass_rates import pass_attempts
 
 # Percentage of targets with at least this pass rate is reported as solve_rate_{name} (e.g. solve_rate_5pct).
 SOLVE_RATE_THRESHOLDS: dict[str, float] = {
@@ -37,7 +38,7 @@ def compute_solve_rate_metrics(group_df: pd.DataFrame, pass_cols: list[str] | No
 
     out: dict[str, float] = {}
     for pass_col in _base_pass_cols(group_df, pass_cols):
-        p_t = pd.to_numeric(group_df[pass_col], errors="coerce").groupby(group_df["task"]).mean().dropna()
+        p_t = pass_attempts(group_df, pass_col).groupby(group_df["task"]).mean().dropna()
         if len(p_t) == 0:
             continue
 

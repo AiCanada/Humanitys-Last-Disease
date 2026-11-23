@@ -26,25 +26,20 @@ engine:
   atom is known. It is a better proxy than an element-only distance test but it
   is still not a Rosetta unsatisfied-hydrogen-bond count: without hydrogens the
   true donor-H-acceptor angle cannot be measured.
-* ``shape_complementarity`` is the Lawrence & Colman (1993) Sc statistic,
-  computed on a solvent-accessible dot surface rather than the Connolly
-  molecular (re-entrant) surface Rosetta's ``sc`` uses. See
-  :func:`shape_complementarity` for the method and the exact differences from
-  Rosetta.
+* Shape complementarity uses the Lawrence & Colman normal/distance score on
+  probe-accessible van der Waals contact patches. The dot surface omits
+  re-entrant patches and the median includes peripheral dots.
 
-Every threshold in :data:`REFERENCE_THRESHOLDS` names where it came from. The
-BindCraft figures were read from that project's
-``settings_filters/default_filters.json`` on 2026-11-16; they are that
-project's defaults, not published values, and they were fitted against its own
-Rosetta-based definitions, not against the proxies here. The
-``measured_on_disease_runs`` lines were calibrated on this program's own 23
-generated designs (see ``docs/screening-implementation-handoff.md``, Worker A).
+The BindCraft defaults in REFERENCE_THRESHOLDS describe its Rosetta methods.
+The historical set of 23 generated designs has no outcome labels with which
+to calibrate a classification threshold for these proxies.
 
 This module does not call a predictor, a service, or a network.
 """
 
 from __future__ import annotations
 
+import io
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -103,9 +98,9 @@ SC_NEIGHBOUR_A = 8.0
 #: median is noise, so Sc is returned as None with a reason.
 SC_MIN_DOTS = 10
 
-METHOD = "biotite_sasa_kdtree_v2"
+METHOD = "biotite_sasa_kdtree_v3"
 SC_METHOD = (
-    "lawrence_colman_1993_sc on solvent-accessible dot surface "
+    "Lawrence-Colman normal/distance score on contact patches, partner-only burial "
     f"(probe={SC_PROBE_A}A, w={SC_WEIGHT}, density={SC_DOT_DENSITY}, Bondi radii)"
 )
 
@@ -115,47 +110,37 @@ REFERENCE_THRESHOLDS: dict[str, dict[str, object]] = {
     "interface_residues_binder": {
         "min": 7,
         "source": (
-            "BindCraft settings_filters/default_filters.json, Average_n_InterfaceResidues, read 2026-11-16. "
-            "Project default, not a published value. Compatible with this program's designs: measured median "
-            "interface_residues_binder = 27 (range 16-47) over 23 disease_runs designs (Worker A "
-            "calibration), so every accepted design clears the >= 7 bar; it is kept as a floor only."
+            "BindCraft's interface-residue floor of 7 is a project default, not a published value. "
+            "BindCraft counts contacting residues. The local count uses per-residue surface burial."
         ),
     },
     "interface_polar_contacts": {
         "min": 3,
         "source": (
-            "BindCraft Average_n_InterfaceHbonds = 3, read 2026-11-16. DEFINITION DIFFERS: BindCraft counts "
-            "Rosetta hydrogen bonds on a protonated model; this counts heavy-atom N/O pairs within 3.5 A, which "
-            "overcounts relative to a Rosetta hbond. Measured median interface_polar_contacts = 18 over 23 "
-            "disease_runs designs (Worker A calibration), so the >= 3 bar is slack here and kept only as a floor."
+            "BindCraft's floor of 3 applies to Rosetta hydrogen bonds. DEFINITION DIFFERS. The local "
+            "measurement counts cross-interface N/O pairs within 3.5 A."
         ),
     },
     "buried_unsatisfied_polar_atoms": {
         "max": 4,
         "source": (
-            "BindCraft Average_n_InterfaceUnsatHbonds = 4, read 2026-11-16. DEFINITION DIFFERS, see the module "
-            "docstring; this is a chemistry-typed heavy-atom proxy without hydrogens. Measured median "
-            "buried_unsatisfied_polar_atoms = 2 over 23 disease_runs designs (Worker A calibration): the measured "
-            "distribution sits under the BindCraft bar, so <= 4 is adopted as a calibrated-compatible soft cut."
+            "BindCraft uses a Rosetta buried-unsatisfied hydrogen-bond filter. The local heavy-atom proxy "
+            "uses different burial and satisfaction rules. The Worker A calibration sample contained 23 "
+            "unlabeled designs."
         ),
     },
     "shape_complementarity": {
         "min": None,
         "source": (
-            "Lawrence & Colman 1993 Sc. BindCraft's default ShapeComplementarity bar is 0.55 and LC report "
-            "~0.64-0.76 for natural interfaces, both on the Connolly molecular surface with re-entrant patches. "
-            "SCALE DIFFERS: this Sc is on a contact dot surface without re-entrant patches and runs systematically "
-            "lower. Measured median shape_complementarity = 0.166 (range 0.069-0.254) over 23 disease_runs designs "
-            "(Worker A calibration). Because the measured scale does not match BindCraft's, NO CUT is adopted: "
-            "0.55 would fail every accepted design. Triage on the measured distribution, not on 0.55."
+            "Lawrence & Colman 1993. SCALE DIFFERS because this proxy uses contact patches. The "
+            "historical median of 0.166 used the earlier burial calculation."
         ),
     },
     "dsasa_total_a2": {
         "min": None,
         "source": (
-            "No cut adopted. BindCraft's Average_dSASA default of 1 is a fraction of the maximum, not an area, "
-            "so it cannot be carried across to this absolute value. Measured median dsasa_total_a2 = 2393 "
-            "A^2 (range 1353-4356) over 23 disease_runs designs (Worker A calibration), recorded for reference only."
+            "Area in square angstroms. BindCraft reports Rosetta delta SASA and a separate interface SASA "
+            "percentage. This Biotite measurement has no calibrated cutoff."
         ),
     },
 }
@@ -200,14 +185,31 @@ class InterfaceUnreadableError(Exception):
     """The structure could not be read, or does not hold the chains asked for."""
 
 
-def _structure(path: Path) -> AtomArray:
+def _structure(path: Path, cif_text: str | None = None) -> AtomArray:
     """First model of a CIF or PDB file, hydrogens and waters dropped."""
     try:
         from biotite.structure.io import load_structure
     except ImportError as error:  # pragma: no cover - biotite is a hard dependency of the package
         raise InterfaceUnreadableError(f"biotite_unavailable:{error}") from error
     try:
-        atoms = load_structure(str(path), model=1)
+        from biotite.structure.io import pdbx
+
+        if cif_text is not None:
+            atoms = pdbx.get_structure(pdbx.CIFFile.read(io.StringIO(cif_text)), model=1)
+        elif path.suffix.lower() in {".gz", ".gzip", ".zst"}:
+            from atomworks.io.utils.compression import open_compressed
+            from biotite.structure.io.pdb import PDBFile
+
+            fmt = path.with_suffix("").suffix.lower()
+            with open_compressed(path, "rt", encoding="utf-8") as stream:
+                if fmt == ".pdb":
+                    atoms = PDBFile.read(stream).get_structure(model=1)
+                elif fmt in {".cif", ".mmcif", ".pdbx"}:
+                    atoms = pdbx.get_structure(pdbx.CIFFile.read(stream), model=1)
+                else:
+                    raise ValueError(f"unsupported compressed structure format {fmt}")
+        else:
+            atoms = load_structure(str(path), model=1)
     except Exception as error:  # every parse failure is the same answer: refused
         raise InterfaceUnreadableError(f"structure_unreadable:{type(error).__name__}") from error
     keep = (atoms.element != "H") & (atoms.res_name != "HOH")
@@ -218,11 +220,13 @@ def _structure(path: Path) -> AtomArray:
 
 
 def _sasa(atoms: AtomArray) -> np.ndarray:
-    """Per-atom SASA, NaN replaced by zero so sums stay finite."""
+    """Require a measured solvent-accessible area for each selected atom."""
     from biotite.structure import sasa
 
-    values = sasa(atoms, vdw_radii="Single")
-    return np.nan_to_num(np.asarray(values, dtype=float), nan=0.0)
+    values = np.asarray(sasa(atoms, vdw_radii="Single"), dtype=float)
+    if not np.isfinite(values).all():
+        raise InterfaceUnreadableError("sasa_nonfinite")
+    return values
 
 
 def _residue_keys(atoms: AtomArray) -> np.ndarray:
@@ -235,20 +239,24 @@ def _radii(elements: np.ndarray) -> np.ndarray:
     return np.array([_VDW_RADII.get(str(e).upper(), _VDW_DEFAULT) for e in elements], dtype=float)
 
 
-def measure_interface(path: Path, binder_chain: str, target_chains: Sequence[str] | None = None) -> InterfaceQuality:
+def measure_interface(
+    path: Path, binder_chain: str, target_chains: Sequence[str] | None = None, *, cif_text: str | None = None
+) -> InterfaceQuality:
     """Measure one binder chain against every other chain, or against the ones named.
 
     Raises :class:`InterfaceUnreadableError` rather than returning a partial
     answer: a wrong clear on an interface term is worse than no term.
     """
-    atoms = _structure(Path(path))
+    atoms = _structure(Path(path), cif_text)
     chains = list(dict.fromkeys(str(value) for value in atoms.chain_id))
     if binder_chain not in chains:
         raise InterfaceUnreadableError(f"binder_chain_absent:{binder_chain}")
     if target_chains is None:
         targets = tuple(name for name in chains if name != binder_chain)
     else:
-        targets = tuple(str(name) for name in target_chains)
+        targets = tuple(dict.fromkeys(str(name) for name in target_chains))
+        if binder_chain in targets:
+            raise InterfaceUnreadableError("binder_also_target")
         missing = [name for name in targets if name not in chains]
         if missing:
             raise InterfaceUnreadableError(f"target_chain_absent:{','.join(missing)}")
@@ -258,6 +266,8 @@ def measure_interface(path: Path, binder_chain: str, target_chains: Sequence[str
     binder_mask = atoms.chain_id == binder_chain
     target_mask = np.isin(atoms.chain_id, np.array(targets))
     pair = atoms[binder_mask | target_mask]
+    if not np.isfinite(pair.coord).all():
+        raise InterfaceUnreadableError("coordinates_nonfinite")
     pair_binder = pair.chain_id == binder_chain
 
     complex_sasa = _sasa(pair)
@@ -314,7 +324,7 @@ def measure_interface(path: Path, binder_chain: str, target_chains: Sequence[str
         notes=(
             "polar contacts are a heavy-atom proxy, not hydrogen-bond counts",
             "buried-unsatisfied uses donor/acceptor typing and a coarse heavy-atom angle, not hydrogens",
-            "shape_complementarity is Lawrence-Colman Sc on a solvent-accessible dot surface, not the Connolly surface",
+            "shape_complementarity uses probe-accessible van der Waals contact patches",
             "hydrogens and waters were dropped before measuring",
         ),
     )
@@ -604,25 +614,11 @@ def _side_sc(
 
 
 def _shape_complementarity(coords: np.ndarray, radii: np.ndarray, pair_binder: np.ndarray) -> _ScResult:
-    """Lawrence & Colman (1993) Sc, on a solvent-accessible dot surface.
+    """Score opposing contact normals, weighted by nearest-neighbour distance.
 
-    Method, and where it differs from Rosetta's ``sc``:
-
-    * Surface. This builds a solvent-ACCESSIBLE dot surface (atom-centred probe
-      spheres with buried dots removed). Rosetta's ``sc`` and the original
-      Lawrence-Colman program use the Connolly molecular (solvent-EXCLUDED,
-      re-entrant) surface. The accessible surface sits one probe radius out and
-      has no re-entrant faces, so absolute Sc differs; the ordering of good vs
-      poor interfaces is preserved.
-    * Interface definition. A dot is an interface dot when it is accessible on
-      the isolated molecule but buried once the partner is present -- i.e. the
-      surface area buried on complexation. Lawrence-Colman trim a peripheral
-      band instead; burial is the cleaner, parameter-free equivalent.
-    * S(x) = n(x) . (-n(nearest on other surface)) * exp(-w d^2), w = 0.5 A^-2,
-      exactly as Lawrence & Colman 1993. Sc = mean of the per-side medians.
-
-    Returns a reason instead of a number when either side has fewer than
-    :data:`SC_MIN_DOTS` interface dots.
+    Dots lie on van der Waals spheres where the probe can touch them. Each
+    side contributes its median over dots buried by the other molecule.
+    The score includes peripheral dots and omits re-entrant patches.
     """
     binder_idx = np.flatnonzero(pair_binder)
     target_idx = np.flatnonzero(~pair_binder)
@@ -659,11 +655,10 @@ def _shape_complementarity(coords: np.ndarray, radii: np.ndarray, pair_binder: n
     if b_iso_pts.shape[0] == 0 or t_iso_pts.shape[0] == 0:
         return _ScResult(None, "no_surface_dots", None, None, 0, 0)
 
-    # A binder isolated dot is an interface dot if the whole complex buries it.
-    complex_coords = coords
-    complex_vdw = radii
-    b_iface_pts, b_iface_norm = _buried_subset(b_iso_pts, b_iso_norm, complex_coords, complex_vdw)
-    t_iface_pts, t_iface_norm = _buried_subset(t_iso_pts, t_iso_norm, complex_coords, complex_vdw)
+    # Each probe already cleared its own molecule. Testing its tangent atom
+    # again lets roundoff classify exposed dots as buried.
+    b_iface_pts, b_iface_norm = _buried_subset(b_iso_pts, b_iso_norm, target_coords, target_radii)
+    t_iface_pts, t_iface_norm = _buried_subset(t_iso_pts, t_iso_norm, binder_coords, binder_radii)
 
     binder_dots = int(b_iface_pts.shape[0])
     target_dots = int(t_iface_pts.shape[0])
@@ -680,7 +675,7 @@ def _shape_complementarity(coords: np.ndarray, radii: np.ndarray, pair_binder: n
 
 
 def _buried_subset(
-    points: np.ndarray, normals: np.ndarray, complex_coords: np.ndarray, complex_vdw: np.ndarray
+    points: np.ndarray, normals: np.ndarray, partner_coords: np.ndarray, partner_vdw: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
     """The isolated contact-surface dots the full complex buries -- the interface patch.
 
@@ -691,45 +686,35 @@ def _buried_subset(
     """
     from scipy.spatial import cKDTree
 
-    reach = complex_vdw + SC_PROBE_A
+    reach = partner_vdw + SC_PROBE_A
     rmax = float(reach.max()) if reach.size else 0.0
     probe_centres = points + SC_PROBE_A * normals
-    tree = cKDTree(complex_coords)
+    tree = cKDTree(partner_coords)
     near = tree.query_ball_point(probe_centres, rmax)
     buried = np.zeros(points.shape[0], dtype=bool)
     for k, hits in enumerate(near):
         if not hits:
             continue
         hits_arr = np.array(hits)
-        d2 = np.sum((complex_coords[hits_arr] - probe_centres[k]) ** 2, axis=1)
+        d2 = np.sum((partner_coords[hits_arr] - probe_centres[k]) ** 2, axis=1)
         if np.any(d2 < reach[hits_arr] ** 2):
             buried[k] = True
     return points[buried], normals[buried]
 
 
 def verdicts(measured: InterfaceQuality) -> dict[str, dict[str, object]]:
-    """Each reference threshold applied to this measurement, with its source carried along.
-
-    A threshold whose value is ``None`` yields ``state: "no_cut"``. A measured
-    value of ``None`` (Sc not computable on this interface) yields
-    ``state: "untested"``. Nothing here changes the screen's call; it is a report
-    until someone calibrates it.
-    """
+    """Report measured values and the reference thresholds on their original scale."""
     record = asdict(measured)
     out: dict[str, dict[str, object]] = {}
     for name, rule in REFERENCE_THRESHOLDS.items():
         value = record.get(name)
-        minimum = rule.get("min")
-        maximum = rule.get("max")
-        if minimum is None and maximum is None:
-            state = "no_cut"
-        elif value is None:
-            state = "untested"
-        elif minimum is not None:
-            state = "clear" if value >= minimum else "hit"
-        else:
-            state = "clear" if value <= maximum else "hit"
-        out[name] = {"value": value, "state": state, "threshold": minimum if minimum is not None else maximum,
-                     "direction": "min" if minimum is not None else ("max" if maximum is not None else "none"),
-                     "threshold_source": rule["source"]}
+        reference = {key: rule[key] for key in ("min", "max") if rule.get(key) is not None}
+        out[name] = {
+            "value": value,
+            "state": "untested" if value is None else "no_cut",
+            "threshold": None,
+            "direction": "none",
+            "reference_threshold": reference or None,
+            "threshold_source": rule["source"],
+        }
     return out

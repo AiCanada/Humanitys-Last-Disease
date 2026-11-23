@@ -2,12 +2,12 @@
 
 Two annotators are available (see :py:class:`CathMetric`):
 
-- ``foldseek``: the Foldseek search against the CATH SSG95 database, which assigns a
-  full C/A/T/H code but only for structures that match a T-level fold already in CATH.
+- ``foldseek``: structural search against CATH SSG95. An H hit supports the full
+  superfamily code, a T hit supports the topology, and an N hit records a neighbour.
 - ``proteina_classifier``: the GearNet fold classifier released with
-  `NVIDIA-BioNeMo/proteina <https://github.com/NVIDIA-BioNeMo/proteina>`_, which always
-  returns a C/A/T call (no H level), never fails to answer, and costs ~0.2 s/call against
-  Foldseek's ~3.7 s on a single CPU core (both annotators run on CPU only).
+  `NVIDIA-BioNeMo/proteina <https://github.com/NVIDIA-BioNeMo/proteina>`_.
+  It predicts class, architecture and topology independently. Each head requires a matching
+  label map. The released 1.0 topology map has 1,472 entries for 1,336 checkpoint outputs.
 
 Required environment variables (Foldseek):
 - FOLDSEEK_EXEC: path to foldseek binary
@@ -24,21 +24,21 @@ NVIDIA-BioNeMo/proteina (NVIDIA non-commercial research license).
 """
 
 import logging
+import math
 import os
 import subprocess
 import tempfile
-from functools import cache
+from functools import lru_cache
 from typing import Any, Literal
 
 import numpy as np
 import torch
 from atomworks.io.utils.annotator import ensure_annotations
-from atomworks.io.utils.io_utils import to_cif_file
 from atomworks.io.utils.selection import get_residue_starts
-from atomworks.ml.transforms.atom_array import apply_and_spread_residue_wise
-from biotite.structure import AtomArray, AtomArrayStack, spread_residue_wise
+from biotite.structure import AtomArray, AtomArrayStack, filter_solvent, spread_residue_wise
+from biotite.structure.io import pdbx
 
-from rfproteina.conditions import C_IDXGRP
+from rfproteina.conditions import C_IDX, C_IDXGRP
 from rfproteina.metrics import Metric
 from rfproteina.metrics.gearnet import GearNet
 
@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 
 # Annotator choices for CathMetric
 FOLDSEEK = "foldseek"
+FOLDSEEK_METHOD = "cath_s95_foldseek"
 PROTEINA_CLASSIFIER = "proteina_classifier"
 FOLDSEEK_WITH_FALLBACK = "foldseek_with_fallback"
 _ANNOTATORS = (FOLDSEEK, PROTEINA_CLASSIFIER, FOLDSEEK_WITH_FALLBACK)
@@ -64,25 +65,30 @@ _SEARCH_FLAGS = ["--cov-mode", "5", "--alignment-type", "2", "-e", "0.476641", "
 _NO_HIT: dict[str, Any] = {"C": None, "A": None, "T": None, "H": None, "type": None, "evalue": None, "tmscore": None}
 
 
-@cache
 def _parse_cath_domain_list(cath_list_file: str) -> dict[str, str]:
-    """Parse CathDomainList file into {domain_id: sfam_id} mapping.
+    """Read the levels in the current domain list, including replacements at the same path."""
+    info = os.stat(cath_list_file)
+    version = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    return _read_domain_list(cath_list_file, version)
 
-    Cached by file path — called once per unique path per process.
 
-    Args:
-      cath_list_file: Path to CathDomainList.S95.v4.4.0 file.
-
-    Returns:
-      Dict mapping domain IDs to CATH superfamily strings (e.g. ``'3.40.50.300'``).
-    """
+@lru_cache(maxsize=2)
+def _read_domain_list(cath_list_file: str, file_version: tuple[int, ...]) -> dict[str, str]:
     domain_lookup: dict[str, str] = {}
-    with open(cath_list_file) as fh:
+    with open(cath_list_file, encoding="utf-8") as fh:
         for line in fh:
             parts = line.split()
+            if not parts or parts[0].startswith("#"):
+                continue
+            if len(parts) < 5 or not all(level.isascii() and level.isdecimal() for level in parts[1:5]):
+                raise ValueError("Invalid CATH domain classification")
             domain_id = parts[0]
-            sfam_id = f"{parts[1]}.{parts[2]}.{parts[3]}.{parts[4]}"
+            sfam_id = ".".join(parts[1:5])
+            if domain_id in domain_lookup and domain_lookup[domain_id] != sfam_id:
+                raise ValueError("Conflicting CATH classifications for the same domain")
             domain_lookup[domain_id] = sfam_id
+    if not domain_lookup:
+        raise ValueError("Empty CATH domain list")
     return domain_lookup
 
 
@@ -109,35 +115,47 @@ def _parse_foldseek_m8(result_file: str, domain_lookup: dict[str, str]) -> dict[
       ``qcov``, ``tcov``; or ``None`` if no qualifying hits.
     """
     hits: list[dict[str, Any]] = []
+    query_id = None
     with open(result_file) as fh:
         for line in fh:
             parts = line.strip().split()
-            if len(parts) != 10:
+            if not parts:
                 continue
+            if len(parts) != 10 or (query_id is not None and parts[0] != query_id):
+                raise ValueError("Expected one query and ten columns in the CATH search report")
+            query_id = parts[0]
             target_id = parts[1]
             evalue = float(parts[3])
-            qlen = int(float(parts[4]))
-            tlen = int(float(parts[5]))
+            qlen = float(parts[4])
+            tlen = float(parts[5])
             qtmscore = float(parts[6])
             ttmscore = float(parts[7])
             qcov = float(parts[8])
             tcov = float(parts[9])
 
+            if not all(length.is_integer() and length > 0 for length in (qlen, tlen)):
+                raise ValueError("Invalid CATH sequence length")
+            fractions = (qtmscore, ttmscore, qcov, tcov)
+            if not (math.isfinite(evalue) and evalue >= 0 and all(0 <= value <= 1 for value in fractions)):
+                raise ValueError("Invalid CATH search scores")
             if target_id not in domain_lookup:
-                continue
+                raise ValueError("Foldseek target missing from the supplied CATH domain list")
             sfam_id = domain_lookup[target_id]
             coverage = min(qlen, tlen) / max(qlen, tlen)
             tmscore = max(qtmscore, ttmscore)
             htype = _hit_type(evalue, coverage, tmscore)
 
-            if htype in ["H", "T", "N"]:
+            if htype == "H":
                 code: str | None = sfam_id
+            elif htype == "T":
+                code = sfam_id.rsplit(".", 1)[0]
             else:
                 code = None
 
             hits.append(
                 {
                     "code": code,
+                    "target_domain": target_id,
                     "type": htype,
                     "evalue": evalue,
                     "tmscore": tmscore,
@@ -223,9 +241,13 @@ def annotate_cath(atom_array: AtomArray, threads: int | None = None) -> dict[str
 
         # Foldseek's mmCIF parser requires occupancy and B-factor fields.
         cif_array = atom_array.copy()
-        cif_array.set_annotation("occupancy", np.ones(cif_array.array_length(), dtype=np.float32))
-        cif_array.set_annotation("b_factor", np.zeros(cif_array.array_length(), dtype=np.float32))
-        to_cif_file(cif_array, os.path.join(query_dir, "query.cif"), save_standard_annotations=False, extra_fields=[])
+        if "occupancy" not in cif_array.get_annotation_categories():
+            cif_array.set_annotation("occupancy", np.ones(len(cif_array), dtype=np.float32))
+        if "b_factor" not in cif_array.get_annotation_categories():
+            cif_array.set_annotation("b_factor", np.zeros(len(cif_array), dtype=np.float32))
+        query = pdbx.CIFFile()
+        pdbx.set_structure(query, cif_array, data_block="query", include_bonds=False)
+        query.write(os.path.join(query_dir, "query.cif"))
 
         query_db = os.path.join(tmpdir, "query_db")
         result_db = os.path.join(tmpdir, "result_db")
@@ -271,6 +293,9 @@ def annotate_cath(atom_array: AtomArray, threads: int | None = None) -> dict[str
         "type": best_hit["type"],
         "evalue": best_hit["evalue"],
         "tmscore": best_hit["tmscore"],
+        "target_domain": best_hit["target_domain"],
+        "qcov": best_hit["qcov"],
+        "tcov": best_hit["tcov"],
     }
 
 
@@ -283,7 +308,7 @@ def _assemble_cath_classifier_inputs(atom_array: AtomArray) -> tuple[torch.Tenso
     The classifier takes only ``(coords, coord_mask, batch)``; a residue's sequence position is
     implicitly its **row index** in this dense array. Rows advance by one per residue, except across
     an unbonded sequence gap, where they advance by the ``res_id`` difference. Unresolved CA atoms
-    are also excluded. If any residue lacks a backbone CA, returns empty inputs.
+    are also excluded. A missing or duplicated backbone CA makes the input ambiguous.
 
     Args:
       atom_array: One chain of one IndexGroup, amino acids only. ``res_id`` is used to determine
@@ -299,22 +324,28 @@ def _assemble_cath_classifier_inputs(atom_array: AtomArray) -> tuple[torch.Tenso
     if atom_array.array_length() == 0:
         return torch.zeros((0, 3)), torch.zeros(0, dtype=torch.bool)
 
-    chain_attr = "chain_iid" if "chain_iid" in atom_array.get_annotation_categories() else "chain_id"
-    index_groups = C_IDXGRP.annotation(atom_array, default="generate")
-    if len(np.unique(atom_array.get_annotation(chain_attr))) > 1 or len(np.unique(index_groups)) > 1:
+    annotations = set(atom_array.get_annotation_categories())
+    chain_attr = "chain_iid" if "chain_iid" in annotations else "chain_id"
+    if len(np.unique(atom_array.get_annotation(chain_attr))) > 1:
         raise ValueError("_assemble_cath_classifier_inputs needs a single chain in a single IndexGroup")
+    if atom_array.bonds is not None or annotations.intersection({C_IDXGRP.name, *C_IDXGRP.aliases, "molecule_iid"}):
+        if len(np.unique(C_IDXGRP.annotation(atom_array, default="generate"))) > 1:
+            raise ValueError("CATH classifier input spans multiple index groups")
+    elif annotations.intersection({C_IDX.name, *C_IDX.aliases}):
+        raise ValueError("Index-conditioned input requires an index group or molecule annotation")
 
     ensure_annotations(atom_array, "is_protein_backbone")
     is_ca = atom_array.is_protein_backbone & (atom_array.atom_name == "CA")
-    if not apply_and_spread_residue_wise(atom_array, is_ca, np.any).all():
-        logger.warning("Not every residue carries a backbone CA, so no CATH call is made for this chain")
+    residue_starts = get_residue_starts(atom_array)
+    if np.any(np.add.reduceat(is_ca.astype(int), residue_starts) != 1):
+        logger.warning("A residue has a missing or ambiguous backbone CA.")
         return torch.zeros((0, 3)), torch.zeros(0, dtype=torch.bool)
 
-    residue_starts = get_residue_starts(atom_array)
     n_residues = len(residue_starts)
     res_ids = atom_array.res_id[residue_starts].astype(np.int64)
-    if (np.diff(res_ids) < 1).any():
-        raise ValueError("res_id must be strictly increasing along the chain to serve as a sequence axis")
+    positions = list(zip(res_ids, atom_array.ins_code[residue_starts], strict=True))
+    if len(set(positions)) != len(positions) or (np.diff(res_ids) < 0).any():
+        raise ValueError("CATH classifier requires ordered and unique residue positions")
 
     # A res_id jump only means missing residues when the two are not bonded to each other
     atom_to_residue = spread_residue_wise(atom_array, np.arange(n_residues))
@@ -349,13 +380,12 @@ class CathMetric(Metric):
     Which annotator runs is set by ``annotator``:
 
     - ``"foldseek"``: Foldseek structural search against the CATH SSG95 database.
-      Assigns a full C/A/T/H code, but only for chains matching a fold already in CATH;
-      everything else comes back all-``None``.
+      Reports the classification depth supported by the domain match.
+      Neighbours retain their search scores and have no assigned classification.
     - ``"proteina_classifier"``: the GearNet fold classifier from NVIDIA-BioNeMo/proteina.
-      C/A/T only, and always returns a call.
+      Reports C/A/T for supported inputs.
     - ``"foldseek_with_fallback"``: run Foldseek first, and fall back to the classifier only
-      for chains where Foldseek finds no match. Gives Foldseek's H-level precision where it
-      applies, and a C/A/T call rather than nothing for novel folds.
+      for chains where Foldseek assigns no class. A missing fallback records its blocker.
 
     Required environment variables (``foldseek``, and the first pass of
     ``foldseek_with_fallback``):
@@ -421,6 +451,10 @@ class CathMetric(Metric):
         self.classifier_label_mapping_path = self.classifier_label_mapping_path or os.getenv(
             "GEARNET_CATH_LABEL_MAPPING_PATH"
         )
+        if self.annotator == FOLDSEEK_WITH_FALLBACK and not all(
+            path and os.path.isfile(path) for path in (self.classifier_ckpt_path, self.classifier_label_mapping_path)
+        ):
+            return
         if not self.classifier_ckpt_path:
             raise ValueError(
                 f"annotator={self.annotator!r} needs the Proteina classifier checkpoint: pass "
@@ -434,11 +468,24 @@ class CathMetric(Metric):
 
         model = GearNet()
         model.load_state_dict(torch.load(self.classifier_ckpt_path, map_location="cpu", weights_only=True))
-        self._classifier = model.eval().requires_grad_(False)
         mapping = torch.load(self.classifier_label_mapping_path, map_location="cpu", weights_only=True)
-        self._label_mapping = {
-            level: {idx: code for code, idx in mapping[level].items()} for level in CLASSIFIER_LEVELS
-        }
+        labels = {}
+        for depth, level in enumerate(CLASSIFIER_LEVELS, start=1):
+            codes = mapping.get(level) if isinstance(mapping, dict) else None
+            n_classes = getattr(model, f"pred_head_{level}").out_features
+            if not isinstance(codes, dict) or not codes:
+                raise ValueError(f"Missing GearNet {level} label map")
+            for code, index in codes.items():
+                parts = code.split(".") if isinstance(code, str) else []
+                numeric_parts = all(p.isascii() and p.isdecimal() for p in parts)
+                if type(index) is not int or len(parts) != depth or not numeric_parts:
+                    raise ValueError(f"Invalid GearNet {level} classification label")
+            if set(codes.values()) != set(range(len(codes))):
+                raise ValueError(f"GearNet {level} index map must be one-to-one")
+            if len(codes) == n_classes:
+                labels[level] = {index: code for code, index in codes.items()}
+        self._classifier = model.eval().requires_grad_(False)
+        self._label_mapping = labels
         logger.info(f"Loaded Proteina CATH classifier from {self.classifier_ckpt_path}")
 
     def teardown(self) -> None:
@@ -464,31 +511,62 @@ class CathMetric(Metric):
           ``evalue``, ``tmscore``, and ``annotator`` -- which of ``"foldseek"`` /
           ``"proteina_classifier"`` produced the label. Under ``"foldseek_with_fallback"``
           that key is the only way to tell the two apart, so it is always reported.
-          The classifier leaves ``H``, ``type``, ``evalue``, and ``tmscore`` as ``None``.
+            The classifier records the resolved alpha-carbon count and a blocker for each unavailable
+            level. ``reported_levels_consistent`` checks the prefixes of reported adjacent levels.
         """
         if isinstance(atom_array, AtomArrayStack):
             atom_array = atom_array[0]
 
-        chain_attr = "chain_iid" if "chain_iid" in atom_array.get_annotation_categories() else "chain_id"
-        coi_array = atom_array[atom_array.get_annotation(chain_attr) == chain_of_interest]
-
+        coi_array = atom_array[atom_array.chain_id == chain_of_interest]
+        if "chain_iid" in atom_array.get_annotation_categories():
+            instance = atom_array.chain_iid == chain_of_interest
+            if np.any(instance):
+                coi_array = atom_array[instance]
+            elif len(np.unique(coi_array.chain_iid)) > 1:
+                raise ValueError("CATH chain label identifies multiple chain instances")
+        coi_array = coi_array[~filter_solvent(coi_array)]
+        if not len(coi_array):
+            raise ValueError("CATH chain of interest has no polymer atoms")
         ensure_annotations(coi_array, "is_protein")
         if not coi_array.is_protein.all():
             raise ValueError(f"Chain {chain_of_interest!r} contains non-protein residues")
 
         if self.annotator != PROTEINA_CLASSIFIER:
             foldseek_result = annotate_cath(coi_array, threads=self.foldseek_threads)
-            # A no-match leaves every level None, so C is enough to tell a hit from a miss.
+            foldseek_result.update(annotator=FOLDSEEK, method=FOLDSEEK_METHOD)
             if self.annotator == FOLDSEEK or foldseek_result["C"] is not None:
-                return {**foldseek_result, "annotator": FOLDSEEK}
+                return foldseek_result
+            if self._classifier is None:
+                return {**foldseek_result, "fallback_blocker": "classifier_assets_unavailable"}
 
         if self._classifier is None:
             raise RuntimeError("Call CathMetric.setup() before computing classifier annotations")
-        result = {**_NO_HIT, "annotator": PROTEINA_CLASSIFIER}
+        result = {**_NO_HIT, "annotator": PROTEINA_CLASSIFIER, "method": PROTEINA_CLASSIFIER}
         coords, coord_mask = _assemble_cath_classifier_inputs(coi_array)
-        if coord_mask.any():
-            with torch.no_grad():
-                output = self._classifier(coords, coord_mask, torch.zeros(len(coords), dtype=torch.long))
-            for level in CLASSIFIER_LEVELS:
-                result[level] = self._label_mapping[level][int(output[f"pred_{level}"][0].argmax())]
+        result["resolved_ca"] = int(coord_mask.sum())
+        if not result["resolved_ca"]:
+            return {**result, "classifier_blocker": "no_unambiguous_resolved_ca_input"}
+        with torch.no_grad():
+            output = self._classifier(coords, coord_mask, torch.zeros(len(coords), dtype=torch.long))
+        predictions = {}
+        blockers = {}
+        for level in CLASSIFIER_LEVELS:
+            if level not in self._label_mapping:
+                blockers[level] = "classifier_label_count_mismatch"
+                continue
+            scores = output[f"pred_{level}"]
+            if scores.shape != (1, len(self._label_mapping[level])) or not torch.isfinite(scores).all():
+                blockers[level] = "classifier_scores_invalid"
+                continue
+            predictions[level] = self._label_mapping[level][int(scores[0].argmax())]
+        result.update(predictions)
+        if blockers:
+            result["classifier_level_blockers"] = blockers
+        comparisons = [
+            predictions[child].rsplit(".", 1)[0] == predictions[parent]
+            for parent, child in (("C", "A"), ("A", "T"))
+            if parent in predictions and child in predictions
+        ]
+        if comparisons:
+            result["reported_levels_consistent"] = all(comparisons)
         return result

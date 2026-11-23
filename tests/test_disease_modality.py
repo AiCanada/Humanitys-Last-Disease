@@ -369,7 +369,11 @@ def test_aliphatic_index_and_mass_stay_off_the_call(tmp_path: Path):
     odd = modality_record("protein", "AX")
     assert odd is not None
     assert "molecular_weight" not in odd
-    assert f"{odd['aliphatic_index']:.4f}" == "50.0000"
+    assert "aliphatic_index" not in odd
+    assert f"{odd['aliphatic_index_lower_bound']:.4f}" == "50.0000"
+    assert "Identified residues contribute 50 to the aliphatic index." in screen_page(
+        {"call": "untested", "modality_screen": odd}
+    )
     assert odd["nonstandard_count"] == 1
     assert "AX" not in json.dumps(odd)
     record = screened_design_run(tmp_path, _PLAIN)
@@ -657,8 +661,10 @@ def test_aggrescan_uses_the_2007_window_and_stays_off_the_call(tmp_path: Path) -
     assert f"{modality_record('protein', 'A' * 76)['aggrescan']['na4vss']:.4f}" == "-5.0873"
     short = modality_record("peptide", "IIII")
     assert short is not None and "aggrescan" not in short
+    assert short["aggrescan_blocker"] == "sequence_shorter_than_window"
     foreign = modality_record("protein", "IIIIIX")
     assert foreign is not None and "aggrescan" not in foreign
+    assert foreign["aggrescan_blocker"] == "unsupported_residue"
     nucleic = modality_record("nucleic", "ACGTACGT")
     assert nucleic is not None and "aggrescan" not in nucleic
     page = screen_page({"call": "untested", "modality_screen": isoleucine})

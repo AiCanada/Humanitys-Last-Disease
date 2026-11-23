@@ -1,9 +1,8 @@
 """Structure alerts and drug-likeness for a small-molecule design, from RDKit alone.
 
 ``toxicology.py`` reads measured or predicted affinities for the safety panel
-and will not accept a number without a unit. That leaves a gap: a molecule can
-clear the panel and still carry a substructure every medicinal chemist would
-refuse. This module fills that gap with RDKit's own filter catalogues, which
+and will not accept a number without a unit. This module flags structural
+patterns for review using RDKit's filter catalogues, which
 ship with the package already pinned in ``pyproject.toml``. No new dependency,
 no network, no model weights.
 
@@ -20,22 +19,22 @@ What is deliberately NOT here:
 Alert catalogues and what they are:
 
 * PAINS A, B and C: Baell and Holloway 2010, as encoded in RDKit's
-  ``FilterCatalogParams``. A hit means the scaffold is a frequent hitter in
-  assay panels, not that the molecule is toxic.
+  ``FilterCatalogParams``. A hit identifies a pattern associated with assay
+  interference. Actual interference requires experimental evidence.
 * BRENK: Brenk et al. 2008, unwanted fragments for lead-like libraries.
 * NIH: the NIH annotated set of reactive and undesirable groups bundled with
   RDKit.
 
-Every bar below is marked for what it is. The alert bars are conventions of the
-cited papers; the property windows are suggested defaults pending calibration
-against whatever chemistry this program actually works on.
+The project flags any catalogue match. Each property window identifies the
+source of its cutoff and the descriptor used to calculate the value.
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from math import isfinite
 
-METHOD = "rdkit_filtercatalog_v1"
+METHOD = "rdkit_filtercatalog_v2"
 
 #: Catalogue names requested from RDKit, in the order they are reported.
 CATALOGUES = ("PAINS_A", "PAINS_B", "PAINS_C", "BRENK", "NIH")
@@ -109,13 +108,14 @@ class LigandAlerts:
     sa_score_reason: str | None
     method: str = METHOD
     notes: tuple[str, ...] = field(default_factory=tuple)
+    missing_catalogues: tuple[str, ...] = ()
 
     def as_record(self) -> dict[str, object]:
         record = asdict(self)
         record["alerts"] = [dict(item) for item in self.alerts]
         record["notes"] = list(self.notes)
         record["property_bars"] = PROPERTY_BARS
-        record["alert_count"] = len(self.alerts)
+        record["alert_count"] = len(self.alerts) if not self.missing_catalogues or self.alerts else None
         return record
 
 
@@ -123,34 +123,29 @@ class LigandUnreadableError(Exception):
     """RDKit is missing, or the SMILES does not parse. Never guessed around."""
 
 
-def _catalog() -> object:
+def _catalog() -> tuple[object, tuple[str, ...]]:
     from rdkit.Chem import FilterCatalog
 
     params = FilterCatalog.FilterCatalogParams()
+    missing = []
     for name in CATALOGUES:
         entry = getattr(FilterCatalog.FilterCatalogParams.FilterCatalogs, name, None)
         if entry is None:  # pragma: no cover - depends on the RDKit build
+            missing.append(name)
             continue
         params.AddCatalog(entry)
-    return FilterCatalog.FilterCatalog(params)
+    return FilterCatalog.FilterCatalog(params), tuple(missing)
 
 
 def _sa_score(mol: object) -> tuple[float | None, str | None]:
     """RDKit's contributed synthetic accessibility score, or a reason it is absent."""
     try:
-        import os
-        import sys
-
-        from rdkit.Chem import RDConfig
-
-        contrib = os.path.join(RDConfig.RDContribDir, "SA_Score")
-        if contrib not in sys.path:
-            sys.path.append(contrib)
-        import sascorer  # type: ignore[import-not-found]
+        from rdkit.Contrib.SA_Score import sascorer
     except Exception as error:  # any import failure is the same answer
         return None, f"sascorer_unavailable:{type(error).__name__}"
     try:
-        return round(float(sascorer.calculateScore(mol)), 3), None
+        value = float(sascorer.calculateScore(mol))
+        return (value, None) if isfinite(value) else (None, "sascorer_nonfinite")
     except Exception as error:
         return None, f"sascorer_failed:{type(error).__name__}"
 
@@ -168,8 +163,10 @@ def screen_smiles(smiles: str) -> LigandAlerts:
     mol = Chem.MolFromSmiles(text)
     if mol is None:
         raise LigandUnreadableError("smiles_unparsable")
+    if not mol.GetNumAtoms() or any(atom.GetAtomicNum() == 0 for atom in mol.GetAtoms()):
+        raise LigandUnreadableError("smiles_incomplete_molecule")
 
-    catalog = _catalog()
+    catalog, missing = _catalog()
     hits: list[dict[str, str]] = []
     for match in catalog.GetMatches(mol):
         # FilterCatalogEntry has no HasProp, so the property list is asked for
@@ -187,17 +184,18 @@ def screen_smiles(smiles: str) -> LigandAlerts:
     return LigandAlerts(
         smiles=text,
         alerts=tuple(hits),
-        mol_weight=round(float(Descriptors.MolWt(mol)), 3),
-        clogp=round(float(Crippen.MolLogP(mol)), 3),
-        tpsa=round(float(Descriptors.TPSA(mol)), 3),
+        mol_weight=float(Descriptors.MolWt(mol)),
+        clogp=float(Crippen.MolLogP(mol)),
+        tpsa=float(Descriptors.TPSA(mol)),
         # NHOHCount / NOCount, not NumHDonors / NumHAcceptors: see the cuts above.
         h_bond_donors=int(Descriptors.NHOHCount(mol)),
         h_bond_acceptors=int(Descriptors.NOCount(mol)),
         rotatable_bonds=int(Descriptors.NumRotatableBonds(mol)),
         heavy_atoms=int(mol.GetNumHeavyAtoms()),
-        qed=round(float(QED.qed(mol)), 4),
+        qed=float(QED.qed(mol)),
         sa_score=sa_value,
         sa_score_reason=sa_reason,
+        missing_catalogues=missing,
         notes=(
             "a catalogue hit is a flag for review, not a toxicity call",
             "no predicted probability is converted into a concentration anywhere in this module",
@@ -211,22 +209,25 @@ def verdicts(screened: LigandAlerts) -> dict[str, dict[str, object]]:
     The alert line is ``hit`` when any catalogue matched. That is this module's
     own convention and is marked as such.
     """
-    record = asdict(screened)
+    record = screened.as_record()
     out: dict[str, dict[str, object]] = {
         "structure_alerts": {
-            "value": len(screened.alerts),
-            "state": "hit" if screened.alerts else "clear",
+            "value": record["alert_count"],
+            "state": "hit" if screened.alerts else ("untested" if screened.missing_catalogues else "clear"),
             "threshold": 0,
             "direction": "max",
             "threshold_source": "program convention: any PAINS, BRENK or NIH catalogue match is reported as a hit",
         }
     }
+    if screened.missing_catalogues:
+        out["structure_alerts"]["missing_catalogues"] = list(screened.missing_catalogues)
     for name, rule in PROPERTY_BARS.items():
         value = record.get(name)
         minimum = rule.get("min")
         maximum = rule.get("max")
-        if value is None:
+        if value is None or not isfinite(value):
             state = "untested"
+            value = None
         elif minimum is not None:
             state = "clear" if value >= minimum else "hit"
         else:

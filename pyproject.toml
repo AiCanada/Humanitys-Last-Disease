@@ -7,7 +7,7 @@ license-files = ["LICENSE"]
 license = "BSD-3-Clause"
 requires-python = ">=3.12,<3.13"
 authors = [
-    { name = "Institute for Protein Design", email = "contact@ipd.uw.edu" },
+    { name = "Institute for Protein Design" },
 ]
 keywords = [
     "protein design",
@@ -58,6 +58,7 @@ dependencies = [
     "numpy>=1.25.0",
     "scipy>=1.13.1",
     "pandas>=2,<3",
+    "filelock>=3.12",  # Coordinate metric writers and aggregation across processes.
     "pyyaml>=6.0",  # Packaged RFD4 residue vocabulary
     "toolz",
     "fire",
@@ -68,6 +69,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+sygma = ["rdkit==2025.9.6"]
+tnp = ["gemmi>=0.6.5,<1"]
+vina = ["gemmi>=0.6.5,<1"]
+prodigy = [
+    "prodigy-prot==2.5.1",
+    "freesasa==2.2.1",
+    "biopython==1.88",
+]
 docs = [
     "linkify-it-py>=2.0.0,<3",
     "myst-parser>=4.0.0,<5",

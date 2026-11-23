@@ -325,7 +325,8 @@ def modality_record(
     a polymer sequence unread. Protein, peptide, and nucleic reports use the
     designed chain and leave the component table unread. Whitespace in a chain
     is ignored. A nonstandard protein or peptide letter is counted and the rest
-    of that chain is still scanned. The aliphatic index uses the whole chain.
+    of that chain is still scanned. An unresolved chain reports only the
+    contribution of its known residues to the whole-chain aliphatic index.
     The molecular weight, the extinction, and the atomic composition are left
     out when any letter has no residue mass. The half-life follows the
     N-terminal residue and is left out when that residue is nonstandard.
@@ -435,9 +436,13 @@ def _polypeptide(kind: str, sequence: str) -> dict[str, object] | None:
         "homopolymer_start": start,
         "longest_hydrophobic_run": hydrophobic,
         "hydrophobic_run_start": hydrophobic_start,
-        "aliphatic_index": _aliphatic_index(chain),
         **_complexity(chain),
     }
+    if unusual:
+        # Only the identified residues contribute. The denominator is the complete chain length.
+        record["aliphatic_index_lower_bound"] = _aliphatic_index(chain)
+    else:
+        record["aliphatic_index"] = _aliphatic_index(chain)
     mass = _molecular_weight(chain)
     if mass is not None:
         record["molecular_weight"] = mass
@@ -460,6 +465,8 @@ def _polypeptide(kind: str, sequence: str) -> dict[str, object] | None:
     aggregation = _aggrescan(chain)
     if aggregation is not None:
         record["aggrescan"] = aggregation
+    else:
+        record["aggrescan_blocker"] = "unsupported_residue" if unusual else "sequence_shorter_than_window"
     return record
 
 

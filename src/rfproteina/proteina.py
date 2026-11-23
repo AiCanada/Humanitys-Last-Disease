@@ -37,9 +37,12 @@ from rfproteina.flow_matching.product_space_flow_matcher import (
 from rfproteina.inference_utils.foldseek import (
     add_diversity_summary_metrics,
     apply_cluster_map_to_metrics,
+    cluster_summary_for_group,
     run_foldseek_distributed,
 )
 from rfproteina.inference_utils.insertion_mapping import build_predicted_insertion_mapping
+from rfproteina.inference_utils.metrics_tables import locked_metrics_directory, write_metrics_tables
+from rfproteina.inference_utils.pass_rates import pass_attempts
 from rfproteina.inference_utils.solve_rate_metrics import compute_solve_rate_metrics
 from rfproteina.metrics.metric import MetricManager
 from rfproteina.metrics.oracles.af3_oracle import release_af3_daemon
@@ -63,7 +66,7 @@ from rfproteina.utils.ddp import RankedLogger
 from rfproteina.utils.logging import print_df_as_table, safe_print
 from rfproteina.utils.lora import add_lora_adapter
 from rfproteina.utils.optim_utils import backward_with_accumulation, build_optimizers
-from rfproteina.utils.parse_presets import STANDARD_ANNOTATIONS_ONLY
+from rfproteina.utils.parse_presets import evaluation_parse_config
 from rfproteina.utils.structure_export import process_single_sample_to_atom_array
 from rfproteina.utils.structure_files import find_structure_file
 from rfproteina.utils.torch import minimum_loss_attempt_indices
@@ -271,7 +274,8 @@ def _clean_metrics_dict(metrics: dict, keep_metadata_only: bool = False) -> dict
             cleaned[key] = str(value) if value is not None else None
             continue
         elif key.endswith("chain_of_interest"):
-            chain_of_interest_values.append(str(value))
+            if value is not None and str(value).strip():
+                chain_of_interest_values.append(str(value))
             continue
         if isinstance(value, int | float):
             cleaned[key] = float(value)
@@ -1391,7 +1395,7 @@ class Proteina(L.LightningModule):
         ensure_dir(metrics_dir)
         output_prefix, output_suffix = self._output_prefix_suffix()
 
-        per_example_df = pd.DataFrame(all_metrics).round(4)
+        per_example_df = pd.DataFrame(all_metrics)
 
         # Reorder columns: metadata first, then metrics.
         cols = per_example_df.columns.tolist()
@@ -1424,15 +1428,10 @@ class Proteina(L.LightningModule):
             try:
                 per_example_df = add_diversity_summary_metrics(
                     per_example_df,
-                    group_by=["dataset_name", "task"],
                     pass_cols=pass_cols,
                 )
             except Exception as e:
                 logger.warning(f"Foldseek diversity summary metrics failed, skipping cluster metrics: {e}")
-
-        per_example_path = metrics_dir / f"{output_prefix}{csv_stem}{output_suffix}.csv"
-        per_example_df.to_csv(per_example_path, index=False)
-        logger.info(f"Saved {csv_stem} to {per_example_path}")
 
         agg_rows = []
         _non_metric_cols = {
@@ -1468,12 +1467,20 @@ class Proteina(L.LightningModule):
             if "dataset_name" in per_example_df.columns
             else pd.Series(["unknown"] * len(per_example_df))
         )
-        for ds in dataset_col.unique():
-            ds_df = per_example_df[dataset_col == ds]
+        for ds, ds_df in per_example_df.groupby(dataset_col, dropna=False, sort=False):
+            cluster_summary = cluster_summary_for_group(ds_df)
+            for col, value in cluster_summary.items():
+                if pd.notna(value):
+                    agg_rows.append(
+                        {"dataset": ds, "metric": col, "reduction": "mean", "value": value, "n": len(ds_df)}
+                    )
             for col in ds_df.columns:
-                if col in _non_metric_cols or col.startswith("generation."):
+                if col in _non_metric_cols or col in cluster_summary or col.startswith("generation."):
                     continue
-                vals = pd.to_numeric(ds_df[col], errors="coerce").dropna()
+                if col.endswith(".pass"):
+                    vals = pass_attempts(ds_df, col).dropna()
+                else:
+                    vals = pd.to_numeric(ds_df[col], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
                 if len(vals) == 0:
                     continue
                 name, _, suffix = col.partition(".")
@@ -1498,14 +1505,21 @@ class Proteina(L.LightningModule):
                 # their wandb keys stay unsuffixed (val_generation.{ds}/{metric}).
                 agg_rows.append({"dataset": ds, "metric": metric_name, "reduction": "", "value": value, "n": n_used})
 
-        if not agg_rows:
-            return
-
-        agg_df = pd.DataFrame(agg_rows).round(4)
-        print_df_as_table(agg_df, title=csv_stem)
-        agg_path = metrics_dir / f"{output_prefix}aggregated_metrics{output_suffix}.csv"
-        agg_df.to_csv(agg_path, index=False)
-        if wandb.run is not None:
+        agg_df = pd.DataFrame(agg_rows, columns=["dataset", "metric", "reduction", "value", "n"])
+        if not agg_df.empty:
+            print_df_as_table(agg_df.round(4), title=csv_stem)
+        tables = {
+            f"{output_prefix}aggregated_metrics{output_suffix}.csv": agg_df,
+            f"{output_prefix}{csv_stem}{output_suffix}.csv": per_example_df,
+        }
+        with locked_metrics_directory(metrics_dir):
+            archive_jobs = self.is_inference and bool(output_prefix or output_suffix)
+            write_metrics_tables(
+                metrics_dir, tables,
+                archive_replaced="individual_job_results" if archive_jobs else None,
+            )
+        logger.info(f"Saved {csv_stem} and its summary in {metrics_dir}")
+        if wandb.run is not None and not agg_df.empty:
             wandb.log(
                 {
                     (
@@ -1804,7 +1818,7 @@ class Proteina(L.LightningModule):
             if cif_path is None:
                 logger.warning(f"eval_from_disk: missing generated CIF for {example_id}, skipping.")
                 continue
-            generated_atom_array = parse(cif_path, config=STANDARD_ANNOTATIONS_ONLY)["assemblies"]["1"][0]
+            generated_atom_array = parse(cif_path, config=evaluation_parse_config(cif_path))["assemblies"]["1"][0]
             input_atom_array = atom_array_batch[orig_batch_idx] if orig_batch_idx < len(atom_array_batch) else None
             generation_list.append(
                 {

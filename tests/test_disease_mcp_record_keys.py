@@ -105,6 +105,33 @@ def _screened(folder: Path, record: dict) -> Path:
     return run
 
 
+def test_affinity_rows_keep_their_identity_through_redaction(tmp_path: Path) -> None:
+    from rfproteina.disease import mcp_api
+
+    supplied_id = "ACDEFGHIKLMNPQRSTVWY"
+    report = {
+        "method": "prodigy_ic_nis",
+        "attempted": 2,
+        "predicted": 1,
+        "untested": 1,
+        "samples": {
+            supplied_id: {"status": "predicted", "residues_by_chain": {supplied_id: 12}, "derived_kd_mol_l": 2e-7},
+            "binder_1": {"status": "untested", "blocker": "structure_unreadable"},
+        },
+    }
+    run = _screened(tmp_path, {"screen_version": 6, "call": "untested", "prodigy_affinity": report})
+    verdict = mcp_api.read_verdict({"directory": str(run), "include_record": True})["runs"][0]["verdict"]
+    for item in (verdict, verdict["record"]):
+        result = item["prodigy_affinity"]
+        assert result["attempted"] == 2 and result["predicted"] == 1
+        by_id = {row["example_id"]: row for row in result["samples"]}
+        assert by_id["[sequence omitted]"]["derived_kd_mol_l"] == 2e-7
+        assert by_id["[sequence omitted]"]["residues_by_chain"] == [{"chain": "[sequence omitted]", "residues": 12}]
+        assert by_id["binder_1"]["blocker"] == "structure_unreadable"
+        assert supplied_id not in json.dumps(result)
+    assert supplied_id in (run / "screen.json").read_text(encoding="utf-8")
+
+
 def _version_three_record() -> dict:
     """A screen in the shape the current writer produces, trimmed to the keys under test."""
     return {
@@ -374,6 +401,7 @@ def test_the_version_four_reports_arrive_without_the_design_slice_or_the_molecul
 
     record = _version_three_record()
     record["designed_interface_quality"] = {"interface_quality_blocker": "coordinates_absent"}
+    record["protein_sol"] = {"samples": [{"example_id": "sample-1", "blocker": "protein_sol_sample_missing"}]}
     record["mhc_class_i"] = {"n_windows": 68, "predictor_available": False}
     record["synthesis"] = {"longest_repeat": 26, "repeat_sequence": "AUGGCUACGUUAGCCAUGGCUACGUU"}
     record["ligand_alerts"] = {"smiles": "CCCCCCCCCCCCCCCC(=O)O", "heavy_atoms": 18}
@@ -381,6 +409,8 @@ def test_the_version_four_reports_arrive_without_the_design_slice_or_the_molecul
     answer = mcp_api.read_verdict({"directory": str(tmp_path)})
     verdict = answer["runs"][0]["verdict"]
     assert verdict["designed_interface_quality"] == {"interface_quality_blocker": "coordinates_absent"}
+    assert verdict["protein_sol"] == record["protein_sol"]
+    assert "protein_sol" not in mcp_layers.screen_fields()
     assert verdict["mhc_class_i"] == {"n_windows": 68, "predictor_available": False}
     assert verdict["synthesis"] == {"longest_repeat": 26}, "the length stays; the slice of the design does not"
     assert verdict["ligand_alerts"] == {"heavy_atoms": 18}, "the molecule stays in screen.json"
@@ -658,9 +688,10 @@ def test_the_confidence_rule_is_the_same_rule_the_trace_writer_applies() -> None
     only such columns reaches ``_ranking`` with no shared metric, which orders
     candidates by filename.
     """
-    from rfproteina.disease import mcp_layers, trace
+    from rfproteina.disease import mcp_layers, refold, trace
 
-    written = _alternatives(trace._CONFIDENCE.pattern)
+    assert trace.trace_metric_kind is refold.trace_metric_kind
+    written = _alternatives(refold._CONFIDENCE.pattern)
     read = _alternatives(mcp_layers._HIGHER_IS_BETTER) | _alternatives(mcp_layers._LOWER_IS_BETTER)
     assert written == read, "the trace writer and the MCP reader disagree about what a confidence metric is"
 

@@ -26,6 +26,13 @@ def _classify_bond(elem1: str, elem2: str) -> str:
     return "organic_organic"
 
 
+def _bond_length(coords: np.ndarray, first: int, second: int) -> float | None:
+    endpoints = coords[[first, second]].astype(np.float64)
+    if not np.isfinite(endpoints).all():
+        return None
+    return float(np.linalg.norm(endpoints[0] - endpoints[1]))
+
+
 def _get_ccd_bond_lengths(res_name: str) -> dict[tuple[str, str], float] | None:
     """Get ideal bond lengths from CCD for a residue.
 
@@ -51,20 +58,21 @@ def _get_ccd_bond_lengths(res_name: str) -> dict[tuple[str, str], float] | None:
         name1 = str(ccd_aa.atom_name[a1]).strip()
         name2 = str(ccd_aa.atom_name[a2]).strip()
         key = tuple(sorted((name1, name2)))
-        coord1 = ccd_aa.coord[a1]
-        coord2 = ccd_aa.coord[a2]
-        if np.any(np.isnan(coord1)) or np.any(np.isnan(coord2)):
-            continue
-        lengths[key] = float(np.linalg.norm(coord1 - coord2))
+        length = _bond_length(ccd_aa.coord, a1, a2)
+        if length is not None:
+            lengths[key] = length
 
     return lengths if lengths else None
 
 
-def compute_internal_bond_metrics(atom_array: AtomArray) -> dict[str, list[float]]:
+def compute_internal_bond_metrics(
+    atom_array: AtomArray, *, bond_counts: dict[str, int] | None = None
+) -> dict[str, list[float]]:
     """Compute per-bond relative errors for intra-residue bonds vs CCD ideal.
 
     Args:
       atom_array: Generated structure with bonds.
+      bond_counts: Optional running totals of all intra-residue bonds, including unmeasurable ones.
 
     Returns:
       Dict mapping bond type to list of relative errors.
@@ -96,8 +104,11 @@ def compute_internal_bond_metrics(atom_array: AtomArray) -> dict[str, list[float
         if atom_to_res[a1] != atom_to_res[a2]:
             continue
 
-        # Skip bonds with NaN coordinates
-        if np.any(np.isnan(atom_array.coord[a1])) or np.any(np.isnan(atom_array.coord[a2])):
+        bond_type = _classify_bond(atom_array.element[a1], atom_array.element[a2])
+        if bond_counts is not None:
+            bond_counts[bond_type] = bond_counts.get(bond_type, 0) + 1
+        actual = _bond_length(atom_array.coord, a1, a2)
+        if actual is None:
             continue
 
         res_name = str(atom_array.res_name[a1]).strip()
@@ -119,13 +130,7 @@ def compute_internal_bond_metrics(atom_array: AtomArray) -> dict[str, list[float
         if ideal is None or ideal < 1e-6:
             continue
 
-        actual = float(np.linalg.norm(atom_array.coord[a1] - atom_array.coord[a2]))
         rel_error = abs(actual - ideal) / ideal
-
-        elem1 = str(atom_array.element[a1]).strip()
-        elem2 = str(atom_array.element[a2]).strip()
-        bond_type = _classify_bond(elem1, elem2)
-
         errors[bond_type].append(rel_error)
 
     return dict(errors)
@@ -134,8 +139,7 @@ def compute_internal_bond_metrics(atom_array: AtomArray) -> dict[str, list[float
 class InternalResidueBondMetric(Metric):
     """Compare generated intra-residue bond lengths to CCD ideal geometry.
 
-    Reports mean relative error split by bond type: organic-organic,
-    metal-organic, metal-metal.
+    Reports mean relative error, measured count and total count for each bond type.
     """
 
     def __init__(
@@ -156,8 +160,9 @@ class InternalResidueBondMetric(Metric):
         atom_arrays = normalize_to_atom_array_list(atom_array_stack)
 
         all_errors: dict[str, list[float]] = defaultdict(list)
+        totals: dict[str, int] = {}
         for atom_array in atom_arrays:
-            per_type = compute_internal_bond_metrics(atom_array)
+            per_type = compute_internal_bond_metrics(atom_array, bond_counts=totals)
             for bond_type, errs in per_type.items():
                 all_errors[bond_type].extend(errs)
 
@@ -165,5 +170,7 @@ class InternalResidueBondMetric(Metric):
         for bond_type in ["organic_organic", "metal_organic", "metal_metal"]:
             errs = all_errors.get(bond_type, [])
             output[f"{bond_type}_mean_rel_error"] = float(np.mean(errs)) if errs else float("nan")
+            output[f"{bond_type}_measured_bonds"] = len(errs)
+            output[f"{bond_type}_total_bonds"] = totals.get(bond_type, 0)
 
         return output

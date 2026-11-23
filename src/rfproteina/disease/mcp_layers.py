@@ -131,8 +131,15 @@ _SCREEN_OMITTED = frozenset(
     {
         "refold",
         "designed_interface_quality",
+        "prodigy_affinity",
+        "protein_sol",
+        "vina_pose",
+        "tnp_profile",
         "synthesis",
         "ligand_alerts",
+        "ligand_solubility",
+        "qupkake",
+        "sygma",
         "modality_screen",
         "chemical_liability",
     }
@@ -1031,6 +1038,7 @@ def _refold_outcome(folder: str, block: Mapping[str, object]) -> tuple[dict[str,
         outcome.update(summary)
     passed: list[str] = []
     failed: list[dict[str, object]] = []
+    incomplete: list[str] = []
     unresolved: list[str] = []
     criteria = block.get("criteria")
     listed = criteria if isinstance(criteria, list) else []
@@ -1043,6 +1051,9 @@ def _refold_outcome(folder: str, block: Mapping[str, object]) -> tuple[dict[str,
         if _blocker(item.get("thresholds_blocker")) is not None:
             unresolved.append(name)
         state = item.get("state")
+        if state == "incomplete":
+            incomplete.append(name)
+            continue
         if state == "pass":
             passed.append(name)
             continue
@@ -1061,6 +1072,8 @@ def _refold_outcome(folder: str, block: Mapping[str, object]) -> tuple[dict[str,
         outcome["passed"] = passed
     if failed:
         outcome["failed"] = failed
+    if incomplete:
+        outcome["incomplete"] = incomplete
     if unresolved:
         outcome["thresholds_not_resolved"] = unresolved
     # Counted from what was classified here, not from the stored ``evaluated``:

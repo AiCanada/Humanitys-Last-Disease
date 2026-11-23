@@ -22,9 +22,11 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 #: The three axis states, matching ``combinations.HIT``/``CLEAR``/``UNTESTED``.
 HIT = "hit"
@@ -172,6 +174,23 @@ NUCLEOTIDES = frozenset("ACGTUN")
 
 class ScreeningInputError(ValueError):
     """Input a screen cannot read: no records, an empty or wrong-alphabet sequence."""
+
+
+@contextmanager
+def alignment_output(destination: Path) -> Iterator[Path]:
+    """Publish the fresh alignment table only after the caller successfully reads and validates it."""
+    with TemporaryDirectory(dir=destination.parent, prefix=".alignment-") as directory:
+        path = Path(directory) / destination.name
+        yield path
+        path.replace(destination)
+
+
+def read_alignment_output(path: Path) -> str:
+    """An empty result file is a completed search. A missing or unreadable file has no result."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ScreeningInputError("alignment_result_unreadable") from error
 
 
 @dataclass(frozen=True)

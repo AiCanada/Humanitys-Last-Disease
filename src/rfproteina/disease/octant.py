@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import csv
 import math
+import os
 import statistics
+import tempfile
 from collections import Counter
 from collections.abc import Mapping
 from pathlib import Path
@@ -74,7 +76,8 @@ _ENZYME = "enzyme"
 _NOT_PANEL = "CYP2J2"
 _NEEDED = (_BATCH, _PIC50, _SMILES)
 
-_TOXICOLOGY_COLUMNS = ("axis", "protein", "nm", "unit", "relation", "source")
+_TOXICOLOGY_COLUMNS = ("axis", "protein", "nm", "unit", "relation", "source", "method", "inchikey",
+                       "standard_type", "assay_id")
 
 
 def pic50_to_nm(pic50: float) -> float:
@@ -85,7 +88,13 @@ def pic50_to_nm(pic50: float) -> float:
     """
     if not math.isfinite(pic50):
         raise ValueError("pIC50 is not finite")
-    return 10.0 ** (9.0 - pic50)
+    try:
+        value = 10.0 ** (9.0 - pic50)
+    except OverflowError as error:
+        raise ValueError("pIC50 outside representable concentration range") from error
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("pIC50 outside representable concentration range")
+    return value
 
 
 def octant_directory() -> Path:
@@ -169,7 +178,7 @@ def measured_nm_from_octant(smiles: str, subset: Path) -> PanelMeasurements:
     """
     inchikey = _inchikey(smiles)
     values, batch_notes = _matching_nanomolar(subset, inchikey)
-    value = round(float(statistics.median(values)), 3) if values else None
+    value = statistics.median(values) if values else None
     note = f"median_of_{len(values)}_nM_readings" if values else "ligand_not_in_octant_cyp3a4"
     if batch_notes:
         note = f"{note}; {batch_notes[0]}" if len(batch_notes) == 1 else f"{note}; {len(batch_notes)}_octant_batches"
@@ -187,6 +196,7 @@ def measured_nm_from_octant(smiles: str, subset: Path) -> PanelMeasurements:
         note=note,
         target=OCTANT_ACCESSION if value is not None else "",
     ).as_record()
+    reading["standard_type"] = "IC50"
     notes = [
         "CYP3A4_pIC50 was converted to nM with 10**(9-pIC50) before this reading was stored",
         "CYP2J2 is in the same Octant release and is not a panel axis",
@@ -224,7 +234,7 @@ def prepare_toxicology_table(
     leaves the file absent and the axis untested.
     """
     table = directory / "toxicology.tsv"
-    if table.is_file():
+    if table.is_file() or (directory / "toxicology.csv").is_file():
         return None
     source = subset if subset is not None else installed_subset()
     if source is None or not Path(source).is_file():
@@ -259,16 +269,20 @@ def write_toxicology_tsv(path: Path, measured: PanelMeasurements) -> Path | None
             raise ValueError("a toxicology row reached the writer without a nM unit")
         float(row["nm"])
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=_TOXICOLOGY_COLUMNS,
-            delimiter="\t",
-            lineterminator="\n",
-            extrasaction="ignore",
-        )
-        writer.writeheader()
-        writer.writerows(rows)
+    # Publish a complete table only if the destination is still absent.
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".octant-", delete=False) as staged:
+        temporary = Path(staged.name)
+    try:
+        with temporary.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=_TOXICOLOGY_COLUMNS, delimiter="\t", lineterminator="\n")
+            writer.writeheader()
+            writer.writerows(rows)
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            return None
+    finally:
+        temporary.unlink(missing_ok=True)
     return path
 
 
@@ -320,7 +334,11 @@ def _convert(inhibition: Path) -> tuple[list[tuple[str, ...]], int, Counter[str]
             except LigandUnreadableError:
                 skipped["smiles_unparsed"] += 1
                 continue
-            nanomolar = pic50_to_nm(pic50)
+            try:
+                nanomolar = pic50_to_nm(pic50)
+            except ValueError:
+                skipped["pic50_outside_numeric_range"] += 1
+                continue
             batch = (row.get(_BATCH) or "").strip()
             activity = (row.get(_ACTIVITY) or "").strip()
             direction = (row.get(_DIRECTION) or "").strip()
@@ -369,7 +387,9 @@ def _matching_nanomolar(subset: Path, inchikey: str) -> tuple[list[float], list[
         names = reader.fieldnames or []
         if _PIC50 in names:
             raise SafetyBackendUnavailableError("octant_pic50_not_converted")
-        for column in ("inchikey", "panel_axis", "affinity_nanomolar"):
+        if len(names) != len(set(names)):
+            raise SafetyBackendUnavailableError("octant_subset_duplicate_columns")
+        for column in ("inchikey", "panel_axis", "affinity_nanomolar", "accession", "assay", "relation", "curation"):
             if column not in names:
                 raise SafetyBackendUnavailableError(f"octant_subset_column_absent:{column}")
         for row in reader:
@@ -377,12 +397,15 @@ def _matching_nanomolar(subset: Path, inchikey: str) -> tuple[list[float], list[
                 continue
             if (row.get("inchikey") or "").strip() != inchikey:
                 continue
+            if (None in row or row.get("accession") != OCTANT_ACCESSION or row.get("assay") != "IC50"
+                    or row.get("relation") != "=" or row.get("curation") != OCTANT_CURATION):
+                raise SafetyBackendUnavailableError("octant_subset_measurement_mismatch")
             try:
                 value = float((row.get("affinity_nanomolar") or "").strip())
             except ValueError:
                 continue
-            if not math.isfinite(value) or value < 0:
-                continue
+            if not math.isfinite(value) or value <= 0:
+                raise SafetyBackendUnavailableError("octant_subset_concentration_invalid")
             values.append(value)
             source = (row.get("source") or "").strip()
             if source:

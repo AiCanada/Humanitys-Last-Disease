@@ -59,6 +59,8 @@ def compute_chiral_metrics(
 ) -> dict:
     """Compute center and E/Z accuracy with matching atom order after selection.
 
+    A single reference applies to every prediction. Multiple references pair in order.
+    Report a category only if each pair has a scorable reference for it.
     ``subset_mask`` queries each structure independently; select complete bonded neighborhoods.
     """
     predicted_atom_array_stack = ensure_atom_array_stack(predicted_atom_array_stack)
@@ -72,20 +74,38 @@ def compute_chiral_metrics(
             :, resolve_mask(ground_truth_atom_array_stack, subset_mask)
         ]
 
-    # Extract first model
-    gt = ground_truth_atom_array_stack[0]
-
     pred_coords = np.asarray(predicted_atom_array_stack.coord)
-    gt_coords = np.asarray(gt.coord)
-
-    if pred_coords.shape[1] != len(gt):
+    n_predictions = len(pred_coords)
+    n_references = ground_truth_atom_array_stack.stack_depth()
+    if not n_predictions or n_references not in (1, n_predictions):
+        raise ValueError(f"ChiralAccuracy: cannot pair {n_predictions} predictions with {n_references} references.")
+    n_atoms = ground_truth_atom_array_stack.array_length()
+    if pred_coords.shape[1] != n_atoms:
         raise ValueError(
             f"ChiralAccuracy: predicted atom array has {pred_coords.shape[1]} atoms but "
-            f"ground-truth atom array has {len(gt)} atoms. Cannot match atoms to compute chirality."
+            f"ground-truth atom array has {n_atoms} atoms. Cannot match atoms to compute chirality."
         )
-
-    if len(gt) == 0:
+    if n_atoms == 0:
         return {}
+    for field in ("chain_id", "res_id", "ins_code", "res_name", "atom_name", "element"):
+        predicted_ids = getattr(predicted_atom_array_stack, field)
+        if not np.array_equal(predicted_ids, getattr(ground_truth_atom_array_stack, field)):
+            raise ValueError(f"ChiralAccuracy: atom identity or order differs in {field}.")
+
+    if n_references == 1:
+        return _score_chiral_reference(pred_coords, ground_truth_atom_array_stack[0])
+    paired = [
+        _score_chiral_reference(pred_coords[i : i + 1], ground_truth_atom_array_stack[i]) for i in range(n_references)
+    ]
+    return {
+        key: float(np.mean([item[key] for item in paired]))
+        for key in paired[0]
+        if all(key in item for item in paired)
+    }
+
+
+def _score_chiral_reference(pred_coords: np.ndarray, gt: AtomArray) -> dict[str, float]:
+    gt_coords = np.asarray(gt.coord)
     chiral_centers = identify_stereogenic_centers(gt)
     double_bonds = identify_stereogenic_double_bonds(gt)
     if not chiral_centers and not double_bonds:

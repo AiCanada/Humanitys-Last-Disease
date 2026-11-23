@@ -79,12 +79,13 @@ def annotate_secondary_structure(
     return atom_array
 
 
-def _sse_fractions(valid_sse: np.ndarray, suffix: str = "") -> dict[str, float]:
+def _sse_fractions(valid_sse: np.ndarray, suffix: str = "", *, elements: int) -> dict[str, float]:
     """Compute SSE fraction and element-count metrics from valid token SSE codes.
 
     Args:
       valid_sse: Token-level SSEnum values for valid tokens only.
       suffix: Suffix appended to each metric key (e.g. ``"_coi"``). Defaults to ``""``.
+      elements: Number of contiguous segments before removing invalid tokens and chain boundaries.
 
     Returns:
       Dict with ``helix_fraction{suffix}``, ``sheet_fraction{suffix}``,
@@ -97,6 +98,7 @@ def _sse_fractions(valid_sse: np.ndarray, suffix: str = "") -> dict[str, float]:
             f"sheet_fraction{suffix}": np.nan,
             f"loop_fraction{suffix}": np.nan,
             f"num_ss_elements{suffix}": np.nan,
+            f"num_sse_tokens{suffix}": 0,
         }
 
     n_valid = len(valid_sse)
@@ -104,7 +106,8 @@ def _sse_fractions(valid_sse: np.ndarray, suffix: str = "") -> dict[str, float]:
         f"helix_fraction{suffix}": float((valid_sse == SSEnum.HELIX).sum() / n_valid),
         f"sheet_fraction{suffix}": float((valid_sse == SSEnum.SHEET).sum() / n_valid),
         f"loop_fraction{suffix}": float((valid_sse == SSEnum.LOOP).sum() / n_valid),
-        f"num_ss_elements{suffix}": float(count_contiguous_sse_elements(valid_sse)),
+        f"num_ss_elements{suffix}": float(elements),
+        f"num_sse_tokens{suffix}": n_valid,
     }
 
 
@@ -138,7 +141,7 @@ def compute_sse_distribution(atom_array: AtomArray) -> dict[str, float]:
         )
     except Exception:
         # Annotation failed - return NaN
-        return {**_sse_fractions(np.array([]), ""), **_sse_fractions(np.array([]), "_coi")}
+        return {**_sse_fractions(np.array([]), elements=0), **_sse_fractions(np.array([]), "_coi", elements=0)}
 
     # Get token-level annotations
     token_starts = get_token_starts(atom_array)
@@ -157,7 +160,14 @@ def compute_sse_distribution(atom_array: AtomArray) -> dict[str, float]:
     coi_valid_mask = token_is_valid & (token_chain == chain_of_interest)
     valid_sse_coi = token_sse[coi_valid_mask]
 
-    return {**_sse_fractions(valid_sse, ""), **_sse_fractions(valid_sse_coi, "_coi")}
+    segment_starts = token_is_valid.copy()
+    segment_starts[1:] &= (
+        ~token_is_valid[:-1] | (token_chain[1:] != token_chain[:-1]) | (token_sse[1:] != token_sse[:-1])
+    )
+    return {
+        **_sse_fractions(valid_sse, elements=int(segment_starts.sum())),
+        **_sse_fractions(valid_sse_coi, "_coi", elements=int((segment_starts & coi_valid_mask).sum())),
+    }
 
 
 def count_contiguous_sse_elements(sse_array: np.ndarray) -> int:

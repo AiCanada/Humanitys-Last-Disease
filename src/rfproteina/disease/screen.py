@@ -37,6 +37,7 @@ import contextlib
 import csv
 import gzip
 import hashlib
+import io
 import itertools
 import json
 import math
@@ -44,6 +45,7 @@ import os
 import re
 import warnings
 import zlib
+from collections import defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
@@ -75,10 +77,11 @@ from rfproteina.disease.liability import (
 )
 from rfproteina.disease.modality import modality_phrase, modality_record
 from rfproteina.disease.oligo import NUCLEIC_LIABILITY_AXES, measure_nucleic_liability
+from rfproteina.disease.prodigy import RunAffinity
 from rfproteina.disease.provenance import code_version
 from rfproteina.disease.publish import scrub_for_upload, scrubbed_json, write_text_atomically
-from rfproteina.disease.refold import refold_report
-from rfproteina.disease.solubility import read_solubility, solubility_phrase
+from rfproteina.disease.refold import read_criteria, refold_report, row_pass_flag, trace_metric_kind
+from rfproteina.disease.solubility import read_protein_sol, read_solubility, solubility_phrase
 from rfproteina.disease.target_liability import (
     TARGET_LIABILITY_AXES,
     TargetLimits,
@@ -91,7 +94,11 @@ from rfproteina.disease.threshold_provenance import (
     describe_interface_thresholds,
     provenance_of,
 )
+from rfproteina.disease.tnp import RunProfiles
 from rfproteina.disease.toxicology import measure_toxicology
+from rfproteina.disease.vina_pose import RunPoses
+from rfproteina.utils.metric_thresholds import MetricThreshold
+from rfproteina.utils.metrics_files import PENDING, PRIMARY, MetricsBlocker, job_tables, verified_sources, wide_csv_rows
 
 #: A reader for a public JSON value. Injected so a screen reaches the network
 #: only when its caller hands it one.
@@ -108,6 +115,8 @@ _SKIP_SCREEN_WALK = frozenset(
         ".grok",
         "inference_samples",
         "inference_metrics",
+        "evaluation_samples",
+        "evaluation_metrics",
     }
 )
 _SCREEN_REPORT_LIMIT = 12
@@ -140,6 +149,7 @@ _PRE_ORACLE_COLUMN = "pre_oracle_pass"
 _CHAIN_COLUMN = "chain_of_interest"
 _PRIMARY_METRICS = Path("inference_metrics") / "per_example_metrics.csv"
 _REEVAL_METRICS = Path("inference_metrics") / "per_example_metrics_reeval.csv"
+_EVALUATION_METRICS = Path("evaluation_metrics") / "per_example_metrics.csv"
 _STATES = frozenset({"hit", "clear"})
 _ABSENT = "absent"
 _CANONICAL = "_entity_poly.pdbx_seq_one_letter_code_can"
@@ -176,7 +186,15 @@ _STRAND = "_entity_poly.pdbx_strand_id"
 #: Raising it is not optional bookkeeping. ``tests/test_disease_screen_shape.py``
 #: pins both key sets beside this number, so a key cannot be added without the
 #: version moving with it.
-SCREEN_VERSION = 4
+# Version 5 distinguishes incomplete refolds, assay-specific opinions and
+# interface measurements without a calibrated decision threshold.
+# Version 6 can include explicitly selected, per-design PRODIGY affinities.
+# Version 7 also carries optional fixed-pose Vina scores on finished small-molecule complexes.
+# Version 8 includes the optional post-generation VHH developability profile.
+# Version 9 adds the compound-level ADMET-AI aqueous-solubility regression.
+# Version 10 adds site-resolved aqueous microscopic pKa for nominated compounds.
+# Version 11 adds ranked, per-parent SyGMa metabolite hypotheses.
+SCREEN_VERSION = 11
 #: Keys every screen carries, whatever the kind and whatever was supplied.
 SCREEN_REQUIRED_KEYS = frozenset(
     {
@@ -220,7 +238,14 @@ SCREEN_OPTIONAL_KEYS = frozenset(
         "target_accession",
         "target_liability",
         "ligand_alerts",
+        "ligand_solubility",
+        "qupkake",
+        "sygma",
         "mhc_class_i",
+        "prodigy_affinity",
+        "protein_sol",
+        "vina_pose",
+        "tnp_profile",
         "synthesis",
         "toxicology",
     }
@@ -265,20 +290,12 @@ _METRIC_COLUMNS = frozenset(
         "designed_structure_path",
     }
 )
-#: The columns read from one design's own row. Two rows naming one design are
-#: the same row when they agree on these. ``ppi.pass`` and ``pre_oracle_pass``
-#: are read across the whole table instead, where a False already wins, so a
-#: disagreement there needs no row refused.
-_ROW_COLUMNS = (_CHAIN_COLUMN, _IDENTITY_COLUMN, _CA_RMSD_COLUMN)
+# These fields locate an observation and can change when a report is relocated.
+_ROW_LOCATORS = {"example_id", "designed_structure_path", "designed_chain_path", "output_base_dir"}
 #: A metrics file past this is not read. A run writes one row per design and
 #: ``SCREEN_RUN_LIMIT`` caps a run at 200, so this is orders above any table
 #: a run produces and only catches a file that is not one.
 _METRICS_FILE_LIMIT = 16 * 1024 * 1024
-#: A field a row carries past the header's last column, and the stand-in for
-#: a column the row never reached. Either way the row is misaligned and a
-#: flag would be read under another column's name.
-_EXTRA_FIELD = "\x00extra"
-_SHORT_FIELD = "\x00short"
 #: Cells that name no chain. "?" and "." are the mmCIF nulls.
 _CHAIN_ABSENT = frozenset({"nan", "none", "null", ".", "?"})
 #: Fields an axis_evidence.json entry may carry beside its state.
@@ -315,7 +332,12 @@ _CHAIN_TOKEN = re.compile(r"\d{1,2}|[A-Za-z]\d?")
 _SAFE_EXAMPLE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _BINDER_TOKEN = re.compile(r"binder_\d+")
 _AF3_ENV = ("AF3_IMAGE", "AF3_MODEL_DIR", "AF3_JAX_CACHE_DIR")
-_PPI_BLOCKERS = frozenset({"recorded", "oracle_not_configured", "not_requested"})
+_REFUSED_METRICS = frozenset({
+    MetricsBlocker.PUBLICATION_PENDING, MetricsBlocker.AGGREGATION_REQUIRED, MetricsBlocker.PROVENANCE_MISMATCH,
+    MetricsBlocker.PROVENANCE_UNREADABLE, "metrics_unreadable", "metrics_too_large", "metrics_columns_repeated",
+    "metrics_row_too_long", "metrics_row_too_short",
+})
+_PPI_BLOCKERS = _REFUSED_METRICS | {"recorded", "oracle_not_configured", "not_requested", "metrics_incomplete"}
 
 #: Same aliases as the combination judge. The bar is chosen before that call.
 _KIND_ALIAS = {
@@ -403,7 +425,7 @@ _PROBE_BYTES = 4096
 _DESIGN_TEXT_LIMIT = 64 * 1024 * 1024
 _DESIGNS_ABSENT = "designs_absent"
 _DESIGNS_COMPRESSED = "designs_compressed"
-_DESIGN_BLOCKERS = frozenset({_DESIGNS_ABSENT, _DESIGNS_COMPRESSED})
+_DESIGN_BLOCKERS = frozenset({_DESIGNS_ABSENT, _DESIGNS_COMPRESSED, MetricsBlocker.TABLE_ONLY})
 
 
 def screen_generation(
@@ -481,14 +503,27 @@ def screen_generation(
         # thirteen declared bars had no way to be selected at all, and a
         # misspelling of one now in reach should not cost a scan first.
         bar_axes(binder_kind, bar)
-    rows, metrics_blocker = _metrics_table(output_dir)
+    metrics_path = _metrics_path(output_dir)
+    rows, metrics_blocker = _metrics_table(output_dir, metrics_path)
     evidence = _read_evidence(output_dir)
     kind = _canonical_kind(binder_kind)
-    samples, chains = _sample_measurements(
+    affinity = RunAffinity.configured(output_dir)
+    vina = RunPoses.configured(output_dir)
+    tnp = RunProfiles.configured(output_dir)
+    if tnp is not None and kind != "protein" and tnp.blocker is None:
+        tnp.blocker = "protein_binder_kind_required"
+    if vina is not None and kind != "ligand" and vina.blocker is None:
+        vina.blocker = "ligand_binder_kind_required"
+    if affinity is not None and kind not in _LIABILITY_KINDS and affinity.blocker is None:
+        affinity.blocker = "protein_binder_kind_required"
+    samples, chains, coverage_rows = _sample_measurements(
         output_dir,
         rows,
         chemical=kind in _LIABILITY_KINDS,
         kind=kind,
+        affinity=affinity,
+        vina=vina,
+        tnp=tnp,
     )
     liability, class_i_scan = _apply_sequence_liability(
         output_dir,
@@ -534,7 +569,17 @@ def screen_generation(
         # too is what stops the record from contradicting its own verdict.
         target_is_panel=read_accession is not None and target_is_panel_protein(read_accession),
     )
-    ppi_pass = _flag_column(rows, _PPI_COLUMN)
+    refold = refold_report(coverage_rows)
+    ppi = next((item for item in refold.get("criteria", []) if item["name"] == "ppi"), {})
+    ppi_state = ppi.get("state")
+    ppi_pass = (
+        {"pass": True, "fail": False}.get(ppi_state, _ABSENT) if ppi else _flag_column(coverage_rows, _PPI_COLUMN)
+    )
+    ppi_blocker = "metrics_incomplete" if ppi_state == "incomplete" else _ppi_blocker(ppi_pass)
+    if metrics_blocker in _REFUSED_METRICS:
+        ppi_blocker = metrics_blocker
+        if refold.get("refold_blocker") == "not_evaluated":
+            refold["refold_blocker"] = metrics_blocker
     sequence, interface = _first_sample_fields(samples)
     interface_quality = _first_interface_quality(samples)
     if not samples:
@@ -545,6 +590,9 @@ def screen_generation(
         # sit in rather than on a new key, which the printed lines and the
         # closed page already read.
         reason = _designs_blocker(output_dir)
+        if (reason == _DESIGNS_ABSENT and metrics_path == output_dir / _EVALUATION_METRICS
+                and any(row.get("designed_structure_path") for row in rows)):
+            reason = MetricsBlocker.TABLE_ONLY.value
         sequence = _with_reason(sequence, reason, "sequence_blocker")
         interface = _with_reason(interface, reason, "interface_blocker")
         interface_quality = _with_reason(interface_quality, reason, "interface_quality_blocker")
@@ -556,7 +604,7 @@ def screen_generation(
         # Which table the per-design numbers came from. The primary file wins
         # and the reeval file stands in when it is absent, so two verdicts on
         # one run can rest on different measurements with nothing saying so.
-        "metrics_file": _metrics_name(output_dir),
+        "metrics_file": metrics_path.relative_to(output_dir).as_posix() if metrics_path is not None else None,
         # Every file supplied beside the run, read or refused. A verdict
         # that cannot name its inputs cannot be checked against them.
         "inputs": _supplied_inputs(output_dir),
@@ -570,7 +618,7 @@ def screen_generation(
         # of the three bounds it missed. Recorded, like ppi_pass, without
         # moving the call: they are the evaluation's verdict, not this
         # screen's.
-        "refold": refold_report(rows),
+        "refold": refold,
         "call": combination.call,
         "bar": combination.bar,
         # Which axes that bar required. The name alone does not survive an
@@ -581,14 +629,20 @@ def screen_generation(
         "untested": list(combination.untested),
         "hits": list(combination.hits),
         "ppi_pass": ppi_pass,
-        "ppi_blocker": _ppi_blocker(ppi_pass),
-        "pre_oracle_pass": _flag_column(rows, _PRE_ORACLE_COLUMN),
+        "ppi_blocker": ppi_blocker,
+        "pre_oracle_pass": _flag_column(coverage_rows, _PRE_ORACLE_COLUMN),
         "sequence_developability": sequence,
         "designed_interface": interface,
         "designed_interface_quality": _with_interface_thresholds(interface_quality),
         "samples": samples,
         "requested_class": "requested_clear",
     }
+    if affinity is not None:
+        record["prodigy_affinity"] = affinity.as_record()
+    if vina is not None:
+        record["vina_pose"] = vina.as_record()
+    if tnp is not None:
+        record["tnp_profile"] = tnp.as_record()
     if metrics_blocker is not None:
         # Why the per-design table yielded nothing. An empty read used to be
         # the same record as a run that was never scored, so a table refused
@@ -613,15 +667,32 @@ def screen_generation(
         record["design_diversity"] = spread
     # A supplied table is reported with its method and its study, and judges
     # nothing: the scales are not comparable and no published threshold spans
-    # them. CamSol, Aggrescan3D, and Protein-Sol are not computed. The sequence
-    # AGGRESCAN is on the modality report.
+    # them. Native Protein-Sol reports carry per-sequence predictions separately.
+    # The sequence AGGRESCAN is on the modality report.
     record["solubility"] = read_solubility(output_dir)
+    protein_sol = read_protein_sol(output_dir, chains)
+    if protein_sol is not None:
+        record["protein_sol"] = protein_sol
     synthesis = _synthesis_block(binder_kind, chains)
     if synthesis is not None:
         record["synthesis"] = synthesis
     ligand_alerts = _ligand_alerts_block(output_dir)
     if ligand_alerts is not None:
         record["ligand_alerts"] = ligand_alerts
+    if kind == "ligand":
+        from rfproteina.disease.ligand_solubility import screen_run
+
+        ligand_solubility = screen_run(output_dir)
+        if ligand_solubility is not None:
+            record["ligand_solubility"] = ligand_solubility
+    from rfproteina.disease import ligand_metabolites, qupkake
+
+    pka = qupkake.screen_run(output_dir, kind=kind)
+    if pka is not None:
+        record["qupkake"] = pka
+    metabolites = ligand_metabolites.screen_run(output_dir, kind=kind)
+    if metabolites is not None:
+        record["sygma"] = metabolites
     mhc_class_i = _mhc_class_i_block(binder_kind, chains, output_dir, class_i_scan)
     if mhc_class_i is not None:
         record["mhc_class_i"] = mhc_class_i
@@ -644,7 +715,7 @@ def screen_generation(
     # screened_clear and nothing on disk remembered the hit. Recorded only when
     # the verdict actually changed, which is also what keeps screening twice
     # byte-identical.
-    previous = _previous_verdict(output_dir)
+    previous, prior_change = _previous_verdict(output_dir)
     if previous is not None and previous["digest"] != _text_digest(text):
         changed = _changed_inputs(previous.pop("inputs", None), record["inputs"])
         if changed:
@@ -653,6 +724,9 @@ def screen_generation(
             # that changed with nothing on disk touched.
             previous["changed_inputs"] = changed
         record["replaced"] = previous
+        text = scrubbed_json(record)
+    elif prior_change is not None:
+        record["replaced"] = prior_change
         text = scrubbed_json(record)
     write_text_atomically(output_dir / _SCREEN, text)
     return record
@@ -752,6 +826,11 @@ def _supplied_inputs(output_dir: Path) -> list[dict[str, object]]:
     return inputs
 
 
+def _samples_root(output_dir: Path) -> Path:
+    inference = output_dir / "inference_samples"
+    return inference if inference.is_dir() else output_dir / "evaluation_samples"
+
+
 def _designs_blocker(output_dir: Path) -> str:
     """Why this run has no design to measure.
 
@@ -765,7 +844,7 @@ def _designs_blocker(output_dir: Path) -> str:
     absent one: the two have different remedies, and a run written with
     ``compress_outputs=true`` used to measure nothing and say nothing.
     """
-    root = output_dir / "inference_samples"
+    root = _samples_root(output_dir)
     if not root.is_dir():
         return _DESIGNS_ABSENT
     for pattern in _PACKED_DESIGNS:
@@ -812,8 +891,11 @@ def _design_opens(path: Path) -> bool:
             module = _zstandard()
             if module is None:
                 return False
-            with path.open("rb") as handle:
-                module.ZstdDecompressor().stream_reader(handle).read(_PROBE_BYTES)
+            with (
+                path.open("rb") as handle,
+                module.ZstdDecompressor().stream_reader(handle, read_across_frames=True) as reader,
+            ):
+                reader.read(_PROBE_BYTES)
         elif path.name.endswith((".gz", ".gzip")):
             with gzip.open(path, "rb") as handle:
                 handle.read(_PROBE_BYTES)
@@ -839,33 +921,22 @@ def _zstandard() -> object | None:
     return zstandard
 
 
-def _zstd_frame_ended(module: object, path: Path) -> bool:
-    """Whether a ``.zst`` file's frame actually ends, rather than stopping short.
-
-    ``stream_reader`` hands back the bytes it managed to decompress and says
-    nothing about a frame whose tail is missing, which is what an interrupted
-    ``compress_outputs=true`` write leaves behind. So a design killed mid-write
-    was read as a shorter CIF and measured as the whole one: eight missing bytes
-    returned the first 2 MiB of a 2.1 MiB design, which recorded
-    ``sequence_absent`` for a sequence the file on disk holds, and on a file
-    whose atom table sat at the end they returned 40 per cent of it with the
-    sequence block intact, so the design was measured against a structure that
-    stops partway. ``gzip`` refuses both of these on its own, and that asymmetry
-    is why only the gzip half of this was ever caught.
-    ``decompressobj`` carries ``eof``, which is the one place a complete frame
-    and a truncated one are told apart.
-
-    Asked only once the bounded read came back inside the bound, so this second
-    pass decompresses no more than that read already did. Bytes after the first
-    frame are left alone, because that read stopped at the same boundary.
-    """
-    decompressor = module.ZstdDecompressor().decompressobj()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1 << 20), b""):
-            decompressor.decompress(block)
-            if decompressor.eof:
-                return True
-    return bool(decompressor.eof)
+def _complete_zstd_frames(module: object, handle: io.BufferedReader, expected: bytes) -> bool:
+    """Verify the end of every frame and the bytes returned by the bounded read."""
+    handle.seek(0)
+    decoder = module.ZstdDecompressor()
+    frame = decoder.decompressobj()
+    offset = 0
+    for block in iter(lambda: handle.read(4096), b""):
+        while block:
+            if frame.eof:
+                frame = decoder.decompressobj()
+            decoded = frame.decompress(block)
+            if not expected.startswith(decoded, offset):
+                return False
+            offset += len(decoded)
+            block = frame.unused_data
+    return frame.eof and offset == len(expected)
 
 
 def _design_text(path: Path) -> str | None:
@@ -891,9 +962,10 @@ def _design_text(path: Path) -> str | None:
             with path.open("rb") as handle:
                 # ``stream_reader`` rather than ``decompress``, which demands an
                 # embedded content size that these writers do not always set.
-                raw = module.ZstdDecompressor().stream_reader(handle).read(_DESIGN_TEXT_LIMIT + 1)
-            if len(raw) <= _DESIGN_TEXT_LIMIT and not _zstd_frame_ended(module, path):
-                return None
+                with module.ZstdDecompressor().stream_reader(handle, read_across_frames=True, closefd=False) as reader:
+                    raw = reader.read(_DESIGN_TEXT_LIMIT + 1)
+                if len(raw) <= _DESIGN_TEXT_LIMIT and not _complete_zstd_frames(module, handle, raw):
+                    return None
         elif name.endswith((".gz", ".gzip")):
             with gzip.open(path, "rb") as handle:
                 raw = handle.read(_DESIGN_TEXT_LIMIT + 1)
@@ -993,24 +1065,13 @@ def _inputs_by_name(value: object) -> dict[str, str]:
     return found
 
 
-def _metrics_name(output_dir: Path) -> str | None:
-    """The metrics table this screen read, relative to the run."""
-    path = _metrics_path(output_dir)
-    if path is None:
-        return None
-    try:
-        return path.relative_to(output_dir).as_posix()
-    except ValueError:
-        return path.name
-
-
 def _text_digest(text: str) -> str:
     """A short digest of a screen document, for comparing two of them."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
-def _previous_verdict(output_dir: Path) -> dict[str, object] | None:
-    """The call and digest of the screen about to be overwritten, or None.
+def _previous_verdict(output_dir: Path) -> tuple[dict[str, object] | None, dict | None]:
+    """The current verdict and its last recorded change, if available.
 
     Digested without its own ``replaced`` entry, so the comparison is between
     the two verdicts rather than between their chains. Without that, each
@@ -1019,9 +1080,9 @@ def _previous_verdict(output_dir: Path) -> dict[str, object] | None:
     try:
         payload = json.loads((output_dir / _SCREEN).read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError, RecursionError):
-        return None
+        return None, None
     if not isinstance(payload, dict):
-        return None
+        return None, None
     stripped = {key: value for key, value in payload.items() if key != "replaced"}
     call = payload.get("call")
     return {
@@ -1030,7 +1091,7 @@ def _previous_verdict(output_dir: Path) -> dict[str, object] | None:
         # Popped by the caller before this is stored: it is here to be
         # compared against the new inputs, not to be written twice.
         "inputs": payload.get("inputs"),
-    }
+    }, payload.get("replaced") if isinstance(payload.get("replaced"), dict) else None
 
 
 def _applied_cuts(limits: TargetLimits | None, kind: str | None = None) -> dict[str, object]:
@@ -1486,7 +1547,7 @@ def generation_directories(directory: Path, *, limit: int | None = None) -> list
 
 def _is_generation_directory(directory: Path) -> bool:
     """Whether a finished run left its designs or its metrics here."""
-    return (directory / "inference_samples").is_dir() or _metrics_path(directory) is not None
+    return _samples_root(directory).is_dir() or _metrics_path(directory) is not None
 
 
 def label_for(directory: Path, current: Path) -> str:
@@ -1919,7 +1980,7 @@ def _apply_toxicology(
 
         with contextlib.suppress(OSError):
             prepare_toxicology_table(output_dir, smiles)
-    found = measure_toxicology(output_dir)
+    found = measure_toxicology(output_dir, ligand_smiles=smiles or "")
     return {axis: _stamp_source(axis, found[axis], evidence) for axis in LIGAND_AXES}
 
 
@@ -2240,8 +2301,9 @@ def _designed_sequences(output_dir: Path, rows: list[dict[str, str]]) -> list[tu
     pairs: list[tuple[str, str | None]] = []
     paths = _generated_cifs(output_dir)
     ids = _sample_ids(output_dir, paths)
+    bindings, _ = _design_rows(rows, paths)
     for index, path in enumerate(paths):
-        row = _row_for_cif(rows, path)
+        row, _ = bindings[path]
         interest, _chain_reason = _interest_for_row(row, rows)
         pairs.append((ids[index], _designed_sequence(path, interest)))
     return pairs
@@ -2356,22 +2418,20 @@ def _evidence_state(axis: str, raw: str) -> str:
 
 
 def _metrics_path(output_dir: Path) -> Path | None:
-    """Primary metrics when that path exists, otherwise the reeval file."""
-    primary = output_dir / _PRIMARY_METRICS
-    if primary.exists():
-        return primary
-    fallback = output_dir / _REEVAL_METRICS
-    if fallback.exists():
-        return fallback
+    """Prefer the generation table, then its re-evaluation, then the offline evaluator's output."""
+    for relative in (_PRIMARY_METRICS, _REEVAL_METRICS, _EVALUATION_METRICS):
+        candidate = output_dir / relative
+        if candidate.exists():
+            return candidate
     return None
 
 
 def _metric_rows(output_dir: Path) -> list[dict[str, str]]:
     """Rows of the chosen metrics file. A missing or refused file is empty."""
-    return _metrics_table(output_dir)[0]
+    return _metrics_table(output_dir, _metrics_path(output_dir))[0]
 
 
-def _metrics_table(output_dir: Path) -> tuple[list[dict[str, str]], str | None]:
+def _metrics_table(output_dir: Path, path: Path | None) -> tuple[list[dict[str, str]], str | None]:
     """Rows of the chosen metrics file, and the reason when there are none.
 
     This is the one table that moves the verdict, and it was the least
@@ -2386,89 +2446,99 @@ def _metrics_table(output_dir: Path) -> tuple[list[dict[str, str]], str | None]:
     behind, having swallowed the rows after it, and a failing design that
     disappears leaves the passes behind it looking like the whole run.
     """
-    path = _metrics_path(output_dir)
-    if path is None:
-        return [], "metrics_not_configured"
     try:
-        if path.stat().st_size > _METRICS_FILE_LIMIT:
+        if path is None:
+            for directory in (output_dir / "inference_metrics", output_dir / "evaluation_metrics"):
+                if (directory / PENDING).exists():
+                    return [], MetricsBlocker.PUBLICATION_PENDING.value
+                if job_tables(directory):
+                    return [], MetricsBlocker.AGGREGATION_REQUIRED.value
+            return [], "metrics_not_configured"
+        if path.parent.name == "evaluation_metrics":
+            inference = output_dir / "inference_metrics"
+            if (inference / PENDING).exists():
+                return [], MetricsBlocker.PUBLICATION_PENDING.value
+            if job_tables(inference):
+                return [], MetricsBlocker.AGGREGATION_REQUIRED.value
+        if (path.parent / PENDING).exists():
+            return [], MetricsBlocker.PUBLICATION_PENDING.value
+        with path.open("rb") as raw:
+            if os.fstat(raw.fileno()).st_size > _METRICS_FILE_LIMIT:
+                return [], "metrics_too_large"
+            payload = raw.read(_METRICS_FILE_LIMIT + 1)
+        if len(payload) > _METRICS_FILE_LIMIT:
             return [], "metrics_too_large"
-        with path.open(encoding="utf-8-sig", newline="") as handle:
-            reader = csv.DictReader(handle, restkey=_EXTRA_FIELD, restval=_SHORT_FIELD)
-            names = reader.fieldnames
-            if names is None:
-                return [], "metrics_not_reported"
-            if _repeated_metric_columns(names):
-                return [], "metrics_columns_repeated"
-            found: list[dict[str, str]] = []
-            for row in reader:
-                if _EXTRA_FIELD in row:
-                    return [], "metrics_row_too_long"
-                if any(value == _SHORT_FIELD for value in row.values()):
-                    return [], "metrics_row_too_short"
-                found.append({key: value for key, value in row.items() if isinstance(key, str)})
-    except (OSError, UnicodeError, MemoryError, csv.Error):
+        if b"\x00" in payload:
+            return [], "metrics_unreadable"
+        if path.name == PRIMARY:
+            _, blocker = verified_sources(path.parent, hashlib.sha256(payload).hexdigest())
+            if blocker is not None:
+                return [], blocker
+        elif any(shard != path for shard in job_tables(path.parent)):
+            return [], MetricsBlocker.AGGREGATION_REQUIRED.value
+        with io.StringIO(payload.decode("utf-8-sig"), newline="") as handle:
+            try:
+                return _screen_csv_records(csv.reader(handle, strict=True))
+            except csv.Error as error:
+                if "field larger than field limit" not in str(error):
+                    raise
+        return _screen_csv_records(iter(wide_csv_rows(payload)))
+    except csv.Error as error:
+        return [], "metrics_row_too_short" if str(error) == "unexpected end of data" else "metrics_unreadable"
+    except (OSError, UnicodeError, MemoryError):
         return [], "metrics_unreadable"
-    if not found:
+
+
+def _screen_csv_records(records: Iterator[list[str]]) -> tuple[list[dict[str, str]], str | None]:
+    names = next((row for row in records if row), None)
+    if names is None:
         return [], "metrics_not_reported"
-    return found, None
+    if _repeated_metric_columns(names):
+        return [], "metrics_columns_repeated"
+    found = []
+    for row in records:
+        if not row:
+            continue
+        if len(row) != len(names):
+            return [], "metrics_row_too_long" if len(row) > len(names) else "metrics_row_too_short"
+        found.append(dict(zip(names, row, strict=True)))
+    return (found, None) if found else ([], "metrics_not_reported")
 
 
 def _repeated_metric_columns(names: Sequence[str | None]) -> bool:
     """Whether the header uses a column this screen reads more than once."""
     seen: set[str] = set()
+    repeated: set[str] = set()
     for raw in names:
-        if not isinstance(raw, str):
-            continue
-        name = raw.strip()
-        if name not in _METRIC_COLUMNS:
-            continue
-        if name in seen:
+        if isinstance(raw, str):
+            name = raw.strip()
+            if name in seen:
+                repeated.add(name)
+            seen.add(name)
+    if not repeated:
+        return False
+    if repeated & (_METRIC_COLUMNS | {"metrics_tags"}) or any(trace_metric_kind(name) for name in repeated):
+        return True
+    for name, thresholds in (read_criteria() or {}).items():
+        if repeated & {f"{name}.pass", f"{name}.all_metrics_present"}:
             return True
-        seen.add(name)
+        if isinstance(thresholds, dict):
+            for label, spec in thresholds.items():
+                try:
+                    keys = MetricThreshold.parse(label, spec).keys
+                except ValueError:
+                    continue
+                if repeated.intersection(keys):
+                    return True
     return False
 
 
 def _flag_column(rows: list[dict[str, str]], column: str) -> bool | str:
     """One pass/fail column. A false row wins. No measured cell stores absent."""
-    if not rows or all(column not in row for row in rows):
-        return _ABSENT
-    measured: bool | None = None
-    seen = False
-    for row in rows:
-        if column not in row:
-            continue
-        seen = True
-        value = _flag_cell(row.get(column))
-        if value is False:
-            return False
-        if value is True:
-            measured = True
-    if not seen:
-        return _ABSENT
-    return True if measured else _ABSENT
-
-
-def _flag_cell(raw: object) -> bool | None:
-    if not isinstance(raw, str):
-        return None
-    text = raw.strip().casefold()
-    if text in {"", "nan", "none", "null", "na", "."}:
-        return None
-    if text == "true":
-        return True
-    if text == "false":
+    flags = [row_pass_flag(row, column) for row in rows]
+    if False in flags:
         return False
-    try:
-        number = float(text)
-    except ValueError:
-        return None
-    if not math.isfinite(number):
-        return None
-    if number == 1.0:
-        return True
-    if number == 0.0:
-        return False
-    return None
+    return True if flags and all(flags) else _ABSENT
 
 
 def _sample_measurements(
@@ -2477,7 +2547,10 @@ def _sample_measurements(
     *,
     chemical: bool = False,
     kind: str | None = None,
-) -> tuple[list[dict[str, object]], list[tuple[str, str | None]]]:
+    affinity: RunAffinity | None = None,
+    vina: RunPoses | None = None,
+    tnp: RunProfiles | None = None,
+) -> tuple[list[dict[str, object]], list[tuple[str, str | None]], list[dict[str, str]]]:
     """One record per generated CIF, in filename order, and each design's chain.
 
     The chains come back beside the records rather than being read again. Three
@@ -2496,11 +2569,19 @@ def _sample_measurements(
     # function over both lists so a refused design cannot be given the name of
     # one that was read. The readable ids stay exactly what ``sample_cifs``
     # gives them, because everything joining onto this screen uses those.
-    refused = _sample_ids(output_dir, [*paths, *_refused_designs(output_dir, paths)])[len(paths) :]
+    all_paths = [*paths, *_refused_designs(output_dir, paths)]
+    refused = _sample_ids(output_dir, all_paths, preserved=dict(zip(paths, ids, strict=True)))[len(paths) :]
+    bindings, coverage = _design_rows(rows, all_paths)
     for index, path in enumerate(paths):
-        row, row_reason = _row_for_cif_with_reason(rows, path)
+        row, row_reason = bindings[path]
         interest, chain_reason = _interest_for_row(row, rows)
         text = _cif_text(path)
+        if affinity is not None:
+            affinity.observe(ids[index], text)
+        if vina is not None:
+            vina.observe(ids[index], text)
+        if tnp is not None:
+            tnp.observe(ids[index], text)
         sequence = _sequence_block(
             path,
             interest,
@@ -2542,6 +2623,15 @@ def _sample_measurements(
             item["row_blocker"] = row_reason
         item["interface_quality"] = interface_quality
         samples.append(item)
+    if affinity is not None:
+        for example_id in refused:
+            affinity.observe(example_id, None, blocker="structure_unreadable")
+    if vina is not None:
+        for example_id in refused:
+            vina.observe(example_id, None)
+    if tnp is not None:
+        for example_id in refused:
+            tnp.observe(example_id, None)
     if paths:
         for example_id in refused:
             # A design in the folder that this screen could not decode. It
@@ -2552,7 +2642,7 @@ def _sample_measurements(
             # designs_compressed, and a phantom chain would shift the
             # blockers the protein path reports.
             chains.append((example_id, None))
-    return samples, chains
+    return samples, chains, coverage
 
 
 def _with_reason(found: dict[str, object], blocker: object, key: str) -> dict[str, object]:
@@ -2648,7 +2738,7 @@ def _generated_cifs(output_dir: Path) -> list[Path]:
     written with compression. Within one stem the plain file is preferred,
     because reading it costs nothing.
     """
-    root = output_dir / "inference_samples"
+    root = _samples_root(output_dir)
     if not root.is_dir():
         return []
     readable = tuple(suffix for suffix in _DESIGN_SUFFIXES if suffix != _ZSTD_SUFFIX or _zstandard() is not None)
@@ -2691,7 +2781,7 @@ def _refused_designs(output_dir: Path, measured: list[Path]) -> list[Path]:
     The spellings looked for are ``_PACKED_DESIGNS``, the same set the blocker
     names.
     """
-    root = output_dir / "inference_samples"
+    root = _samples_root(output_dir)
     if not root.is_dir():
         return []
     read = {(str(path.parent), path.name.split("_generated.")[0]) for path in measured}
@@ -2714,7 +2804,7 @@ def _design_suffix(path: Path) -> str:
     return next((suffix for suffix in _DESIGN_SUFFIXES if path.name.endswith(suffix)), "_generated.cif")
 
 
-def _sample_ids(output_dir: Path, paths: list[Path]) -> list[str]:
+def _sample_ids(output_dir: Path, paths: list[Path], *, preserved: Mapping[Path, str] | None = None) -> list[str]:
     """One id per generated CIF, unique within the run.
 
     The binder token is the best name but it is not unique. A run holding two
@@ -2728,14 +2818,17 @@ def _sample_ids(output_dir: Path, paths: list[Path]) -> list[str]:
     A repeated token falls back to the path below ``inference_samples``, which
     is unique because the filesystem makes it so, and then to the index.
     """
-    root = output_dir / "inference_samples"
+    root = _samples_root(output_dir)
     plain = [_sample_id(path) for path in paths]
     counts: dict[str | None, int] = {}
     for name in plain:
         counts[name] = counts.get(name, 0) + 1
     ids: list[str] = []
-    taken: set[str] = set()
+    taken: set[str] = set(preserved.values()) if preserved else set()
     for path, name in zip(paths, plain, strict=True):
+        if preserved and path in preserved:
+            ids.append(preserved[path])
+            continue
         candidate = name if name is not None and counts[name] == 1 else _path_id(root, path)
         base = candidate
         suffix = 0
@@ -2790,37 +2883,125 @@ def _sample_id(path: Path) -> str | None:
 
 def _row_for_cif(rows: list[dict[str, str]], path: Path) -> dict[str, str]:
     """The one metrics row naming this design, or empty when there is not one."""
-    return _row_for_cif_with_reason(rows, path)[0]
+    return _agreed_row(_candidate_rows(rows, path))
 
 
-def _row_for_cif_with_reason(rows: list[dict[str, str]], path: Path) -> tuple[dict[str, str], str | None]:
-    """That row, and why it is empty.
+def _design_rows(
+    rows: list[dict[str, str]], paths: list[Path],
+) -> tuple[dict[Path, tuple[dict[str, str], str | None]], list[dict[str, str]]]:
+    """Count each discovered design once and retain table-only observations."""
+    matches = {path: _candidate_rows(rows, path) for path in paths}
+    claimed = defaultdict(list)
+    for path, candidates in matches.items():
+        for candidate in candidates:
+            claimed[id(candidate)].append(path)
+    coverage = [row for row in rows if id(row) not in claimed]
+    bindings = {}
+    for path in paths:
+        if path in bindings:
+            continue
+        # A basename may link several files and rows. Consume the whole group
+        # once so the result is independent of which file was visited first.
+        pending = [path]
+        group = set()
+        evidence = {}
+        while pending:
+            member = pending.pop()
+            if member in group:
+                continue
+            group.add(member)
+            for row in matches[member]:
+                evidence[id(row)] = row
+                pending.extend(claimed.pop(id(row), ()))
+        candidates = list(evidence.values())
+        agreed = _agreed_row(candidates)
+        reason = None
+        if len(group) > 1:
+            reason = MetricsBlocker.ROW_SHARED.value
+        elif candidates and not agreed:
+            reason = "metrics_row_ambiguous"
+        elif rows and not candidates:
+            reason = "metrics_row_absent"
+        for member in group:
+            bindings[member] = ({} if reason else agreed, reason)
+        coverage.append(agreed or _unresolved_flags(candidates))
+        coverage.extend({} for _ in range(len(group) - 1))
+    return bindings, coverage
 
-    Taking the first match was safe while a run wrote one row per design and
-    wrong as soon as two tables were concatenated: a re-run job appends its
-    rows beside the ones it replaced, and the first copy won in silence.
-    Repeated rows that say the same thing about a design are still that
-    design's row, and refusing an exact duplicate would lose a verdict for
-    nothing. Rows that disagree are refused, because nothing here can tell
-    which of them measured the file on disk.
-    """
+
+def _unresolved_flags(candidates: list[dict[str, str]]) -> dict[str, str]:
+    """Keep confirmed failures and mark disputed coverage without copying scores."""
+    flags = {}
+    for row in candidates:
+        for key, cell in row.items():
+            if not cell.strip():
+                continue
+            if key.endswith(".all_metrics_present"):
+                flags.setdefault(key, "0")
+            elif key.endswith(".pass"):
+                presence = key.removesuffix(".pass") + ".all_metrics_present"
+                if row_pass_flag(row, key) is False:
+                    flags[key], flags[presence] = "0", "1"
+                else:
+                    flags.setdefault(presence, "0")
+            elif key == _PRE_ORACLE_COLUMN and row_pass_flag(row, key) is False:
+                flags[key] = "0"
+    return flags
+
+
+def _samples_location(value: str) -> str:
+    """The run-relative identity that survives relocating a recorded structure path."""
+    parts = value.replace("\\", "/").split("/")
+    for index in range(len(parts) - 1, -1, -1):
+        if parts[index] in {"inference_samples", "evaluation_samples"}:
+            return "/".join(parts[index:])
+    return ""
+
+
+def _candidate_rows(rows: list[dict[str, str]], path: Path) -> list[dict[str, str]]:
+    """Prefer exact paths, relocated paths, evaluator IDs, then historical bare names."""
     match = _BINDER_TOKEN.search(path.name)
     token = match.group(0) if match is not None else None
     stem = _design_stem(path.name)
-    found = [row for row in rows if _row_names_sample(row, token=token, stem=stem, filename=path.name)]
+    aliases = {path.as_posix(), path.absolute().as_posix()}
+    if path.is_symlink():
+        with contextlib.suppress(OSError, RuntimeError):
+            aliases.add(path.resolve().as_posix())
+    locations = {_samples_location(value) for value in aliases} - {""}
+    aliases.update(location.split("/", 1)[1] for location in locations if "/" in location)
+    exact = []
+    relocated = []
+    legacy = []
+    for row in rows:
+        recorded = (row.get("designed_structure_path") or "").replace("\\", "/")
+        location = _samples_location(recorded)
+        if recorded in aliases:
+            exact.append(row)
+        elif location in locations:
+            relocated.append(row)
+        elif not location:
+            legacy.append(row)
+    found = exact or relocated
+    if not found and path.parent.parent.name == "evaluation_samples":
+        found = [row for row in rows if row.get("example_id") == path.parent.name]
     if not found:
-        # Silent when the table itself is missing or refused: the run-level
-        # reason says why once, rather than once per design.
-        return {}, "metrics_row_absent" if rows else None
-    first = found[0]
-    if all(_rows_agree(first, other) for other in found[1:]):
-        return first, None
-    return {}, "metrics_row_ambiguous"
+        found = [
+            row for row in legacy
+            if _row_names_sample(row, token=token, stem=stem, filename=path.name)
+        ]
+    return found
 
 
-def _rows_agree(first: dict[str, str], other: dict[str, str]) -> bool:
-    """Whether two rows naming one design say the same thing about it."""
-    return all(first.get(column) == other.get(column) for column in _ROW_COLUMNS)
+def _agreed_row(candidates: list[dict[str, str]]) -> dict[str, str]:
+    """Return one observation when all candidates agree on its recorded values."""
+    if not candidates:
+        return {}
+    first = candidates[0]
+    for other in candidates[1:]:
+        columns = (first.keys() | other.keys()) - _ROW_LOCATORS
+        if any(first.get(key) != other.get(key) for key in columns):
+            return {}
+    return first
 
 
 def _row_names_sample(row: dict[str, str], *, token: str | None, stem: str, filename: str) -> bool:
@@ -2892,11 +3073,11 @@ def _sequence_block(
         "sequence_pass": _ABSENT,
     }
     if interest is None:
-        # Named, so that a null gravy says which of the four reasons it has.
-        # Every one of them used to leave the same empty record, and a reader
-        # could not tell a chain that was never identified from a file that
-        # would not open from a metric that raised.
-        return {**absent, "sequence_blocker": chain_reason or "chain_not_named"}
+        absent["sequence_blocker"] = chain_reason or "chain_not_named"
+        if kind == "ligand" and text is not None:
+            # The component dictionary belongs to the structure and needs no polymer chain.
+            _attach_modality(absent, kind, "", text)
+        return absent
     if text is None:
         return {**absent, "sequence_blocker": "structure_unreadable"}
     ragged: list[list[str]] = []
@@ -3058,13 +3239,11 @@ def _interface_quality_block(
     text: str | None,
     chain_reason: str | None = None,
 ) -> dict[str, object]:
-    """Buried area, interface residues, polar satisfaction and Lawrence-Colman Sc for one CIF.
+    """Buried area, interface residues, polar contacts and contact-patch shape score for one CIF.
 
     This is a report, like ``designed_interface``: it is recorded beside the
     verdict and does not move the call. The terms, their thresholds and their
-    provenance live in ``rfproteina.disease.interface_quality``; the thresholds
-    were calibrated on this program's own designs (see
-    ``docs/screening-implementation-handoff.md``, Worker A). A sequence-only
+    provenance live in ``rfproteina.disease.interface_quality``. A sequence-only
     file, a missing chain or an unreadable structure leaves the block null with
     ``interface_quality_blocker`` naming which, exactly as ``_interface_block``
     does for the contact surface.
@@ -3082,7 +3261,7 @@ def _interface_quality_block(
     last_reason = f"binder_chain_absent:{interest}"
     for label in _interface_quality_labels(interest):
         try:
-            measured = measure_interface(path, label)
+            measured = measure_interface(path, label, cif_text=text)
         except InterfaceUnreadableError as error:
             reason = str(error)
             if reason.startswith("binder_chain_absent"):
@@ -3827,30 +4006,19 @@ def _samples_clause(screen: Mapping[str, object]) -> str | None:
 
 
 def _with_interface_thresholds(quality: object) -> object:
-    """Attach the interface bars and what kind of bar each is.
-
-    The measured block carried the numbers and none of the bars, so a reader
-    seeing ``interface_polar_contacts: 9`` could not tell whether that cleared
-    anything, still less that the bar it cleared is BindCraft's default for a
-    quantity BindCraft counts differently. Three of these five are borrowed
-    defaults that are slack against this program's own measured distribution,
-    and two have no cut at all; both facts belong beside the measurement
-    rather than in a config a reader of the verdict never opens.
-
-    Non-dict input is returned unchanged: a screen with no interface measures
-    nothing and has nothing to qualify.
-    """
+    """Attach reference values and identify them as unapplied on the local scale."""
     if not isinstance(quality, Mapping):
         return quality
     attached = dict(quality)
     attached[PROVENANCE_KEY] = {
-        name: {**record, "bar": _interface_bar(name)} for name, record in describe_interface_thresholds().items()
+        name: {**record, "bar": _interface_bar(name), "applied": False}
+        for name, record in describe_interface_thresholds().items()
     }
     return attached
 
 
 def _interface_bar(name: str) -> object:
-    """The bar itself, from the runtime source of truth, or ``None`` when none is adopted.
+    """The historical reference value, or ``None`` for a quantity without one.
 
     Imported inside the function because ``interface_quality`` pulls numpy and
     biotite, and every other use of it in this module is lazy for that reason.
@@ -3922,6 +4090,58 @@ def _measured_line(entry_id: str, chain: str, screen: Mapping[str, object]) -> s
     modality_clause = _modality_clause(screen)
     spread_clause = _diversity_clause(screen)
     solubility_clause = _solubility_clause(screen)
+    ligand_solubility = screen.get("ligand_solubility")
+    ligand_solubility_clause = None
+    if isinstance(ligand_solubility, dict):
+        predicted, total = (ligand_solubility.get(k) for k in ("unique_predicted", "unique_compounds"))
+        if ligand_solubility.get("status") == "untested" and isinstance(ligand_solubility.get("blocker"), str):
+            ligand_solubility_clause = f"ADMET-AI aqueous solubility untested ({ligand_solubility['blocker']})"
+        elif type(predicted) is int and type(total) is int and 0 <= predicted <= total:
+            ligand_solubility_clause = (
+                f"ADMET-AI aqueous solubility predicted for {predicted}/{total} distinct compounds"
+            )
+            if ligand_solubility.get("status") == "partial":
+                ligand_solubility_clause += ", partial input coverage"
+    affinity = screen.get("prodigy_affinity")
+    pka = screen.get("qupkake")
+    metabolites = screen.get("sygma")
+    metabolite_clause = None
+    if isinstance(metabolites, dict):
+        if metabolites.get("status") == "untested" and isinstance(metabolites.get("blocker"), str):
+            metabolite_clause = f"SyGMa untested ({metabolites['blocker']})"
+        elif all(type(metabolites.get(k)) is int for k in ("ranked_products", "screened_parents", "attempted")):
+            metabolite_clause = (
+                f"SyGMa ranked {metabolites['ranked_products']} metabolite hypotheses across "
+                f"{metabolites['screened_parents']} parents from {metabolites['attempted']} nominations "
+                f"({metabolites.get('status')})"
+            )
+    pka_clause = None
+    if isinstance(pka, dict):
+        if pka.get("status") == "untested" and isinstance(pka.get("blocker"), str):
+            pka_clause = f"QupKake untested ({pka['blocker']})"
+        elif all(type(pka.get(k)) is int for k in ("predicted_sites", "compounds_with_predictions", "attempted")):
+            pka_clause = (
+                f"QupKake predicted {pka['predicted_sites']} microscopic pKa values across "
+                f"{pka['compounds_with_predictions']} compounds from {pka['attempted']} nominations "
+                f"({pka.get('status')})"
+            )
+    vina = screen.get("vina_pose")
+    tnp = screen.get("tnp_profile")
+    tnp_clause = None
+    if isinstance(tnp, dict):
+        complete, partial, attempted = (tnp.get(k) for k in ("profiled", "partial", "attempted"))
+        if all(type(n) is int and n >= 0 for n in (complete, partial, attempted)) and complete + partial <= attempted:
+            tnp_clause = f"TNP full profiles {complete}/{attempted}, partial profiles {partial}"
+    vina_clause = None
+    if isinstance(vina, dict):
+        scored, total = vina.get("scored"), vina.get("attempted")
+        if type(scored) is int and type(total) is int and 0 <= scored <= total:
+            vina_clause = f"Vina fixed-pose score reported for {scored}/{total} designs"
+    affinity_clause = None
+    if isinstance(affinity, dict):
+        scored, total = affinity.get("predicted"), affinity.get("attempted")
+        if type(scored) is int and type(total) is int and 0 <= scored <= total:
+            affinity_clause = f"PRODIGY affinity reported for {scored}/{total} designs"
     if (
         sequence_pass == _ABSENT
         and pre_oracle == _ABSENT
@@ -3937,6 +4157,12 @@ def _measured_line(entry_id: str, chain: str, screen: Mapping[str, object]) -> s
         and modality_clause is None
         and spread_clause is None
         and solubility_clause is None
+        and ligand_solubility_clause is None
+        and pka_clause is None
+        and metabolite_clause is None
+        and affinity_clause is None
+        and vina_clause is None
+        and tnp_clause is None
     ):
         return None
     parts: list[str] = []
@@ -3969,6 +4195,18 @@ def _measured_line(entry_id: str, chain: str, screen: Mapping[str, object]) -> s
         parts.append(spread_clause)
     if solubility_clause is not None:
         parts.append(solubility_clause)
+    if ligand_solubility_clause is not None:
+        parts.append(ligand_solubility_clause)
+    if pka_clause is not None:
+        parts.append(pka_clause)
+    if metabolite_clause is not None:
+        parts.append(metabolite_clause)
+    if affinity_clause is not None:
+        parts.append(affinity_clause)
+    if vina_clause is not None:
+        parts.append(vina_clause)
+    if tnp_clause is not None:
+        parts.append(tnp_clause)
     if liability_clause is not None:
         parts.append(liability_clause)
     if toxicology_clause is not None:

@@ -18,7 +18,12 @@ from collections.abc import Mapping, Sequence
 from html import escape
 
 from rfproteina.disease.chemical import MOTIF_NAMES
-from rfproteina.disease.coevolution import COEVOLUTION_FILE_LIMIT, COEVOLUTION_ROW_LIMIT, COEVOLUTION_SENTENCES
+from rfproteina.disease.coevolution import (
+    COEVOLUTION_FILE_LIMIT,
+    COEVOLUTION_ROW_LIMIT,
+    COEVOLUTION_SENTENCES,
+    HUMAN_TOXICITY_SCOPE,
+)
 from rfproteina.disease.combinations import HIT_NM, PANEL_NM_SOURCE_DEFAULT, panel_cut, panel_cut_source
 from rfproteina.disease.developability import ORACLE_FILE_LIMIT, ORACLE_ROW_LIMIT
 from rfproteina.disease.liability import (
@@ -100,6 +105,51 @@ _STATES = frozenset({"hit", "clear", "untested"})
 #: the tabs name a state exactly as its own tab does.
 _STATE_WORD = {"clear": "Clear", "hit": "Hit", "untested": "Not decided"}
 _BLOCKERS = {
+    "duplicate_candidate_id": "Several candidate rows have the same identifier.",
+    "foldseek_result_invalid": "A Foldseek result has an invalid identifier or score.",
+    "independently_prepared_subsystems": "The separately prepared subsystems have no shared energy reference.",
+    "invalid_candidate_table_width": "A candidate row has a different number of fields from its input format.",
+    "invalid_molecular_structure": "The chemistry reader could not interpret the candidate structure.",
+    "invalid_provider_result": "The predictor returned an unusable value for this compound.",
+    "invalid_qupkake_manifest": "The QupKake input manifest could not be read or validated.",
+    "invalid_sygma_manifest": "The SyGMa input manifest could not be read or validated.",
+    "invalid_sygma_scenario": "The requested SyGMa phase counts are outside the supported scenario.",
+    "ligand_binder_kind_required": "This screen requires a run whose candidate is a small-molecule ligand.",
+    "ligand_input_missing": "The screen could not find the selected ligand input.",
+    "missing_candidate_id": "A candidate row has no identifier to link it to a result.",
+    "native_tnp_failed": "The Therapeutic Nanobody Profiler failed while analysing the sample.",
+    "no_attributable_site_prediction": "QupKake could not assign a result to a specific site on this compound.",
+    "no_candidates": "The selected input contains no candidate rows.",
+    "no_completed_compounds": "No compound returned a completed prediction.",
+    "no_completed_parents": "SyGMa could not finish a metabolite search for any parent compound.",
+    "no_usable_candidates": "Every candidate row has an input error.",
+    "protein_sol_ambiguous": "Several Protein-Sol predictions could be assigned to this sample.",
+    "protein_sol_fasta_invalid": "The FASTA accompanying the Protein-Sol report could not be read or validated.",
+    "protein_sol_input_unverified": "The Protein-Sol input sequence could not be matched to this sample.",
+    "protein_sol_report_invalid": "The Protein-Sol report has invalid prediction headers or rows.",
+    "protein_sol_report_unreadable": "The Protein-Sol prediction file could not be read within the file limit.",
+    "protein_sol_sample_missing": "The Protein-Sol report has no prediction matching this sample.",
+    "protein_sol_samples_missing": "The run contains no sample sequences to match to the Protein-Sol report.",
+    "protein_sol_sequence_unresolved": "Protein-Sol requires at least 21 standard amino acids in the sample.",
+    "provider_timeout": "The predictor exceeded the time allowed for this calculation.",
+    "provider_worker_failed": "The predictor process ended before it returned a usable result.",
+    "qupkake_response_identity_mismatch": "The QupKake result identifies a different input compound.",
+    "qupkake_runtime_unavailable": "The QupKake runtime could not be loaded.",
+    "qupkake_timeout": "QupKake exceeded the time allowed for this compound.",
+    "qupkake_worker_failed": "The QupKake process failed while analysing this compound.",
+    "qupkake_worker_invalid_report": "The QupKake process returned a report the reader could not validate.",
+    "rdkit_unavailable": "The chemistry reader could not load RDKit.",
+    "sdf_input_unreadable": "The selected SDF structure input could not be read.",
+    "sequence_shorter_than_window": "The sequence is shorter than the AGGRESCAN scoring window.",
+    "site_head_incomplete": "A QupKake site predictor failed before it could establish site coverage.",
+    "structure_reader_unavailable": "The protein structure reader could not be loaded.",
+    "sygma_dependency_unavailable": "The metabolite worker could not load a required chemistry dependency.",
+    "sygma_invalid_worker_report": "The SyGMa worker returned a report the reader could not validate.",
+    "sygma_parent_timeout": "SyGMa exceeded the time allowed for this parent compound.",
+    "sygma_worker_failed": "The SyGMa process failed while analysing this parent compound.",
+    "tnp_provider_unavailable": "The Therapeutic Nanobody Profiler runtime could not be loaded.",
+    "tnp_runtime_io_error": "The Therapeutic Nanobody Profiler could not read or write its working files.",
+    "unsupported_residue": "AGGRESCAN has no residue score for at least one sequence position.",
     "no_pass_cut": "A number was measured. No pass cut applies to it, so the check stays undecided.",
     "cpg_not_consensus": (
         "The design holds CpG and none of it is one of the two consensus hexamers. "
@@ -163,12 +213,14 @@ _BLOCKERS = {
     "solubility_not_configured": "No solubility table was found in the output folder.",
     "solubility_unreadable": "The solubility table could not be read.",
     "solubility_not_reported": "The solubility table has no row naming a score, a method and a study.",
+    "solubility_residue_profile": "The supplied table contains per-residue scores.",
     "solubility_truncated": "The solubility table has more rows than this screen will read.",
     "solubility_too_large": "The solubility file is larger than this screen will read.",
     "reading_not_decisive": "The cell bounds the reading without placing it on one side of the cut.",
     "reading_not_nm": "The cell is not a non-negative nM reading.",
     "coevolution_not_configured": "No co-evolution table was found in the output folder.",
     "coevolution_unreadable": "The co-evolution table could not be read.",
+    "coevolution_missing_columns": "The study table contains none of the fields for this comparison.",
     "coevolution_not_reported": "The co-evolution table has no usable row for this check.",
     "coevolution_unparsed": "A co-evolution cell could not be read as yes or no, high or low, or toxic or non-toxic.",
     "coevolution_not_classified": "Co-evolution is not named high or low.",
@@ -201,15 +253,26 @@ _BLOCKERS = {
     "target_not_named": "The run names no target at all.",
     "target_not_reported": "The atlas holds no entry for this target.",
     "concentration_not_reported": "The atlas holds no blood concentration for this target.",
+    "concentration_invalid": "The atlas row contains a negative blood concentration.",
     "partners_not_listed": "The partner lookup returned no list.",
+    "compara_identities_incomplete": "Some returned Ensembl records lack a usable percent identity.",
     "degree_censored": "The partner count came back censored.",
     "lookup_unavailable": "The lookup service did not answer.",
     "sequence_absent": "No designed sequence was available to measure.",
     "structure_unparsed": "A loop in the generated file could not be read as rows, so nothing was taken from it.",
-    "designs_absent": "This run holds no generated design, so nothing was measured.",
-    "designs_compressed": "This run's designs are compressed, and this screen reads a plain CIF.",
+    "designs_absent": "No generated structure file was found for per-design measurements.",
+    "evaluation_structure_table_only": "The offline evaluator recorded inputs. This screen read only their table.",
+    "designs_compressed": "The packed structure files could not be opened as text CIFs.",
     "metrics_not_configured": "No per-design metrics table was found in the output folder.",
+    "metrics_aggregation_required": "The published metrics do not account for the current job tables.",
+    "metrics_publication_pending": "A metrics writer has an unfinished publication in this directory.",
+    "metrics_provenance_mismatch": "The published metrics differ from the CSV recorded at aggregation.",
+    "metrics_provenance_unreadable": "The recorded aggregation sources could not be verified.",
     "not_evaluated": "No declared pass criterion was evaluated for this run.",
+    "metrics_incomplete": "Some applicable designs lack a valid result or a required measurement.",
+    "ligand_identity_mismatch": "The panel contains measurements for a different compound.",
+    "ligand_identity_unverified": "The compound identity could not be verified against the panel.",
+    "panel_opinions_incomplete": "At least one panel method has an unresolved reading.",
     "criteria_not_found": "The declared pass criteria could not be read.",
     "criteria_not_declared": "The pass criteria file declares none.",
     "thresholds_not_resolved": "This criterion borrows its bounds in a form this page does not resolve.",
@@ -221,6 +284,7 @@ _BLOCKERS = {
     "metrics_row_too_short": "A metrics row stops short of its own header.",
     "metrics_row_absent": "No row of the metrics table names this design.",
     "metrics_row_ambiguous": "Two metrics rows name this design and disagree about it.",
+    "metrics_row_shared": "The same metrics evidence matches multiple structure files.",
     "chain_disagreement": "The metrics table names more than one chain of interest.",
     "chain_shorter_than_window": "The chain is shorter than the 19-residue window, so it was not assessed.",
     "hydropathy_unknown": "The chain carries a letter with no hydropathy value.",
@@ -261,6 +325,48 @@ _BLOCKERS = {
 #: docs/reference/screen-inputs.md rather than new prose, so the panel and that
 #: reference cannot drift apart.
 _ACTIONS = {
+    "duplicate_candidate_id": "Give each candidate row a unique identifier and run the screen again.",
+    "foldseek_result_invalid": "Check the alignment table against the requested Foldseek output columns.",
+    "independently_prepared_subsystems": "Check the preparation provenance before interpreting energy differences.",
+    "invalid_candidate_table_width": "Check the row against the header and the delimiter of the selected format.",
+    "invalid_molecular_structure": "Inspect the candidate's chemical structure in the source file.",
+    "invalid_provider_result": "Inspect the predictor output for the affected compound.",
+    "invalid_qupkake_manifest": "Check the selected QupKake input and its tautomer setting.",
+    "invalid_sygma_manifest": "Check the selected ligand input and the phase counts in the SyGMa manifest.",
+    "invalid_sygma_scenario": "Use supported integer counts for the phase I and phase II steps.",
+    "ligand_binder_kind_required": "Select the run containing the small-molecule candidates.",
+    "ligand_input_missing": "Check that the selected candidate file exists in the run.",
+    "missing_candidate_id": "Assign a unique identifier to the row before retrying.",
+    "native_tnp_failed": "Check the sample structure and the profiler's diagnostic output.",
+    "no_attributable_site_prediction": "Inspect the compound's site mapping and any rejected site rows.",
+    "no_candidates": "Check that the selected input file contains the intended compounds.",
+    "no_completed_compounds": "Read the individual compound errors before retrying.",
+    "no_completed_parents": "Inspect the individual parent errors before retrying the metabolite screen.",
+    "no_usable_candidates": "Correct the input errors listed against the individual rows.",
+    "protein_sol_ambiguous": "Keep one traceable prediction for the sample in the report.",
+    "protein_sol_fasta_invalid": "Provide the FASTA used to run Protein-Sol, with unique headers.",
+    "protein_sol_input_unverified": "Check the original predictor FASTA against the sample identifier and sequence.",
+    "protein_sol_report_invalid": "Provide the native seq_prediction.txt with its prediction header.",
+    "protein_sol_report_unreadable": "Check the encoding, size and read access of seq_prediction.txt.",
+    "protein_sol_sample_missing": "Check that the predictor input and output both contain this sample.",
+    "protein_sol_samples_missing": "Select a finished run with identifiable sample sequences.",
+    "provider_timeout": "Inspect the predictor log for the affected input before retrying.",
+    "provider_worker_failed": "Check the predictor runtime and its diagnostic output.",
+    "qupkake_response_identity_mismatch": "Check the compound identifier against the worker input and repeat the run.",
+    "qupkake_runtime_unavailable": "Check the configured QupKake environment and its dependencies.",
+    "qupkake_timeout": "Inspect the QupKake log for this compound before retrying.",
+    "qupkake_worker_failed": "Inspect the QupKake worker diagnostics for this compound.",
+    "qupkake_worker_invalid_report": "Check that the QupKake worker and report reader use compatible versions.",
+    "rdkit_unavailable": "Check the RDKit installation in the environment that runs this screen.",
+    "sdf_input_unreadable": "Check the SDF location, read access and record format.",
+    "site_head_incomplete": "Inspect the acid and base site predictor statuses for this compound.",
+    "structure_reader_unavailable": "Check the structural analysis dependencies in the screening environment.",
+    "sygma_dependency_unavailable": "Check the worker's chemistry dependencies and the pinned SyGMa rule files.",
+    "sygma_invalid_worker_report": "Check the SyGMa worker version and inspect the failed parent report.",
+    "sygma_parent_timeout": "Inspect the parent structure and its requested phase counts before retrying.",
+    "sygma_worker_failed": "Inspect the SyGMa worker diagnostics for the affected parent.",
+    "tnp_provider_unavailable": "Check the configured profiler runtime and its dependencies.",
+    "tnp_runtime_io_error": "Check read and write access to the profiler's working directory.",
     "predictor_not_configured": "Add mhc_i.tsv or mhc_ii.tsv to the output folder.",
     "no_manifest": "Run the refold export first, or point --refold-dir at where it wrote.",
     "manifest_unreadable": "Check the file is readable JSON, or export the requests again.",
@@ -335,7 +441,8 @@ _ACTIONS = {
     "sequence_absent": "Check the run produced designs.",
     "structure_unparsed": "Check the file for a trailing comment or an unclosed quote on a loop row.",
     "designs_absent": "Check the run produced designs.",
-    "designs_compressed": "Decompress the designs beside the run, then screen it again.",
+    "evaluation_structure_table_only": "Use the evaluator table for each input's recorded measurements.",
+    "designs_compressed": "Check the archive and its decoder, or export a readable text CIF alongside it.",
     "toxicology_not_configured": "Add toxicology.tsv to the output folder.",
     "toxicology_unreadable": "Check the encoding and the delimiter.",
     "toxicology_not_reported": "Add an nM column for this panel protein.",
@@ -351,6 +458,7 @@ _ACTIONS = {
     "solubility_not_configured": "Add solubility.tsv to the output folder.",
     "solubility_unreadable": "Check the encoding and the delimiter.",
     "solubility_not_reported": "Give each row a score, the method that produced it, and a study.",
+    "solubility_residue_profile": "Supply a separate whole-structure summary with its method and source.",
     "solubility_truncated": "Keep one row per method. The limit is 32 rows.",
     "solubility_too_large": "Keep the file within 1 MiB.",
     "reading_not_decisive": "Record the measured concentration, or a bound that falls clear of the cut.",
@@ -366,7 +474,17 @@ _ACTIONS = {
     "coevolution_truncated": f"Keep one row per species. The limit is {COEVOLUTION_ROW_LIMIT} data rows.",
     "coevolution_too_large": f"Keep the file within {COEVOLUTION_FILE_LIMIT // (1024 * 1024)} MiB.",
     "metrics_not_configured": "Evaluate the run to write inference_metrics/per_example_metrics.csv.",
+    "metrics_aggregation_required": "Aggregate the metrics directory and screen again.",
+    "metrics_publication_pending": "Allow the writer to finish or rerun aggregation in place to recover it.",
+    "metrics_provenance_mismatch": (
+        "Restore the verified table and receipt or aggregate the original jobs in a fresh directory."
+    ),
+    "metrics_provenance_unreadable": "Check the receipt and source files. Use verified copies to rebuild the report.",
     "not_evaluated": "Run the refolding oracle to evaluate them.",
+    "metrics_incomplete": "Check the per-design metrics and the oracle results for the affected designs.",
+    "ligand_identity_mismatch": "Supply measurements for the ligand named in this run.",
+    "ligand_identity_unverified": "Check the run's ligand SMILES and the InChIKey on each measurement.",
+    "panel_opinions_incomplete": "Inspect each method's readings and blocker.",
     "criteria_not_found": "Expected at configs/metrics/pass_criteria/all_pass_criteria.yaml.",
     "metrics_not_reported": "Check the run wrote a row per design.",
     "metrics_unreadable": "Check the encoding and the delimiter.",
@@ -376,6 +494,7 @@ _ACTIONS = {
     "metrics_row_too_short": "Export the table again with every row the width of its header.",
     "metrics_row_absent": "Check the table names this design in example_id.",
     "metrics_row_ambiguous": "Screen one job's table at a time, or drop the row that is out of date.",
+    "metrics_row_shared": "Export a separate row with the structure path for each design.",
     "chain_disagreement": "Screen one target at a time, or name the chain in every row.",
     "chain_shorter_than_window": "A span cannot be claimed or ruled out below 19 residues.",
     "hydropathy_unknown": "Check the designed chain is a standard protein sequence.",
@@ -685,9 +804,7 @@ def _job_mismatch_lines(record: object) -> list[str]:
 def _solubility_lines(record: Mapping[str, object]) -> list[str]:
     """Supplied solubility scores, or why there are none.
 
-    Each score is shown with the tool that produced it and the study behind it,
-    because the number means nothing without them: the same 0.4 is a poor
-    CamSol score and a low AGGRESCAN one.
+    Each displayed score retains its tool, reported unit and study.
     """
     if not record:
         return []
@@ -700,9 +817,14 @@ def _solubility_lines(record: Mapping[str, object]) -> list[str]:
             method = item.get("method")
             score = item.get("score")
             source = item.get("source")
-            if not isinstance(method, str) or not isinstance(score, int | float) or isinstance(score, bool):
+            if (not isinstance(method, str) or not method.strip() or not isinstance(score, int | float)
+                    or isinstance(score, bool) or not math.isfinite(score)):
                 continue
-            line = f"Solubility {_num(float(score))} by {method}"
+            value = _num(float(score))
+            unit = item.get("unit")
+            if isinstance(unit, str) and unit.strip():
+                value += f" {unit}"
+            line = f"Solubility {value} by {method}"
             if isinstance(source, str) and source:
                 line = f"{line}, from {source}"
             found.append(f"{line}. No cut applies to it.")
@@ -798,15 +920,20 @@ def _refold_lines(record: Mapping[str, object]) -> list[str]:
                 continue
             name = item.get("name")
             state = item.get("state")
+            if isinstance(name, str) and state == "incomplete":
+                measured, expected = item.get("rows_measured"), item.get("rows_expected")
+                found.append(f"{name} has complete results for {measured} of {expected} applicable rows.")
+                continue
             if not isinstance(name, str) or state not in {"pass", "fail"}:
                 continue
             word = "passes" if state == "pass" else "fails"
-            line = f"{name.replace('_', ' ')} {word} the declared criterion"
+            line = f"{name.replace('_', ' ')} {word} the criterion in the evaluation table"
             missed = item.get("failed_thresholds")
             if isinstance(missed, list) and missed:
                 # Which bound, not just that one was missed: a ptm floor
                 # and an aligned RMSD ask for different work.
-                line = f"{line} on {', '.join(str(piece) for piece in missed)}"
+                details = ", ".join(str(piece) for piece in missed)
+                line = f"{line}. The checkout's default bounds were missed for {details}"
             found.append(f"{line}.")
     found.extend(_blocker_lines(record.get("refold_blocker")))
     return found
@@ -1013,17 +1140,9 @@ def _guidance(axis: str, record: Mapping[str, object]) -> tuple[str, str, str]:
             "How many physical interaction partners the target has at high confidence.",
         ),
         "plasma_fold": (
-            "A negative number from the table sits on this side.",
-            (
-                "A positive number from the table sits on this side. "
-                "A larger move is the concerning side once you name a cut."
-            ),
-            (
-                "How far the target's blood level moves between disease and health. "
-                "The chart shows the number from the table, not always the size of the move. "
-                "A ratio near 1, or a log2 value near 0, is a small move. "
-                "A fall and a rise of the same size count the same."
-            ),
+            "A magnitude of one means the groups have the same level.",
+            "Larger magnitudes indicate a greater change between groups.",
+            "The chart compares the linear fold magnitude with the configured cutoff.",
         ),
     }
     return guides[axis]
@@ -1069,13 +1188,13 @@ def _axis_chart(axis: str, record: Mapping[str, object], measurement: float | No
         vmax = max(1.0, measurement or 0.0)
         cuts = ()
     elif axis == "plasma_fold":
-        span = max(1.0, abs(measurement or 0.0), abs(threshold or 0.0))
-        vmin = -span
-        vmax = span
-        # Magnitude is what the verdict uses, so a named cut is a cut on each
-        # side. One line on the right would say a fivefold fall was favorable.
-        better = "middle" if threshold is not None else "none"
-        cuts = () if threshold is None else (-abs(threshold), abs(threshold))
+        # Historical raw measurements did not specify their scale.
+        measurement = _as_float(record.get("linear_fold_magnitude"))
+        if measurement is None:
+            return ""
+        vmin = min(1.0, threshold if threshold is not None else 1.0)
+        vmax = max(2.0, measurement, threshold or 0.0)
+        better = "low" if threshold is not None else "none"
     elif axis in _TOX_NAMES:
         better = "high"
         cut = HIT_NM if threshold is None else threshold
@@ -1111,6 +1230,14 @@ def _reference_rows(record: Mapping[str, object]) -> list[tuple[str, float]]:
 
 def _detail_lines(axis: str, record: Mapping[str, object]) -> list[str]:
     lines: list[str] = []
+    opinions = record.get("opinions")
+    if isinstance(opinions, list):
+        for entry in opinions:
+            if isinstance(entry, Mapping):
+                label = " / ".join(str(entry[key]) for key in ("method", "assay_source", "endpoint") if entry.get(key))
+                value = entry.get("measurement")
+                reading = f" ({entry.get('qualifier', '')}{value} nM)" if value is not None else ""
+                lines.append(f"{label} reported {entry.get('state')}{reading}.")
     if axis == "immunogenicity" and record.get("presentation") == "not_configured":
         lines.append(
             "This score scans the whole chain. It stays undecided until a class I table names the presented 9-mers."
@@ -1143,6 +1270,10 @@ def _detail_lines(axis: str, record: Mapping[str, object]) -> list[str]:
     study = record.get("fold_source")
     if isinstance(study, str) and study:
         lines.append(f"The fold table names {study}.")
+    fold_column = record.get("fold_column")
+    raw = _as_float(record.get("measurement"))
+    if fold_column in ("fold", "fold_change", "log2_fold_change") and raw is not None:
+        lines.append(f"The supplied {fold_column} value is {_num(raw)}.")
     source = record.get("source")
     threshold = _as_float(record.get("threshold"))
     if threshold is not None:
@@ -1727,6 +1858,13 @@ def _polypeptide_rows(record: Mapping[str, object]) -> list[str]:
     index = _as_float(record.get("aliphatic_index"))
     if index is not None and index >= 0:
         rows.append(f"Aliphatic index {_num(index)}.")
+    else:
+        lower_bound = _as_float(record.get("aliphatic_index_lower_bound"))
+        if lower_bound is not None and lower_bound >= 0:
+            rows.append(
+                f"Identified residues contribute {_num(lower_bound)} to the aliphatic index. "
+                "The whole-chain value depends on the unresolved residues."
+            )
     mass = _as_float(record.get("molecular_weight"))
     if mass is not None and mass > 0:
         origin = ""
@@ -2225,8 +2363,10 @@ def _coevolution_detail(record: Mapping[str, object]) -> list[str]:
     """The transfer note stored beside the UniRef50 count."""
     lines: list[str] = []
     signal = record.get("coevolution_signal")
-    if isinstance(signal, str) and signal in COEVOLUTION_SENTENCES:
+    blocker = record.get("coevolution_blocker")
+    if not blocker and isinstance(signal, str) and signal in COEVOLUTION_SENTENCES:
         lines.append(COEVOLUTION_SENTENCES[signal])
+        lines.append(HUMAN_TOXICITY_SCOPE)
         lines.append("This note is stored beside the UniRef50 count.")
         # Inside the branch, because the count is how many rows agreed on THIS
         # note. Printed outside it, a table refused for naming two different
@@ -2243,11 +2383,12 @@ def _coevolution_detail(record: Mapping[str, object]) -> list[str]:
         ]
         if sentences:
             lines.append("The rows name: " + " ".join(sentences))
-    blocker = record.get("coevolution_blocker")
     if isinstance(blocker, str) and blocker:
         said = _BLOCKERS.get(blocker, blocker.replace("_", " "))
         action = _ACTIONS.get(blocker, "")
         lines.append(f"{said} {action}".strip())
+        if record.get("human_toxicity_state") == "untested" and blocker != "coevolution_not_configured":
+            lines.append(HUMAN_TOXICITY_SCOPE)
     return lines
 
 

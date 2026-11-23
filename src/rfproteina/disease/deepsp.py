@@ -101,6 +101,7 @@ BLOCKER_TEXT = {
         "These descriptors are computed on an aligned heavy and light pair, so a single "
         "chain cannot be scored. Supply both chains."
     ),
+    "ambiguous_chain_pair": "Multiple chains match a required role. Select one heavy chain and one light chain.",
 }
 
 #: DeepSP's own one-hot alphabet: twenty amino acids in alphabetical order by
@@ -228,15 +229,15 @@ def deepsp_report(
     except NumberingUnavailableError as error:
         return {"deepsp_blocker": str(error), "method": DEEPSP_METHOD}
 
-    heavy = next((chain for chain in chains if chain.chain_type in _HEAVY_TYPES), None)
-    light = next((chain for chain in chains if chain.chain_type in _LIGHT_TYPES), None)
-    if heavy is None or light is None:
+    heavy = [chain for chain in chains if chain.chain_type in _HEAVY_TYPES]
+    light = [chain for chain in chains if chain.chain_type in _LIGHT_TYPES]
+    if len(heavy) != 1 or len(light) != 1:
         return {
-            "deepsp_blocker": "both_chains_required",
+            "deepsp_blocker": "both_chains_required" if not heavy or not light else "ambiguous_chain_pair",
             "method": DEEPSP_METHOD,
             "chain_types": sorted({chain.chain_type for chain in chains}),
         }
-    aligned = aligned_sequence(heavy, light)
+    aligned = aligned_sequence(heavy[0], light[0])
     batch = _stack([aligned])
     blocks = {
         family: predict_descriptors(batch, directory / DEEPSP_WEIGHTS[family][0], directory / DEEPSP_WEIGHTS[family][1])

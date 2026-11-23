@@ -22,10 +22,10 @@ pose_validation:
       threshold: 0
       label: program
       source: >-
-        Any failed PoseBusters check (Buttenschoen, Morris, Deane, Chem. Sci.
-        2024) is a hit. PoseBusters defines each check; it publishes no overall
-        pass count. "mol" mode checks the ligand alone; "dock" mode adds the
-        protein (minimum distance, volume overlap).
+        Buttenschoen, Morris and Deane (Chem. Sci. 2024, doi:10.1039/D3SC04185A)
+        define PB-valid using all tests in their suite. Here a clear requires
+        complete passes in the selected mol or dock mode. A measured failure
+        is a hit. An incomplete result without a measured failure is untested.
     protein_clashes:
       direction: max
       threshold: 0
@@ -39,8 +39,8 @@ pose_validation:
       threshold: null
       label: no_cut
       source: >-
-        MMFF94 pose-minus-relaxed energy. PoseCheck (Harris et al. 2023) reports
-        this but publishes no pass mark, so it is reported, not gated.
+        Descriptive MMFF94 energy difference for the supplied atoms and their
+        converged local minimum. This project has no calibrated cutoff.
 
 interactions:
   module: rfproteina.disease.interactions
@@ -133,9 +133,10 @@ ligand_safety:
     units: probability
     label: cited
     source: >-
-      BayeshERG (Kim & Nam, MIT) and ADMET-AI (Swanson et al., MIT) return
-      PROBABILITIES, stored only under *_prob keys with unit "probability".
-      Never written into an *_nm column; assert_no_probability_in_nm enforces it.
+      BayeshERG and ADMET-AI classifier scores use *_prob keys. BayeshERG
+      reports its aleatoric and epistemic variances in uncertainty_variances.
+      Its authors specify noncommercial terms for the weights and MIT for the code.
+      ADMET-AI is MIT. Measured concentrations are recorded separately in nM.
   chembl_targets:   # verified against the ChEMBL target API on 2026-11-16 (Homo sapiens, single protein)
     herg: CHEMBL240       # KCNH2
     nav1_5: CHEMBL1980    # SCN5A / Nav1.5
