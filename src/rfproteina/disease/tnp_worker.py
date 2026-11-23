@@ -44,7 +44,7 @@ def unique_fields(pairs: list) -> dict:
     return result
 
 
-def _provider() -> dict:
+def _provider(*, inspect_only: bool = False) -> dict:
     versions = {
         name: version(name) for name in ("tnp", "ImmuneBuilder", "torch", "openmm", "biopython", "anarci", "freesasa")
     }
@@ -67,8 +67,10 @@ def _provider() -> dict:
     fingerprints = []
     for i, expected in enumerate(_WEIGHT_MD5, 1):
         path = weights_dir / f"nanobody_model_{i}"
-        if not path.is_file():
+        if not path.is_file() or not path.stat().st_size:
             raise ProfileError("model_weights_missing")
+        if inspect_only:
+            continue
         md5, sha = hashlib.md5(usedforsecurity=False), hashlib.sha256()
         with path.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
@@ -252,4 +254,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--check-installation"]:
+        try:
+            _provider(inspect_only=True)
+        except (OSError, ValueError, ImportError, subprocess.SubprocessError):
+            sys.exit(1)
+        sys.exit(0)
     main()

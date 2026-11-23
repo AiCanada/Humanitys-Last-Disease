@@ -15,7 +15,8 @@ import csv
 import hashlib
 import io
 import math
-from collections.abc import Mapping, Sequence
+import stat
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 
 from rfproteina.disease.liability import _column_key, _table_lines
@@ -33,7 +34,7 @@ _METHOD_COLUMNS = ("method", "tool", "predictor")
 _SOURCE_COLUMNS = ("source", "study", "reference", "doi", "version")
 _UNIT_COLUMNS = ("unit", "units")
 _NOTE_COLUMNS = ("note", "notes", "comment")
-_USED_COLUMNS = _SCORE_COLUMNS + _METHOD_COLUMNS + _SOURCE_COLUMNS + _UNIT_COLUMNS
+_USED_COLUMNS = _SCORE_COLUMNS + _METHOD_COLUMNS + _SOURCE_COLUMNS + _UNIT_COLUMNS + ("candidate_id",)
 _ABSENT = frozenset({"", "nan", "none", "null", "na", "n/a", "n.a.", "n.d.", "nd", ".", "-", "--", "inconclusive"})
 #: A field a row carries past the header's last column. A row with one is
 #: misaligned from its first extra separator on, so a score would be read under
@@ -45,27 +46,30 @@ _PROTEIN_SOL_FIELDS = {"ID", "percent-sol", "scaled-sol", "population-sol", "pI"
 _PROTEIN_SOL_SOURCE = "Hebditch et al. 2017, doi:10.1093/bioinformatics/btx345"
 
 
-def read_protein_sol(directory: Path, chains: Sequence[tuple[str, str | None]]) -> dict[str, object] | None:
-    """Attach already-computed native Protein-Sol predictions to the matching sample sequences."""
+def protein_sol_inputs(directory: Path) -> tuple[dict[str, dict[str, float]], dict[str, str]] | None:
+    """Read the bounded native report and its optional named input before inspecting candidate structures."""
     try:
         report = _protein_sol_text(directory / "seq_prediction.txt")
     except FileNotFoundError:
         return None
-    except (OSError, ValueError, OverflowError):
-        return {"blocker": "protein_sol_report_unreadable"}
+    except (OSError, ValueError, OverflowError) as error:
+        raise ValueError("protein_sol_report_unreadable") from error
     try:
         predictions = _protein_sol_predictions(report)
-    except (ValueError, csv.Error):
-        return {"blocker": "protein_sol_report_invalid"}
-    if not chains:
-        return {"blocker": "protein_sol_samples_missing"}
+    except (ValueError, csv.Error) as error:
+        raise ValueError("protein_sol_report_invalid") from error
     try:
         fasta = _protein_sol_fasta(_protein_sol_text(directory / "protein_sol.fasta"))
     except FileNotFoundError:
         fasta = {}
-    except (OSError, ValueError, OverflowError):
-        return {"blocker": "protein_sol_fasta_invalid"}
+    except (OSError, ValueError, OverflowError) as error:
+        raise ValueError("protein_sol_fasta_invalid") from error
+    return predictions, fasta
 
+
+def match_protein_sol(
+    chains: Iterable[tuple[str, str | None]], predictions: dict[str, dict[str, float]], fasta: dict[str, str]
+) -> dict[str, object]:
     samples: list[dict[str, object]] = []
     for example_id, sequence in chains:
         item: dict[str, object] = {"example_id": example_id}
@@ -87,10 +91,23 @@ def read_protein_sol(directory: Path, chains: Sequence[tuple[str, str | None]]) 
         identifier = candidates.pop()
         item.update(predictions[identifier])
         item.update(method=PROTEIN_SOL_METHOD, sequence_sha256=digest, input_id=identifier, unit="scaled-sol")
+    if not samples:
+        return {"blocker": "protein_sol_samples_missing"}
     return {"source": _PROTEIN_SOL_SOURCE, "samples": samples}
 
 
+def read_protein_sol(directory: Path, chains: Iterable[tuple[str, str | None]]) -> dict[str, object] | None:
+    """Attach already-computed native Protein-Sol predictions to matching sample sequences."""
+    try:
+        inputs = protein_sol_inputs(directory)
+    except ValueError as error:
+        return {"blocker": str(error)}
+    return match_protein_sol(chains, *inputs) if inputs is not None else None
+
+
 def _protein_sol_text(path: Path) -> str:
+    if not stat.S_ISREG(path.lstat().st_mode):
+        raise ValueError("Protein-Sol requires a regular input file")
     with path.open("rb") as stream:
         data = stream.read(SOLUBILITY_FILE_LIMIT + 1)
     if len(data) > SOLUBILITY_FILE_LIMIT:
@@ -153,7 +170,7 @@ def _protein_sol_predictions(report: str) -> dict[str, dict[str, float]]:
     return predictions
 
 
-def read_solubility(directory: Path) -> dict[str, object]:
+def read_solubility(directory: Path, *, candidate: str | None = None) -> dict[str, object]:
     """Solubility rows supplied beside one run, or a blocker saying why there are none.
 
     Each row needs a score, the method that produced it, and a provenance.
@@ -183,10 +200,20 @@ def read_solubility(directory: Path) -> dict[str, object]:
         return {"solubility_blocker": "solubility_residue_profile"}
     if len(rows) > SOLUBILITY_ROW_LIMIT:
         return {"solubility_blocker": "solubility_truncated"}
+    if candidate is not None:
+        if "candidate_id" not in rows[0]:
+            return {"solubility_blocker": "solubility_run_only"}
+        rows = [row for row in rows if row["candidate_id"] == candidate]
+        if not rows:
+            return {"solubility_blocker": "solubility_candidate_missing"}
     scored: list[dict[str, object]] = []
     unparsed: list[str] = []
     incomplete = 0
     for row in rows:
+        name = row.get("candidate_id")
+        if name is not None and (not name or not name.isprintable() or len(name) > _TEXT_LIMIT):
+            incomplete += 1
+            continue
         found, bad = _score_row(row)
         if bad:
             unparsed.extend(bad)
@@ -194,6 +221,8 @@ def read_solubility(directory: Path) -> dict[str, object]:
         if found is None:
             incomplete += 1
             continue
+        if name is not None:
+            found["candidate_id"] = name
         scored.append(found)
     if unparsed:
         return {"solubility_blocker": "cell_unparsed", "unparsed_columns": sorted(set(unparsed))}
@@ -223,6 +252,8 @@ def solubility_phrase(record: Mapping[str, object]) -> str | None:
                 or isinstance(score, bool) or not math.isfinite(score)):
             continue
         piece = f"{method} {_number(score)}"
+        if isinstance(name := item.get("candidate_id"), str) and name:
+            piece = f"{name} {piece}"
         unit = item.get("unit")
         if isinstance(unit, str) and unit:
             piece = f"{piece} {unit}"
@@ -306,7 +337,8 @@ def _text(raw: str) -> str:
 
 def _file_size(path: Path) -> int | None:
     try:
-        return path.stat().st_size
+        info = path.lstat()
+        return info.st_size if stat.S_ISREG(info.st_mode) else None
     except OSError:
         return None
 
@@ -314,7 +346,7 @@ def _file_size(path: Path) -> int | None:
 def _table_path(directory: Path) -> Path | None:
     for suffix in (".tsv", ".csv"):
         path = directory / f"{SOLUBILITY_TABLE}{suffix}"
-        if path.is_file():
+        if path.exists() or path.is_symlink():
             return path
     return None
 
@@ -328,7 +360,11 @@ def _rows(path: Path) -> list[dict[str, str]] | None:
     with a surplus field, and a quote left open.
     """
     try:
-        text = path.read_text(encoding="utf-8-sig")
+        with path.open("rb") as stream:
+            data = stream.read(SOLUBILITY_FILE_LIMIT + 1)
+        if len(data) > SOLUBILITY_FILE_LIMIT:
+            return None
+        text = data.decode("utf-8-sig")
     except (OSError, UnicodeError, MemoryError):
         return None
     lines = _table_lines(text)

@@ -6,7 +6,9 @@ import os
 import time
 from pathlib import Path
 
+import jsonschema
 import pytest
+import tomllib
 
 from tests.helpers.disease import UBIQUITIN, exchange_gated, exchange_with, ok_handler
 from tests.helpers.disease import load_mcp_server as _server
@@ -25,8 +27,16 @@ _TOOL_NAMES = (
     "retrieve_structures",
     "read_sequence_measures",
     "read_results",
+    "list_output_files",
+    "read_output_file",
     "backend_status",
     "declare_corpora",
+    "plan_validation",
+    "validate_output_files",
+    "save_validation_report",
+    "list_validation_reports",
+    "plan_screening",
+    "run_selected_screens",
 )
 
 
@@ -292,6 +302,7 @@ def test_every_tool_declares_the_shape_of_its_structured_result():
     assert set(by_name) == set(_TOOL_NAMES)
     for name, tool in by_name.items():
         assert tool["outputSchema"]["type"] == "object", f"{name} declares no output shape"
+    jsonschema.validate(mcp_api.list_options(), by_name["list_options"]["outputSchema"])
     verdict = by_name["read_verdict"]["outputSchema"]["properties"]["runs"]["items"]["properties"]["verdict"]
     fields = set(verdict["properties"])
     assert set(mcp_api._VERDICT_FIELDS) <= fields, "the schema has drifted from what _verdict returns"
@@ -321,7 +332,7 @@ def test_the_options_schema_covers_every_option_and_offers_no_key():
         action.dest
         for action in build_parser()._actions
         if action.option_strings
-        and action.dest not in {"help", "ui"}
+        and action.dest not in {"help", "ui", "validate_output"}
         and not re.search(r"(?i)key|token|secret|password", action.dest)
     }
     assert set(properties) == selectable
@@ -544,11 +555,20 @@ def test_a_batch_frame_answers_every_request_in_it():
         {"jsonrpc": "2.0", "id": 1, "method": "ping"},
         {"jsonrpc": "2.0", "method": "notifications/initialized"},
         {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": "read_verdict", "arguments": {}},
+        },
     ]
     raw = json.dumps(batch).encode() + b"\n"
     assert server.serve(stdin=io.BytesIO(raw), stdout=outgoing, handler=ok_handler) == 0
-    replies = [json.loads(line) for line in outgoing.getvalue().splitlines() if line.strip()]
-    assert [reply["id"] for reply in replies] == [1, 2], "the notification inside must stay unanswered"
+    frames = [json.loads(line) for line in outgoing.getvalue().splitlines() if line.strip()]
+    assert len(frames) == 1
+    replies = frames[0]
+    assert isinstance(replies, list)
+    assert {reply["id"] for reply in replies} == {1, 2, 3}, "the notification inside must stay unanswered"
 
 
 def test_a_call_cancelled_while_queued_is_never_started():
@@ -708,6 +728,8 @@ def test_the_mcp_files_point_at_this_server_and_carry_no_secret():
     assert "sk-" not in combined
     assert "/home/" not in combined
     assert "Users" not in combined
+    configured = tomllib.loads(grok)["mcp_servers"]["Humanitys-Last-Disease"]["tool_timeouts"]
+    assert set(configured) == set(_TOOL_NAMES)
 
 
 def test_options_are_flags_and_not_a_shell_line():
@@ -767,7 +789,9 @@ def test_list_options_covers_the_parser_and_hides_keys():
     catalog = list_options()
     names = {option["name"] for option in catalog["options"]}
     parser_names = {
-        action.dest for action in build_parser()._actions if action.option_strings and action.dest not in {"help", "ui"}
+        action.dest
+        for action in build_parser()._actions
+        if action.option_strings and action.dest not in {"help", "ui", "validate_output"}
     }
     assert names == parser_names
     by_name = {option["name"]: option for option in catalog["options"]}
@@ -857,6 +881,7 @@ def test_read_verdict_redacts_a_sequence_and_a_personal_path(tmp_path):
     run = tmp_path / "gene_1ABC_1"
     run.mkdir()
     peptide = "ACDEFGHIKLMNPQRSTVWYACDEFGHIK"
+    private_home = "/".join(("", "home", tmp_path.name))
     (run / "screen.json").write_text(
         json.dumps(
             {
@@ -867,7 +892,7 @@ def test_read_verdict_redacts_a_sequence_and_a_personal_path(tmp_path):
                 "hits": [],
                 "note": peptide,
                 "measured": "Screened clear on 6 axes. Two sentences, both kept.",
-                "where": "/home/someone/secret",
+                "where": f"{private_home}/secret",
             }
         ),
         encoding="utf-8",
@@ -877,7 +902,7 @@ def test_read_verdict_redacts_a_sequence_and_a_personal_path(tmp_path):
     encoded = json.dumps(result)
     record = result["runs"][0]["verdict"]["record"]
     assert peptide not in encoded
-    assert "/home/someone" not in encoded
+    assert private_home not in encoded
     assert result["runs"][0]["verdict"]["call"] == "untested"
     assert record["note"] == "[sequence omitted]"
     # The whole line used to come back as "[omitted]", measurement and all.
@@ -987,6 +1012,18 @@ def test_the_server_carries_no_cure_disclaimer():
     assert "not a cure" not in text
     assert "screened_clear means every axis in the named bar is clear" in text
     assert "Do not shell out" in server._INSTRUCTIONS
+
+
+def test_program_output_capture_is_bounded_and_marks_truncation():
+    from rfproteina.disease import mcp_api
+
+    stream = mcp_api._LineStream(None)
+    text = "x" * (mcp_api._CAPTURE_MAX_CHARS + 100)
+    assert stream.write(text) == len(text)
+    stream.flush_partial()
+    assert stream.lines == [mcp_api._CAPTURE_MARKER]
+    assert stream.raw == []
+    assert stream._partial == ""
 
 
 def test_an_absurd_content_length_is_a_parse_error_and_does_not_wait():

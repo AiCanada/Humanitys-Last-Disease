@@ -54,7 +54,7 @@ class ProfileError(ValueError):
     """A scientific or provider condition that prevents attribution."""
 
 
-def _load_release() -> dict:
+def _load_release(*, inspect_only: bool = False) -> dict:
     spec = importlib.util.find_spec("qupkake")
     if spec is None or not spec.origin:
         raise ProfileError("qupkake_not_installed")
@@ -77,15 +77,17 @@ def _load_release() -> dict:
     executable = root / "xtb-641/bin/xtb"
     if not os.access(executable, os.X_OK):
         raise ProfileError("xtb_not_executable")
+    versions = {name: metadata.version(name) for name in _VERSIONS}
+    if versions != _VERSIONS:
+        raise ProfileError("qupkake_dependency_version_mismatch")
+    if inspect_only:
+        return {"installed": True}
     # Release __init__ calls conda even for an explicitly selected binary. Bind the
     # verified executable to the same package attribute used by its native modules.
     package = importlib.util.module_from_spec(spec)
     package.XTB_LOCATION = str(executable)
     sys.modules["qupkake"] = package
     os.environ["XTBPATH"] = str(root / "xtb-641/share/xtb")
-    versions = {name: metadata.version(name) for name in _VERSIONS}
-    if versions != _VERSIONS:
-        raise ProfileError("qupkake_dependency_version_mismatch")
     return {
         "revision": REVISION,
         "xtb": "6.4.1",
@@ -358,6 +360,12 @@ def _profile(smiles: str, tautomerize: bool) -> dict:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--check-installation"]:
+        try:
+            _load_release(inspect_only=True)
+        except (OSError, ValueError, ImportError):
+            sys.exit(1)
+        sys.exit(0)
     request = json.load(sys.stdin)
     with redirect_stdout(sys.stderr):
         try:

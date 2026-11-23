@@ -167,6 +167,38 @@ def test_missing_and_corrupt_archive_are_named(tmp_path: Path, monkeypatch: pyte
         engine.load_rules()
 
 
+def test_picker_budgets_one_identified_parent_without_enumerating(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from rfproteina.disease.screen_selection import plan
+
+    monkeypatch.setattr(screen, "_run", lambda *_: pytest.fail("The picker ran the reaction rules"))
+    available = {"sygma": True}
+    table = tmp_path / "ligand_candidates.tsv"
+    table.write_text("candidate_id\tsmiles\na\tC[C@H](O)F\nb\tF[C@@H](O)C\n")
+
+    def states(example=None):
+        choice, = plan(tmp_path, "ligand", example=example, available=available)
+        return choice.applicable, choice.recommended
+
+    assert states() == (True, False)
+    (tmp_path / screen.MANIFEST).write_text("{}")
+    assert states() == (True, True)
+    table.write_text(table.read_text() + "c\tCC(O)F\nunusable\tC*\n")
+    assert states() == (True, False)
+    assert states("a") == (True, True)
+    assert states("c") == (True, False)
+    assert states("unusable") == (False, False)
+    (tmp_path / screen.MANIFEST).write_text('{"phase1_cycles":2, "phase2_cycles":0}')
+    assert states("a") == (True, False)
+    (tmp_path / screen.MANIFEST).write_text('{"phase1_cycles":0, "phase2_cycles":0}')
+    assert states("a") == (False, False)
+
+
+def test_legacy_run_molecule_cannot_be_screened_as_a_named_design(tmp_path: Path):
+    (tmp_path / "ligand_smiles.txt").write_text("CCO ethanol\n")
+    result = screen.screen_run(tmp_path, kind="ligand", use_defaults=True, candidate="run_ligand")
+    assert result["blocker"] == "candidate_requires_named_nomination"
+
+
 def test_reference_stereochemistry_and_acetaminophen_conjugates() -> None:
     try:
         result = engine.enumerate_products("CC(=O)Nc1ccc(O)cc1", 1, 1)

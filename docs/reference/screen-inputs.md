@@ -425,7 +425,9 @@ protein binder that is `immunogenicity`, `proteome_offtarget`, `mhc_i`, `mhc_ii`
 One axis reading `hit` makes the call `axis_hit` regardless of the bar; every axis
 clear makes it `screened_clear`; anything else stays `untested`.
 
-New screens record `screen_version: 11` with optional SyGMa metabolite predictions.
+New screens record `screen_version: 12`. The optional `method_selection` block records the
+preset, selected methods, attempted methods, reasons for skips and method-specific results.
+Version 11 added optional SyGMa metabolite predictions.
 Version 10 added QupKake microscopic pKa.
 Version 9 added compound-level aqueous solubility.
 Version 8 added the optional TNP domain profile.
@@ -1819,6 +1821,213 @@ nothing at all and the line read as a plain `screened_clear` — the axes that c
 clear by hand were the ones the sentence left out.
 
 ## Command-line flags
+
+Use **Validate output files** in the finished-run browser to review files for experimental
+handoff. The panel starts with recommendations for the first finished run. Choosing a different
+run or **All finished runs** refreshes the recommended selection. Use **Refresh recommendations**
+to pick up files added to the same run. The panel preselects installed checks that match the
+available files and shows their on-disk sizes where available. **Select all installed** also
+selects optional checks such as SHA-256 checksums. **Run selected checks** starts the checks
+after you review or adjust the selection. The Zstandard check requires the local decoder.
+
+For a single run, use **Candidate** to scope the structure checks and recommendations to one
+sample. A bench-evidence check is recommended when an entry matches that sample or the record has a
+run-level status. Shared metrics-table checks and synthesis-receipt checks are optional in this view.
+
+**Therapeutic experimental evidence** checks the format of an attached
+`experimental_validation.json` and reports how many entries have a recorded status.
+**DNA-synthesis review receipt** checks for a separate `synthesis_review.json` supplied by the
+reviewer. The panel reports the receipt's presence and leaves the review decision with the reviewer.
+
+Open the same panel with `--validate-output` and repeat the flag to add another run.
+
+```bash
+human --validate-output disease_runs/gene_1ABC_1
+human --validate-output disease_runs/gene_1ABC_1 --validate-output disease_runs/gene_2ABC_1
+```
+
+### Choose scientific screens for a finished candidate
+
+Open **Post-generation screening** on the results page. For multiple runs, choose a run
+first. Choose a candidate and refresh to see its own recommendations. The initial checks
+use the run's binder kind, the candidate's nominated inputs, and the local installation.
+Model-backed methods check their required software and assets. Each method shows its
+workload and explains which inputs it needs. A prepared QupKake, SyGMa, Vina, PRODIGY
+or nanobody manifest requests that method when the inputs match.
+
+**RDKit assay-interference alerts and descriptors** are checked by default for a ligand
+whose nomination identifies one complete, connected molecular graph. The picker verifies
+the descriptor software and the PAINS A/B/C, BRENK and NIH catalogues before recommending
+the screen. A salt or mixture can be screened manually as supplied. A run containing both
+usable and unresolved nominations also requires manual selection. Choosing an individual
+candidate checks only its own nomination. Duplicate IDs, wildcard atoms and malformed SMILES
+cannot identify a testable molecule. A single titled record in `ligand_smiles.txt` belongs
+to the run. A result for an individual candidate requires a row in `ligand_candidates.tsv`.
+Catalogue hits can inform the choice of experimental assay controls.
+[RDKit filter catalogue documentation](https://www.rdkit.org/docs/GettingStartedInPython.html#filtering-unwanted-substructures)
+
+**ADMET-AI aqueous solubility** is checked for an explicitly nominated, connected,
+carbon-containing molecule with zero net charge. The default covers one CPU batch
+of up to 64 distinct molecular inputs. Equivalent SMILES and atom-map labels share
+one input. Larger batches, salts, mixtures, net-charged forms and carbon-free
+structures remain available for manual selection. For a salt or ion, confirm the
+chemical form and planned assay conditions before interpreting the estimate.
+The picker verifies the published endpoint definition and all five local regression
+checkpoint hashes. Selection reads the molecular graph without running inference.
+The result estimates aqueous logS across the conditions represented in the training
+data. A pH-specific solubility claim needs a measurement at that pH.
+[AqSolDB study](https://www.nature.com/articles/s41597-019-0151-1)
+
+**Supplied solubility and aggregation measurements** are checked when every row in
+scope has a finite score, a method, a source, and an explicit unit or scale. Use
+`unit` or `units` for a physical unit or a named predictor scale. A readable score
+with an unspecified scale, or a table with some incomplete rows, can be reviewed
+manually. An optional `candidate_id` column matches rows to the exact example ID.
+A named observation whose ID is absent from the run requires manual review.
+A table without that column can be selected for the whole run. Each observation
+keeps its candidate, method, source and original value. The reader accepts at most
+32 rows and 1 MiB per file.
+
+**Protein-Sol result reader** is checked when the selected protein's resolved
+designed chain matches one native prediction, using its exact sequence hash or
+the original matching FASTA entry. The prediction can inform a cell-free expression
+experiment. A partial run, a peptide selection, or a scope with more than 16 MiB of
+structure files requires manual selection. The reader verifies sequence identity
+before returning any score. An invalid report, missing match, ambiguous match, or
+unresolved chain leaves the affected candidate unchecked. [Protein-Sol study](https://doi.org/10.1093/bioinformatics/btx345)
+
+**QupKake microscopic pKa** is checked for an expressly configured ligand run
+with one supported, identifiable molecular state. Each distinct state starts its own
+xTB calculation. Separate candidate IDs describing the same graph share that calculation.
+Multiple distinct states, partially usable nominations, unnamed SDF records and
+hydrocarbons stay available for manual selection. The latter require an explicit
+site-specific assay question. The picker uses the provider's own graph and atom-map
+checks and verifies the released code, checkpoints, xTB executable and parameters.
+It can make this decision before enumerating protonation sites or running xTB.
+[QupKake method](https://doi.org/10.1021/acs.jctc.4c00328)
+
+**SyGMa human metabolite prediction** is checked when a ligand run requests
+metabolite ranking for one identifiable organic parent with resolved stereochemistry.
+The default budget permits one iteration of each requested phase. Multiple parents,
+repeated reaction phases, or unspecified parent stereochemistry warrant a manual
+choice. Equivalent nominations share one ranking. An invalid graph, a disconnected
+salt, or an ambiguous ID cannot identify a parent. The picker verifies both release
+rule tables and leaves reaction enumeration to the selected run. The ranking
+proposes structures for analytical confirmation. [SyGMa release](https://pypi.org/project/SyGMa/1.1.0/)
+
+**PoseBusters** is checked for one uniquely named ligand with a concrete molecular
+graph and a finite 3D conformation in the nominated SDF. The picker keeps a
+distorted pose eligible so the run can report failing geometry. Separate poses
+require separate energy checks and a manual choice. A 2D drawing or ambiguous
+pose ID cannot supply coordinates for a candidate. When reviewing stored results,
+named boolean checks and complete published pass rates can be preselected.
+Coverage counts alone and partial published runs remain available for review.
+The native SDF option uses the ligand-only checklist. [PoseBusters documentation](https://posebusters.readthedocs.io/en/latest/)
+
+**Ligand component composition** is checked when each selected structure names
+one non-water ligand component with a positive formula weight or a complete
+interpretable formula. The result identifies the component and the source of its
+mass in daltons. When the supplied and calculated masses disagree at their shared
+precision, both are reported and the method stays manual. A partly readable run
+also stays manual. The 16 MiB interactive budget counts decompressed structure
+text. [wwPDB formula-weight definition](https://mmcif.wwpdb.org/dictionaries/mmcif_pdbx_v50.dic/Items/_chem_comp.formula_weight.html)
+
+**Protein composition and mass** is checked for an attributable designed protein
+or peptide chain whose standard amino-acid sequence is fully resolved. A nucleotide
+chain or conflicting assignments for the same strand cannot provide this endpoint.
+The reported average mass is for the unmodified linear chain. Modifications and
+annotated disulfides prompt manual review before comparing it with an intact-mass
+measurement. A partially resolved cohort can be inspected per candidate.
+
+**Protein charge and isoelectric point** is checked for a fully identified standard
+polypeptide when the Bjellqvist model brackets a zero crossing between pH 0 and 14.
+The result reports the modeled charge at pH 7.4 and the pKa set used. When the
+curve has no crossing in range, the charge can still be selected manually and the
+pI carries its own blocker. Annotated modifications and disulfides also prompt
+manual review of this unmodified-chain estimate. [ExPASy pI documentation](https://web.expasy.org/compute_pi/pi_tool-doc.html)
+
+**GRAVY mean hydropathy** is checked when every residue in each assigned protein
+or peptide chain has a value on the Kyte–Doolittle scale. The score is a residue
+average. Both high and low values are reportable. Partial cohorts and chains
+with annotated modifications can be selected manually. [Kyte and Doolittle](https://pubmed.ncbi.nlm.nih.gov/7108955/)
+
+**Instability index** is available for manual comparison when an assigned protein
+or peptide has at least two adjacent standard residues and its complete sequence
+is known. The empirical index was derived from 12 unstable and 32 stable
+proteins. Its numerical value does not select a candidate or a screening
+checkbox. [Guruprasad and colleagues](https://pubmed.ncbi.nlm.nih.gov/2075190/)
+
+**Sequence diversity** is checked for a run containing two to 200 identified
+designed polypeptides when at least one pair supports positional identity or
+five-residue window comparison. Exact replicates are eligible. Selecting one
+candidate cannot establish diversity. Partial or modified cohorts and cohorts
+that support only distinct counts remain manual. A partial report includes
+the number of unreadable designs.
+
+**AGGRESCAN sequence score** is checked for an assigned standard protein or
+peptide sequence long enough to fill the published window. The shortest window
+is five residues. The result names the method, window size and normalized
+aggregation score. Annotated modifications and partially readable cohorts
+require manual selection. [AGGRESCAN study](https://pmc.ncbi.nlm.nih.gov/articles/PMC1828741/)
+
+| Screen | When the picker recommends it |
+| --- | --- |
+| Stereochemistry | Each selected candidate has a recognized reference-comparison endpoint on its declared scale. The producer's `percent_correct` columns contain fractions from 0 to 1. An attached percentage needs an explicit percentage unit. |
+| P-SEA | The selected protein chain has at least six consecutive observed C-alpha residues. Short traces can be reviewed manually with the coverage warning. |
+| Steric clashes | The parsed structure has finite atom coordinates and at least one nonbonded pair eligible for the native check. |
+| Bond lengths | The parsed structure contains bonds with finite coordinates at both ends. |
+| Octant and BindingDB exact lookups | The nominated molecular form has a determinate measurement in the local reference. Multiple distinct compounds or a reference above the interactive byte budget prompt manual selection. |
+| BindingDB fingerprint and GtoPdb | Valid named compounds can be selected for comparison with reference compounds. These comparisons are optional. |
+| BindingDB ExtraTrees and Chemprop | An installed, compatible model and a valid molecular nomination make model inference available for manual selection. |
+| OpenFE | The proposed edge and both simulation phases agree across completed files. A single repeat in either phase leaves the uncertainty unresolved and the reader manual. |
+| pmx | Both sets of work measurements verify the supplied BAR estimate and its analytical uncertainty in the configured runtime. |
+| Supplied toxicology | At least one supplied assay has a readable concentration, a named source and endpoint, and an identity matching the nominated compound. The table is reviewed at run scope. Distinct assays retain separate readings. |
+| Therapeutic Nanobody Profiler | One explicitly nominated VHH matches the structure's chain, full sequence digest and observed residues. |
+| AutoDock Vina supplied pose | One prepared ligand and receptor match the selected structure, and the ligand is within the specified scoring box. |
+| PRODIGY | Both configured protein partners are complete and share an interpartner contact in the chosen coordinate model. Several prepared candidates at run scope require manual selection. |
+
+During interactive generation, the browser offers these choices when the run files
+are ready, before the optional screens start. An explicit CLI selection applies directly.
+
+**Select all installed screens** includes optional methods and readers. Each selected
+method returns a separate result. A method whose inputs belong to another candidate or
+are missing returns its reason and skips the calculation. **Select recommended screens**
+restores the defaults for the current scope. **Clear screen selection** allows an empty
+selection. **Run selected screens** processes the selected methods serially.
+
+Calculations produce a fresh measurement. Local result readers inspect the named analytical
+files. The previously recorded observations section displays attributable values from the
+saved screen, published metrics or a supplied observation file. A database client in this
+section reads attached observations locally. The picker makes no remote database request.
+When generated files are present, only observations naming a candidate in the run are
+returned. Mixed or unverifiable candidate attribution leaves the stored review manual.
+DockQ scalar observations stay manual so the reviewer can identify the reference
+complex and chain mapping. [DockQ documentation](https://github.com/bjornwallner/DockQ)
+The main screen keeps its required verdict criteria.
+
+```bash
+human --screen finished-run --screen-selection recommended
+human --screen finished-run --screen-method ligand_solubility --screen-method sygma
+human --screen finished-run --screen-selection all_installed
+```
+
+An optional `screening_observations.json` maps a method ID to rows containing
+`candidate_id`, `endpoint`, `unit` and a finite numeric `value`. Use the exact example ID
+from the run. The panel returns up to 512 values for each method and reports how many additional
+observations it found. It preserves each method's scale and the attachment's attribution.
+
+PoseBusters accepts named 3D records in `ligand_candidates.sdf` for molecule-mode checks.
+RDKit alerts, Octant, BindingDB and GtoPdb accept the same SMILES nominations as ADMET-AI.
+BindingDB exact measurements, fingerprint neighbours and model predictions have separate
+options. The
+toxicology reader accepts a run-level `toxicology.tsv` or `toxicology.csv`. To verify
+completed free-energy outputs, supply one of the following manifests with its source files
+directly in the run directory. The named candidate identifies the comparison being reviewed.
+
+| Manifest | Required fields |
+| --- | --- |
+| `openfe_inputs.json` | `candidate_id`, `ligand_a`, `ligand_b`, and `results` containing the complex and solvent result filenames |
+| `pmx_inputs.json` | `candidate_id`, `report`, `forward`, and `reverse` containing the pmx BAR report and integrated-work filenames |
 
 ```bash
 # screen a finished run again, after dropping tables in

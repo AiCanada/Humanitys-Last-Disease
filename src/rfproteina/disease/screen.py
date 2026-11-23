@@ -194,7 +194,7 @@ _STRAND = "_entity_poly.pdbx_strand_id"
 # Version 9 adds the compound-level ADMET-AI aqueous-solubility regression.
 # Version 10 adds site-resolved aqueous microscopic pKa for nominated compounds.
 # Version 11 adds ranked, per-parent SyGMa metabolite hypotheses.
-SCREEN_VERSION = 11
+SCREEN_VERSION = 12
 #: Keys every screen carries, whatever the kind and whatever was supplied.
 SCREEN_REQUIRED_KEYS = frozenset(
     {
@@ -239,6 +239,7 @@ SCREEN_OPTIONAL_KEYS = frozenset(
         "target_liability",
         "ligand_alerts",
         "ligand_solubility",
+        "method_selection",
         "qupkake",
         "sygma",
         "mhc_class_i",
@@ -438,6 +439,8 @@ def screen_generation(
     transcriptome: Path | None = None,
     read_json: ReadJson | None = None,
     limits: TargetLimits | None = None,
+    screen_selection: str | None = None,
+    screen_methods: Sequence[str] = (),
 ) -> dict[str, object]:
     """Judge one finished run and write ``screen.json`` beside its designs.
 
@@ -503,13 +506,27 @@ def screen_generation(
         # thirteen declared bars had no way to be selected at all, and a
         # misspelling of one now in reach should not cost a scan first.
         bar_axes(binder_kind, bar)
+    from rfproteina.disease import screen_selection as selection
+
+    kind = _canonical_kind(binder_kind)
+    active = set(selection.NATIVE_IDS)
+    selection_record = None
+    if screen_selection is not None or screen_methods:
+        mode = screen_selection or "explicit"
+        choices, selected = selection.execution_plan(output_dir, kind, mode, screen_methods)
+        active = {c.method.key for c in choices if c.applicable and c.method.key in selected}
+        selection_record = {
+            "mode": mode,
+            "selected": list(selected),
+            "attempted": [key for key in selected if key in active],
+            "skipped": {c.method.key: c.reason for c in choices if c.method.key in selected and not c.applicable},
+        }
     metrics_path = _metrics_path(output_dir)
     rows, metrics_blocker = _metrics_table(output_dir, metrics_path)
     evidence = _read_evidence(output_dir)
-    kind = _canonical_kind(binder_kind)
-    affinity = RunAffinity.configured(output_dir)
-    vina = RunPoses.configured(output_dir)
-    tnp = RunProfiles.configured(output_dir)
+    affinity = RunAffinity.configured(output_dir) if "prodigy_affinity" in active else None
+    vina = RunPoses.configured(output_dir) if "vina_pose" in active else None
+    tnp = RunProfiles.configured(output_dir) if "tnp_profile" in active else None
     if tnp is not None and kind != "protein" and tnp.blocker is None:
         tnp.blocker = "protein_binder_kind_required"
     if vina is not None and kind != "ligand" and vina.blocker is None:
@@ -637,6 +654,8 @@ def screen_generation(
         "samples": samples,
         "requested_class": "requested_clear",
     }
+    if selection_record is not None:
+        record["method_selection"] = selection_record
     if affinity is not None:
         record["prodigy_affinity"] = affinity.as_record()
     if vina is not None:
@@ -669,17 +688,26 @@ def screen_generation(
     # nothing: the scales are not comparable and no published threshold spans
     # them. Native Protein-Sol reports carry per-sequence predictions separately.
     # The sequence AGGRESCAN is on the modality report.
-    record["solubility"] = read_solubility(output_dir)
-    protein_sol = read_protein_sol(output_dir, chains)
+    record["solubility"] = read_solubility(output_dir) if "solubility" in active else {
+        "solubility_blocker": "not_selected_or_inapplicable"
+    }
+    protein_sol = read_protein_sol(output_dir, chains) if "protein_sol" in active else None
     if protein_sol is not None:
         record["protein_sol"] = protein_sol
     synthesis = _synthesis_block(binder_kind, chains)
     if synthesis is not None:
         record["synthesis"] = synthesis
-    ligand_alerts = _ligand_alerts_block(output_dir)
+    ligand_alerts = None
+    if "ligand_alerts" in active:
+        if selection_record is not None and (output_dir / "ligand_candidates.tsv").is_file():
+            from rfproteina.disease import screen_assays
+
+            ligand_alerts = screen_assays.safe_measure(output_dir, "ligand_alerts", None)
+        else:
+            ligand_alerts = _ligand_alerts_block(output_dir)
     if ligand_alerts is not None:
         record["ligand_alerts"] = ligand_alerts
-    if kind == "ligand":
+    if kind == "ligand" and "ligand_solubility" in active:
         from rfproteina.disease.ligand_solubility import screen_run
 
         ligand_solubility = screen_run(output_dir)
@@ -687,10 +715,13 @@ def screen_generation(
             record["ligand_solubility"] = ligand_solubility
     from rfproteina.disease import ligand_metabolites, qupkake
 
-    pka = qupkake.screen_run(output_dir, kind=kind)
+    pka = (qupkake.screen_run(output_dir, kind=kind, use_defaults=selection_record is not None)
+           if "qupkake" in active else None)
     if pka is not None:
         record["qupkake"] = pka
-    metabolites = ligand_metabolites.screen_run(output_dir, kind=kind)
+    metabolites = ligand_metabolites.screen_run(
+        output_dir, kind=kind, use_defaults=selection_record is not None
+    ) if "sygma" in active else None
     if metabolites is not None:
         record["sygma"] = metabolites
     mhc_class_i = _mhc_class_i_block(binder_kind, chains, output_dir, class_i_scan)
@@ -709,6 +740,23 @@ def screen_generation(
     mismatch = _job_mismatch(output_dir, binder_kind, target_id)
     if mismatch is not None:
         record["job_mismatch"] = mismatch
+    if selection_record is not None:
+        from rfproteina.disease import screen_assays, screen_inventory, screen_physical
+
+        evidence = screen_inventory.Evidence(output_dir, None, record)
+        selection_record["recorded_evidence"] = {
+            c.method.key: evidence.coverage(screen_inventory.BY_KEY[c.method.key], include_values=True)
+            for c in choices if c.method.key in active and c.method.operation == "recorded_evidence"
+        }
+        selection_record["prepared_measurements"] = {
+            c.method.key: screen_assays.safe_measure(output_dir, c.method.key, None)
+            for c in choices if c.method.key in active and c.method.key in screen_assays.FILES
+            and c.method.operation != "recorded_evidence"
+        }
+        structures = screen_physical.Structures(output_dir)
+        selection_record["structure_measurements"] = {
+            key: structures.measure(key) for key in selected if key in active and key in screen_physical.METHODS
+        }
     text = scrubbed_json(record)
     # A re-screen overwrites the file outright, so the verdict it replaced left
     # no trace: a table dropped in afterwards could turn axis_hit into
@@ -939,7 +987,11 @@ def _complete_zstd_frames(module: object, handle: io.BufferedReader, expected: b
     return frame.eof and offset == len(expected)
 
 
-def _design_text(path: Path) -> str | None:
+class DesignTextBudgetError(ValueError):
+    """Interactive inspection reached its byte budget before the end of a structure."""
+
+
+def _design_text(path: Path, *, max_bytes: int | None = None) -> str | None:
     """CIF text, decompressed by the suffix the file carries.
 
     Used for a generated design and for a structure the user supplied, because
@@ -954,6 +1006,7 @@ def _design_text(path: Path) -> str | None:
     """
     name = path.name
     compressed = name.endswith((".zst", ".gz", ".gzip"))
+    limit = _DESIGN_TEXT_LIMIT if max_bytes is None else min(max_bytes, _DESIGN_TEXT_LIMIT)
     try:
         if name.endswith(".zst"):
             module = _zstandard()
@@ -963,12 +1016,15 @@ def _design_text(path: Path) -> str | None:
                 # ``stream_reader`` rather than ``decompress``, which demands an
                 # embedded content size that these writers do not always set.
                 with module.ZstdDecompressor().stream_reader(handle, read_across_frames=True, closefd=False) as reader:
-                    raw = reader.read(_DESIGN_TEXT_LIMIT + 1)
-                if len(raw) <= _DESIGN_TEXT_LIMIT and not _complete_zstd_frames(module, handle, raw):
+                    raw = reader.read(limit + 1)
+                if len(raw) <= limit and not _complete_zstd_frames(module, handle, raw):
                     return None
         elif name.endswith((".gz", ".gzip")):
             with gzip.open(path, "rb") as handle:
-                raw = handle.read(_DESIGN_TEXT_LIMIT + 1)
+                raw = handle.read(limit + 1)
+        elif max_bytes is not None:
+            with path.open("rb") as handle:
+                raw = handle.read(max_bytes + 1)
         else:
             # Read whole and unbounded, exactly as this did before compression
             # was understood at all. A plain file's size on disk is its size,
@@ -977,6 +1033,8 @@ def _design_text(path: Path) -> str | None:
             raw = path.read_bytes()
     except _read_errors():
         return None
+    if max_bytes is not None and len(raw) > max_bytes:
+        raise DesignTextBudgetError
     if compressed and len(raw) > _DESIGN_TEXT_LIMIT:
         # A compressed file's size on disk does not bound what it expands to, so
         # the bound is taken after. A design is one structure's coordinates, so
@@ -1545,9 +1603,19 @@ def generation_directories(directory: Path, *, limit: int | None = None) -> list
     return found
 
 
-def _is_generation_directory(directory: Path) -> bool:
-    """Whether a finished run left its designs or its metrics here."""
-    return _samples_root(directory).is_dir() or _metrics_path(directory) is not None
+def _is_generation_directory(directory: Path, *, follow_symlinks: bool = True) -> bool:
+    """Recognize a finished run by its sample directory or published metrics table."""
+    if follow_symlinks:
+        return _samples_root(directory).is_dir() or _metrics_path(directory) is not None
+    for name in ("inference_samples", "evaluation_samples"):
+        samples = directory / name
+        if not samples.is_symlink() and samples.is_dir():
+            return True
+    for relative in (_PRIMARY_METRICS, _REEVAL_METRICS, _EVALUATION_METRICS):
+        table = directory / relative
+        if not table.parent.is_symlink() and not table.is_symlink() and table.is_file():
+            return True
+    return False
 
 
 def label_for(directory: Path, current: Path) -> str:
@@ -3352,16 +3420,24 @@ def _ligand_alerts_block(output_dir: Path) -> dict[str, object] | None:
     probability is turned into a concentration (see
     ``rfproteina.disease.ligand_alerts``).
     """
-    first = _read_ligand_smiles(output_dir)
-    if not first:
+    from rfproteina.disease.ligand_inputs import read_run_smiles
+
+    path = output_dir / "ligand_smiles.txt"
+    try:
+        smiles = read_run_smiles(path)
+    except FileNotFoundError:
         return None
+    except (OSError, UnicodeError):
+        return {"ligand_alerts_blocker": "ligand_input_unreadable"}
+    except ValueError as error:
+        return {"ligand_alerts_blocker": str(error)}
     try:
         from rfproteina.disease.ligand_alerts import LigandUnreadableError, screen_smiles
         from rfproteina.disease.ligand_alerts import verdicts as ligand_verdicts
     except ImportError:  # pragma: no cover - module is in-tree
         return {"ligand_alerts_blocker": "module_unavailable"}
     try:
-        screened = screen_smiles(first)
+        screened = screen_smiles(smiles, nominated=True)
     except LigandUnreadableError as error:
         return {"ligand_alerts_blocker": str(error)}
     record = screened.as_record()
@@ -3480,15 +3556,17 @@ def _cif_text(path: Path) -> str | None:
     return _design_text(path)
 
 
-def _load_generated_structure(path: Path) -> object | None:
+def _load_generated_structure(path: Path, *, cif_text: str | None = None) -> object | None:
+    from io import StringIO
+
     import numpy as np
     from atomworks.io.utils.io_utils import load_any
-    from biotite import DeserializationError
+    from biotite import DeserializationError, InvalidFileError
 
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
-            loaded = load_any(path)
+            loaded = load_any(path) if cif_text is None else load_any(StringIO(cif_text), file_type="cif")
     # A file that cannot be parsed is an unreadable structure, which is what
     # this function already reports as None a few lines below for coordinates
     # it cannot use. Letting the exception escape instead aborted the entire
@@ -3497,7 +3575,7 @@ def _load_generated_structure(path: Path) -> object | None:
     # columns had different lengths. DeserializationError is named explicitly
     # because it derives straight from Exception, so none of the others cover
     # it.
-    except (DeserializationError, OSError, ValueError, KeyError, IndexError):
+    except (DeserializationError, InvalidFileError, OSError, ValueError, KeyError, IndexError):
         return None
     coord = getattr(loaded, "coord", None)
     if coord is not None and getattr(coord, "ndim", 0) == 3:

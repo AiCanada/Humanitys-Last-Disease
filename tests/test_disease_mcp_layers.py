@@ -72,6 +72,14 @@ def test_describe_architecture_names_the_three_layers(monkeypatch):
         "screen_directory",
         "read_verdict",
         "read_results",
+        "list_output_files",
+        "read_output_file",
+        "plan_validation",
+        "validate_output_files",
+        "save_validation_report",
+        "list_validation_reports",
+        "plan_screening",
+        "run_selected_screens",
         "declare_corpora",
     ]
     docking = next(item for item in layers["computational_backend"]["components"] if item["id"] == "docking")
@@ -588,6 +596,19 @@ def test_the_server_tool_list_matches_the_program():
     assert names[:4] == ["list_options", "run", "screen_directory", "read_verdict"]
     assert "not a cure" not in json.dumps(server._TOOLS) + server._INSTRUCTIONS
     assert "Do not shell out" in server._INSTRUCTIONS
+
+
+def test_results_reader_bounds_entries_in_one_directory(tmp_path, monkeypatch):
+    from rfproteina.disease import mcp_layers
+
+    monkeypatch.setattr(mcp_layers, "_DIRECTORY_ENTRY_LIMIT", 1)
+    (tmp_path / "one.job.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "two.job.json").write_text("{}", encoding="utf-8")
+    result = mcp_layers.read_results({"directory": str(tmp_path)})
+    assert result["complete"] is True
+    assert result["jobs"] == []
+    assert len(result["unreadable"]) == 1
+    assert "too many entries" in result["unreadable"][0]["error"]
 
 
 def _binder(example, **metrics):

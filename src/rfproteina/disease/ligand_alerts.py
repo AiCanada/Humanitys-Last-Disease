@@ -32,7 +32,14 @@ source of its cutoff and the descriptor used to calculate the value.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from functools import lru_cache
 from math import isfinite
+from typing import TYPE_CHECKING
+
+from rfproteina.disease.ligand_inputs import parse_nominated_smiles
+
+if TYPE_CHECKING:
+    from rdkit import Chem
 
 METHOD = "rdkit_filtercatalog_v2"
 
@@ -123,18 +130,35 @@ class LigandUnreadableError(Exception):
     """RDKit is missing, or the SMILES does not parse. Never guessed around."""
 
 
-def _catalog() -> tuple[object, tuple[str, ...]]:
+@lru_cache(maxsize=4)
+def _catalog(names: tuple[str, ...]) -> tuple[object, tuple[str, ...]]:
     from rdkit.Chem import FilterCatalog
 
     params = FilterCatalog.FilterCatalogParams()
     missing = []
-    for name in CATALOGUES:
+    for name in names:
         entry = getattr(FilterCatalog.FilterCatalogParams.FilterCatalogs, name, None)
-        if entry is None:  # pragma: no cover - depends on the RDKit build
+        if entry is None or not params.AddCatalog(entry):
             missing.append(name)
-            continue
-        params.AddCatalog(entry)
     return FilterCatalog.FilterCatalog(params), tuple(missing)
+
+
+def missing_catalogues() -> tuple[str, ...]:
+    """Check descriptor imports and catalogue registration without scoring a molecule."""
+    from rdkit.Chem import QED, Crippen, Descriptors
+
+    functions = (
+        Crippen.MolLogP,
+        Descriptors.MolWt,
+        Descriptors.TPSA,
+        Descriptors.NHOHCount,
+        Descriptors.NOCount,
+        Descriptors.NumRotatableBonds,
+        QED.qed,
+    )
+    if not all(map(callable, functions)):
+        raise ImportError("rdkit_descriptors_unavailable")
+    return _catalog(CATALOGUES)[1]
 
 
 def _sa_score(mol: object) -> tuple[float | None, str | None]:
@@ -150,23 +174,35 @@ def _sa_score(mol: object) -> tuple[float | None, str | None]:
         return None, f"sascorer_failed:{type(error).__name__}"
 
 
-def screen_smiles(smiles: str) -> LigandAlerts:
-    """Run the alert catalogues and the property set over one SMILES string."""
+def parse_molecule(smiles: str, *, nominated: bool) -> Chem.Mol:
+    """Read a complete molecular graph on the same hydrogen convention as the descriptors."""
     text = (smiles or "").strip()
     if not text:
         raise LigandUnreadableError("empty_smiles")
     try:
         from rdkit import Chem
-        from rdkit.Chem import QED, Crippen, Descriptors
     except ImportError as error:  # pragma: no cover - rdkit is pinned in pyproject
         raise LigandUnreadableError(f"rdkit_unavailable:{error}") from error
-    mol = Chem.MolFromSmiles(text)
+    try:
+        mol = parse_nominated_smiles(text, Chem, remove_hs=True) if nominated else Chem.MolFromSmiles(text)
+    except (ValueError, RuntimeError, OverflowError) as error:
+        raise LigandUnreadableError("smiles_unparsable") from error
     if mol is None:
         raise LigandUnreadableError("smiles_unparsable")
     if not mol.GetNumAtoms() or any(atom.GetAtomicNum() == 0 for atom in mol.GetAtoms()):
         raise LigandUnreadableError("smiles_incomplete_molecule")
+    return mol
 
-    catalog, missing = _catalog()
+
+def screen_smiles(smiles: str, *, nominated: bool = False) -> LigandAlerts:
+    """Run the alert catalogues and the property set over one SMILES string."""
+    mol = parse_molecule(smiles, nominated=nominated)
+    try:
+        from rdkit.Chem import QED, Crippen, Descriptors
+
+        catalog, missing = _catalog(CATALOGUES)
+    except (ImportError, OSError) as error:
+        raise LigandUnreadableError("rdkit_alert_provider_unavailable") from error
     hits: list[dict[str, str]] = []
     for match in catalog.GetMatches(mol):
         # FilterCatalogEntry has no HasProp, so the property list is asked for
@@ -182,7 +218,7 @@ def screen_smiles(smiles: str) -> LigandAlerts:
 
     sa_value, sa_reason = _sa_score(mol)
     return LigandAlerts(
-        smiles=text,
+        smiles=smiles.strip(),
         alerts=tuple(hits),
         mol_weight=float(Descriptors.MolWt(mol)),
         clogp=float(Crippen.MolLogP(mol)),

@@ -80,6 +80,26 @@ def test_a_missing_table_says_so(tmp_path: Path) -> None:
     assert read_solubility(new_folder(tmp_path, "run"))["solubility_blocker"] == "solubility_not_configured"
 
 
+def test_explicit_candidate_attribution_keeps_each_method_and_ignores_unrelated_rows(tmp_path):
+    header = "candidate_id\tscore\tmethod\tsource\tunit\n"
+    _table(tmp_path, header + "one\t0\tassay A\tstudy A\tmg/mL\none\t-2\tmodel B\tstudy B\tlogS\n"
+           "two\tbad\tassay A\tstudy A\tmg/mL\n")
+    report = read_solubility(tmp_path, candidate="one")
+    assert [(r["candidate_id"], r["score"], r["unit"]) for r in report["scores"]] == [
+        ("one", 0, "mg/mL"), ("one", -2, "logS")
+    ]
+    assert "one assay A 0 mg/mL" in solubility_phrase(report)
+    assert read_solubility(tmp_path)["solubility_blocker"] == "cell_unparsed"
+    assert read_solubility(tmp_path, candidate="other")["solubility_blocker"] == "solubility_candidate_missing"
+    _table(tmp_path, _GOOD)
+    assert read_solubility(tmp_path, candidate="one")["solubility_blocker"] == "solubility_run_only"
+
+
+def test_duplicate_identity_headers_cannot_assign_an_observation(tmp_path):
+    _table(tmp_path, "candidate_id\tcandidate id\tscore\tmethod\tsource\none\ttwo\t1\tmethod\tsource\n")
+    assert read_solubility(tmp_path, candidate="two")["solubility_blocker"] == "solubility_unreadable"
+
+
 @pytest.mark.parametrize("fields,values", [
     ("score,value", "0.000019,0.000011"), ("score,value", "0.7,bad"), ("method,tool", "CamSol,A3D"),
 ])

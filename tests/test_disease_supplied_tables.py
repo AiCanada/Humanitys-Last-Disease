@@ -233,6 +233,9 @@ def test_an_empty_coevolution_table_is_not_a_note(tmp_path: Path) -> None:
     (tmp_path / "paralog_coevolution.tsv").write_text("same_shape\tcoevolution\ttoxicity\n", encoding="utf-8")
     record = read_paralog_coevolution(tmp_path)
     assert record == {"coevolution_blocker": "coevolution_not_reported"}
+    assembled = measure_target_liability("P05113", directory=tmp_path)["paralog"]
+    assert assembled["coevolution_blocker"] == "coevolution_not_reported"
+    assert assembled["human_toxicity_state"] == "untested"
 
 
 def test_a_non_toxic_coevolution_note_does_not_clear_the_paralog_axis(tmp_path: Path) -> None:

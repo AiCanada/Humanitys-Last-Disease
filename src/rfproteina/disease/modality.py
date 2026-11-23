@@ -519,6 +519,44 @@ def _is_ligand_component(row: Mapping[str, str]) -> bool:
     return name not in _WATER
 
 
+def identified_component_weight(components: Sequence[Mapping[str, str]]) -> dict:
+    """Return a formula weight for one named non-water component, with its source and any disagreement."""
+    rows = [row for row in components if _is_ligand_component(row)]
+    if len(rows) != 1:
+        return {}
+    row = rows[0]
+    record = _ligand(rows)
+    if not record or "component_id" not in record:
+        return {}
+    derived = "formula_weight_source" in record
+    result = {
+        "component_id": record["component_id"],
+        "formula_weight_Da": record["formula_weight"],
+        "formula_weight_source": _WEIGHT_SOURCE if derived else "_chem_comp.formula_weight",
+    }
+    reported = _cell(row, "_chem_comp.formula_weight")
+    formula = _cell(row, "_chem_comp.formula")
+    if reported in {"", ".", "?"} or formula in {"", ".", "?"}:
+        return result
+    if derived:
+        result["input_warning"] = "invalid_supplied_formula_weight"
+        return result
+    mass = _mass_from_formula(formula)
+    if mass is None:
+        result["input_warning"] = "formula_not_interpretable"
+        return result
+    # The formula calculation reports three decimal places. Compare at the less precise scale.
+    stated = Decimal(reported)
+    quantum = Decimal(1).scaleb(max(-3, stated.as_tuple().exponent))
+    try:
+        agrees = stated.quantize(quantum, ROUND_HALF_UP) == Decimal(str(mass)).quantize(quantum, ROUND_HALF_UP)
+    except InvalidOperation:
+        agrees = False
+    if not agrees:
+        result.update(input_warning="formula_weights_disagree", calculated_formula_weight_Da=mass)
+    return result
+
+
 def _formula_weight(row: Mapping[str, str]) -> float | None:
     text = _cell(row, "_chem_comp.formula_weight")
     if text in {"", ".", "?"}:
@@ -529,7 +567,8 @@ def _formula_weight(row: Mapping[str, str]) -> float | None:
         return None
     if not math.isfinite(number) or number <= 0:
         return None
-    return float(f"{number:.4f}")
+    rounded = float(f"{number:.4f}")
+    return rounded if rounded > 0 else None
 
 
 def _mass_from_formula(formula: str) -> float | None:

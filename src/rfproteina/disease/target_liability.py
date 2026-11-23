@@ -199,6 +199,7 @@ def measure_target_liability(
     # state, measurement, or blocker, including on a lookup that was not asked.
     paralog = dict(ordered["paralog"])
     paralog.update(read_paralog_coevolution(directory))
+    paralog["human_toxicity_state"] = "untested"
     ordered["paralog"] = paralog
     return ordered
 

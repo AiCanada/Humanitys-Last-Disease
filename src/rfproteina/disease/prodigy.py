@@ -26,6 +26,7 @@ _ENDPOINT = "protein_protein_binding_delta_g"
 PARTNERS_FILE = "prodigy_partners.json"
 _WORKER = "rfproteina.disease.prodigy"
 _CHAIN_ALPHABET = string.ascii_letters + string.digits
+_CONTACT_DISTANCE = 5.5  # PRODIGY's interpartner heavy-atom contact radius in angstroms.
 
 
 class AffinityInputError(ValueError):
@@ -343,18 +344,36 @@ def _prepare(model: Model, request: Partners) -> tuple[Model, list[str], dict]:
     return pair, groups, counts
 
 
-def _calculate(text: str, fmt: str, request: Partners) -> dict:
+def prepared_pair(text: str, fmt: str, request: Partners) -> tuple[Model, list[str], dict, int]:
+    """Resolve the requested model and both complete protein partners without evaluating affinity."""
     from Bio.PDB.PDBExceptions import PDBConstructionException
-    from prodigy_prot.modules.prodigy import Prodigy
 
     try:
         model, index = _structure(text, fmt, request)
     except PDBConstructionException as error:
         raise AffinityInputError("structure_unreadable") from error
     pair, groups, counts = _prepare(model, request)
+    return pair, groups, counts, index
+
+
+def verify_interface(text: str, request: Partners) -> None:
+    """Check one interpartner contact without enumerating contacts or calculating surface areas."""
+    from Bio.PDB.NeighborSearch import NeighborSearch
+
+    pair, groups, _, _ = prepared_pair(text, "cif", request)
+    left, right = ([atom for label in group.split(",") for atom in pair[label].get_atoms()] for group in groups)
+    neighbours = NeighborSearch(right)
+    if not any(neighbours.search(atom.coord, _CONTACT_DISTANCE) for atom in left):
+        raise AffinityInputError("no_interpartner_contacts")
+
+
+def _calculate(text: str, fmt: str, request: Partners) -> dict:
+    from prodigy_prot.modules.prodigy import Prodigy
+
+    pair, groups, counts, index = prepared_pair(text, fmt, request)
     predictor = Prodigy(pair, selection=groups, temp=request.temperature_c)
     try:
-        predictor.predict()
+        predictor.predict(distance_cutoff=_CONTACT_DISTANCE)
     except ValueError as error:
         if str(error) == "No contacts found for selection":
             raise AffinityInputError("no_interpartner_contacts") from error

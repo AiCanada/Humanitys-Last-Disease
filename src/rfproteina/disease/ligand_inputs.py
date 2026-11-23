@@ -3,13 +3,87 @@
 from __future__ import annotations
 
 import csv
-from collections.abc import Iterator
+import json
+from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from rdkit import Chem
+
+
+def nominated_rows(rows: Iterable[Sequence[str]], candidate: str | None) -> Iterator[Sequence[str]]:
+    """Keep all rows for an explicit nomination so duplicate IDs still fail in the scientific reader."""
+    return (row for row in rows if candidate is None or (row and row[0] == candidate))
+
+
+def manifest_options(directory: Path, name: str) -> tuple[dict, bool]:
+    """Read a molecular screen's settings and preserve whether the experiment requested it."""
+    path = directory / name
+    if not path.exists() and not path.is_symlink():
+        sdf = directory / "ligand_candidates.sdf"
+        return {"input": "sdf" if sdf.exists() or sdf.is_symlink() else "smiles"}, False
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("invalid_molecular_manifest")
+    limit = 4 * 1024 * 1024
+    with path.open("rb") as stream:
+        raw = stream.read(limit + 1)
+    if len(raw) > limit:
+        raise ValueError("molecular_manifest_too_large")
+
+    def unique(pairs: list) -> dict:
+        result = dict(pairs)
+        if len(result) != len(pairs):
+            raise ValueError("duplicate_setting")
+        return result
+
+    options = json.loads(raw.decode("utf-8-sig"), object_pairs_hook=unique)
+    if not isinstance(options, dict) or options.get("input", "smiles") not in ("sdf", "smiles"):
+        raise ValueError("invalid_molecular_manifest")
+    return options, True
+
+
+def nominated_inputs(
+    directory: Path, mode: str, candidate: str | None, *, max_bytes: int | None = None
+) -> tuple[str, list[Sequence[str]], str | None]:
+    """Read the selected molecular source, with candidate attribution and an optional planning budget."""
+    if mode == "sdf":
+        scope, path = "sdf", directory / "ligand_candidates.sdf"
+    else:
+        table = directory / "ligand_candidates.tsv"
+        scope = "candidate_table" if table.exists() or table.is_symlink() else "run_ligand"
+        path = table if scope == "candidate_table" else directory / "ligand_smiles.txt"
+    if path.is_symlink() or not path.is_file():
+        return scope, [], "sdf_input_unreadable" if mode == "sdf" else "ligand_input_missing"
+    if candidate is not None and scope == "run_ligand":
+        return scope, [], "candidate_requires_named_nomination"
+    if max_bytes is not None and path.stat().st_size > max_bytes:
+        return scope, [], "ligand_input_exceeds_interactive_size"
+    if mode == "sdf":
+        try:
+            return scope, list(nominated_rows(read_sdf_candidates(path), candidate)), None
+        except OSError:
+            return scope, [], "sdf_input_unreadable"
+    scope, rows, blocker = read_smiles_candidates(directory)
+    if blocker or rows is None:
+        return scope, [], blocker or "ligand_input_missing"
+    if candidate is not None and scope != "candidate_table":
+        return scope, [], "candidate_requires_named_nomination"
+    return scope, list(nominated_rows(rows, candidate)), None
+
+
+def read_run_smiles(path: Path) -> str:
+    """Read exactly one run-level .smi record, optionally followed by its title."""
+    with path.open(encoding="utf-8-sig") as stream:
+        lines = (s.strip() for s in stream if s.strip())
+        first = next(lines, None)
+        if first is None or next(lines, None) is not None:
+            raise ValueError("expected_one_run_ligand")
+    fields = first.split(maxsplit=1)
+    if len(fields) > 1 and fields[1].startswith("|"):
+        raise ValueError("unsupported_extended_smiles")
+    return fields[0]
 
 
 def read_smiles_candidates(directory: Path) -> tuple[str, list[tuple[str, ...]] | None, str | None]:
@@ -28,14 +102,7 @@ def read_smiles_candidates(directory: Path) -> tuple[str, list[tuple[str, ...]] 
                     raise ValueError("invalid_candidate_table_header")
                 candidates = [tuple(cell.strip() for cell in row) for row in reader if row]
         else:
-            lines = [s.strip() for s in path.read_text(encoding="utf-8-sig").splitlines() if s.strip()]
-            if len(lines) != 1:
-                raise ValueError("expected_one_run_ligand")
-            # Legacy .smi format permits a title following the structure.
-            smiles = lines[0].split(maxsplit=1)
-            if len(smiles) > 1 and smiles[1].startswith("|"):
-                raise ValueError("unsupported_extended_smiles")
-            candidates = [("run_ligand", smiles[0])]
+            candidates = [("run_ligand", read_run_smiles(path))]
     except (OSError, UnicodeError, csv.Error):
         return scope, [], "ligand_input_unreadable"
     except ValueError as error:
@@ -43,11 +110,12 @@ def read_smiles_candidates(directory: Path) -> tuple[str, list[tuple[str, ...]] 
     return scope, candidates, None
 
 
-def parse_nominated_smiles(value: str, chem: ModuleType) -> Chem.Mol | None:
+def parse_nominated_smiles(value: str, chem: ModuleType, *, remove_hs: bool = False) -> Chem.Mol | None:
     if not value or not value.isascii() or not value.isprintable() or " " in value or "|" in value:
         return None
     options = chem.SmilesParserParams()
-    options.removeHs = options.parseName = options.allowCXSMILES = False
+    options.removeHs = remove_hs
+    options.parseName = options.allowCXSMILES = False
     return chem.MolFromSmiles(value, options)
 
 

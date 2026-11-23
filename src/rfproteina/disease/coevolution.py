@@ -135,7 +135,10 @@ def read_paralog_coevolution(directory: Path) -> dict[str, object]:
     :data:`COEVOLUTION_ROW_LIMIT` is withheld whole. The returned keys never
     include ``state``, ``measurement``, or ``blocker``.
     """
-    return {"human_toxicity_state": "untested", **_read_study_table(directory)}
+    note = _read_study_table(directory)
+    if note.keys() != {"coevolution_blocker"}:
+        note["human_toxicity_state"] = "untested"
+    return note
 
 
 def _read_study_table(directory: Path) -> dict[str, object]:

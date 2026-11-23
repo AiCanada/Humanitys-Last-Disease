@@ -132,3 +132,51 @@ def test_partial_checkpoint_install_is_rejected_before_loading(tmp_path: Path, m
         (directory / f"model_{i}.pt").write_bytes(b"")
     with pytest.raises(sol.SolubilityError, match="incomplete_or_unrecognized_regression_ensemble"):
         sol._model()
+
+
+def test_picker_verifies_checkpoint_bytes_and_endpoint_units_without_loading_models(tmp_path, monkeypatch):
+    import base64
+    import csv
+    import hashlib
+    from importlib.metadata import PathDistribution
+
+    from rfproteina.disease.screen_selection import installations
+
+    info = tmp_path / "admet_ai-2.0.1.dist-info"
+    info.mkdir()
+    (info / "METADATA").write_text("Metadata-Version: 2.1\nName: admet-ai\nVersion: 2.0.1\n")
+    root = tmp_path / "admet_ai/resources"
+    members = root / "models/admet_regression"
+    members.mkdir(parents=True)
+    paths = [members / f"model_{i}.pt" for i in range(5)]
+    for path in paths:
+        path.write_bytes(b"weight fixture")
+    endpoint = root / "data/admet.csv"
+    endpoint.parent.mkdir()
+    endpoint.write_text("id,task_type,units\nSolubility_AqSolDB,regression,log(mol/L)\n")
+
+    def record():
+        with (info / "RECORD").open("w", newline="") as target:
+            writer = csv.writer(target)
+            for path in [*paths, endpoint]:
+                data = path.read_bytes()
+                digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).decode().rstrip("=")
+                writer.writerow([path.relative_to(tmp_path).as_posix(), f"sha256={digest}", len(data)])
+
+    record()
+    monkeypatch.setattr(sol.metadata, "distribution", lambda name: PathDistribution(info))
+    monkeypatch.setattr(sol, "_model", lambda: pytest.fail("picker loaded a model"))
+    sol.verified_assets()
+    paths[0].write_bytes(b"broken fixture")
+    assert not installations({"ligand_solubility"})["ligand_solubility"]
+    endpoint.write_text("id,task_type,units\nSolubility_AqSolDB,regression,mg/L\n")
+    record()
+    with pytest.raises(sol.SolubilityError, match="endpoint_definition_mismatch"):
+        sol.verified_assets()
+
+
+def test_a_run_level_molecule_cannot_impersonate_a_candidate_named_run_ligand(tmp_path, monkeypatch):
+    (tmp_path / "ligand_smiles.txt").write_text("CCO ethanol\n")
+    monkeypatch.setattr(sol, "_local_predictions", lambda *args: pytest.fail("unattributed molecule reached inference"))
+    blocked = sol.screen_run(tmp_path, candidate="run_ligand")
+    assert blocked["status"] == "untested" and blocked["blocker"] == "candidate_requires_named_nomination"

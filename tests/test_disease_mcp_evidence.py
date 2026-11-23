@@ -267,16 +267,21 @@ def test_two_runs_under_home_are_not_the_same_directory(tmp_path):
 def test_only_a_leading_personal_prefix_is_removed_from_a_path(monkeypatch, tmp_path):
     from rfproteina.disease.publish import scrub_for_upload, scrub_path_prefix
 
-    assert scrub_path_prefix("/home/alice/runs/gene_1ABC_1") == "<home>/runs/gene_1ABC_1"
-    assert scrub_path_prefix("/mnt/c/Users/alice/runs") == "<home>/runs"
-    assert scrub_path_prefix("C:\\Users\\alice\\runs") == "<home>\\runs"
-    assert scrub_path_prefix("/data/home/alice/gene_1ABC_1") == "/data/home/alice/gene_1ABC_1"
+    profile = tmp_path.name
+    posix_home = "/".join(("", "home", profile))
+    wsl_home = "/".join(("", "mnt", "c", "Users", profile))
+    windows_home = "\\".join(("C:", "Users", profile))
+    assert scrub_path_prefix(f"{posix_home}/runs/gene_1ABC_1") == "<home>/runs/gene_1ABC_1"
+    assert scrub_path_prefix(f"{wsl_home}/runs") == "<home>/runs"
+    assert scrub_path_prefix(windows_home + "\\runs") == "<home>\\runs"
+    nested = f"/data{posix_home}/gene_1ABC_1"
+    assert scrub_path_prefix(nested) == nested
     assert scrub_path_prefix("disease_runs/gene_1ABC_1") == "disease_runs/gene_1ABC_1"
     monkeypatch.setenv("HOME", str(tmp_path / "ann"))
     assert scrub_path_prefix(str(tmp_path / "ann" / "runs")) == "<home>/runs"
     assert scrub_path_prefix(str(tmp_path / "anna" / "runs")) == str(tmp_path / "anna" / "runs")
     # Free text is still scrubbed wherever the path sits in it.
-    assert scrub_for_upload("see /data/home/alice/x") == "see /data<home>/x"
+    assert scrub_for_upload(f"see /data{posix_home}/x") == "see /data<home>/x"
 
 
 def test_a_relative_path_cannot_leave_the_checkout(monkeypatch):
@@ -539,6 +544,19 @@ def test_screen_directory_can_name_the_bar(tmp_path, monkeypatch):
     declared = {str(item["name"]): item for item in _server()._TOOLS}["screen_directory"]["inputSchema"]
     assert set(declared["properties"]) == set(mcp_api.SCREEN_FIELDS)
     assert declared["properties"]["bar"]["type"] == "string"
+
+
+def test_screen_directory_forwards_every_screen_only_control(tmp_path, monkeypatch):
+    from rfproteina.disease import mcp_api
+
+    run = _screen_in(tmp_path / "gene_1ABC_1", _PLAIN)
+    calls = _quiet(monkeypatch)
+    mcp_api.screen_directory(
+        {"directory": str(run), "stage_tables": True, "paralog_identity_max": 72.5}
+    )
+    argv = calls[0]
+    assert "--stage-tables" in argv
+    assert argv[argv.index("--paralog-identity-max") + 1] == "72.5"
 
 
 def test_written_is_what_this_call_wrote_and_changed_is_whether_the_bytes_moved(tmp_path, monkeypatch):

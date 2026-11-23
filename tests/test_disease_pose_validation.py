@@ -68,6 +68,31 @@ def test_read_ligand_refuses_mol_without_conformer():
         pv.read_ligand(flat)
 
 
+def test_picker_checks_real_pose_inputs_without_running_posebusters(tmp_path, monkeypatch):
+    from rfproteina.disease import screen_selection
+
+    monkeypatch.setattr(pv, "run_posebusters", lambda *_: pytest.fail("The picker ran PoseBusters"))
+    pose = _ethanol()
+    pose.SetProp("_Name", "ethanol")
+    content = Chem.MolToMolBlock(pose) + "$$$$\n"
+    drawing = Chem.MolFromSmiles("CCO")
+    drawing.SetProp("_Name", "drawing")
+    path = tmp_path / "ligand_candidates.sdf"
+    path.write_text(content)
+
+    def state(candidate=None):
+        choice, = screen_selection.plan(tmp_path, "ligand", example=candidate, available={"posebusters": True})
+        return choice.applicable, choice.recommended
+
+    assert state() == (True, True)
+    path.write_text(content + Chem.MolToMolBlock(drawing) + "$$$$\n")
+    assert state() == (True, False)
+    assert state("ethanol") == (True, True)
+    assert state("drawing") == (False, False)
+    path.write_text(content + content)
+    assert state() == (False, False)
+
+
 def test_protein_clashes_counts_overlap_and_zero_when_far(tmp_path):
     mol = _ethanol()
     conf = mol.GetConformer()

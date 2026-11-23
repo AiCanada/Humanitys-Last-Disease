@@ -185,6 +185,20 @@ def run_posebusters(mol: Mol, protein_path: str | Path | None = None) -> tuple[s
     return pose_checks(mol, receptor)
 
 
+def read_nominated_pose(structure: str, problem: str) -> Mol:
+    """Read a single nominated SDF pose with its supplied coordinates and atom identities."""
+    from rdkit import Chem
+
+    if problem:
+        raise PoseUnreadableError(problem)
+    mol = Chem.MolFromMolBlock(structure, removeHs=False, strictParsing=True)
+    if mol is None:
+        raise PoseUnreadableError("ligand_unparsable")
+    if any(a.GetAtomicNum() == 0 or a.HasQuery() for a in mol.GetAtoms()) or any(b.HasQuery() for b in mol.GetBonds()):
+        raise PoseUnreadableError("ligand_contains_query_or_dummy")
+    return read_ligand(mol)
+
+
 def _failure_count(mode: str, checks: dict[str, bool | None], reason: str | None) -> tuple[int | None, str | None]:
     if mode == "unavailable":
         return None, "posebusters_unavailable"

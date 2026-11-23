@@ -109,6 +109,7 @@ from rfproteina.disease.screen import (
     sample_cifs,
     screen_generation,
 )
+from rfproteina.disease.screen_selection import installation_batch
 from rfproteina.disease.shards import model_checkpoint, shard_for_hosts
 from rfproteina.disease.sources import (
     MAX_ASSOCIATIONS,
@@ -445,15 +446,33 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     mode = parser.add_mutually_exclusive_group()
+    from rfproteina.disease.screen_selection import METHOD_IDS
+
+    parser.add_argument(
+        "--screen-selection", choices=("recommended", "all_installed", "explicit"),
+        help="Choose the supplemental methods for each finished run. Explicit uses only --screen-method entries.",
+    )
+    parser.add_argument(
+        "--screen-method", dest="screen_methods", action="append", choices=METHOD_IDS,
+        help="Select an installed supplemental method. Repeat for additional methods.",
+    )
     mode.add_argument(
         "--screen",
         type=Path,
         metavar="DIR",
         help=(
             "Re-screen a finished generation directory, or every one beneath "
-            "it, reading whatever liability tables are now present. Nothing is "
-            "generated, downloaded or started."
+            "it, reading the supplied liability tables. A prodigy_partners.json "
+            "file requests a local protein-pair affinity screen. On a protein run, "
+            "tnp_domains.json requests a local developability profile for each nominated VHH."
         ),
+    )
+    mode.add_argument(
+        "--validate-output",
+        type=Path,
+        action="append",
+        metavar="DIR",
+        help="Open file and evidence validation for existing run directories. Repeat to add another run.",
     )
     mode.add_argument(
         "--dynamics",
@@ -809,6 +828,16 @@ def _run(
             print(str(exc), file=sys.stderr)
             return 2
     selected = build_parser().parse_args(incoming)
+    if selected.screen_methods and selected.screen_selection not in {None, "explicit"}:
+        _fail("Choose individual screen methods or a screening preset.")
+        return 2
+    if selected.validate_output is not None:
+        if any(not path.is_dir() for path in selected.validate_output):
+            _fail("Each --validate-output value must name an existing run directory.")
+            return 2
+        panel.note_validation_runs(tuple(path.resolve() for path in selected.validate_output), open_panel=True)
+        return 0
+
     if selected.declare_corpora:
         # A declaration of what the models were fitted on. Reads nothing and
         # contacts nothing, so it runs before every part of the pipeline that
@@ -1363,6 +1392,13 @@ def _run(
         follow_up=bool(args.follow_up),
         lookup_targets=bool(args.lookup_targets),
         stage_tables=bool(args.stage_tables),
+        screen_selection=args.screen_selection or ("explicit" if args.screen_methods else "recommended"),
+        screen_methods=args.screen_methods or (),
+        choose_screens=(
+            panel.choose_screens
+            if panel.browser_open() and not (args.screen_selection or args.screen_methods)
+            else None
+        ),
         disease_query=query,
         focus=focus,
         search=search_trace(
@@ -1374,6 +1410,14 @@ def _run(
     )
     panel.note_closing(lines, screens)
     panel.note_structures(trios)
+    if panel.browser_open() and len(results) == len(requests):
+        panel.note_validation_runs(
+            [
+                directory
+                for result, request in zip(results, requests, strict=True)
+                if result.returncode == 0 and (directory := _output_dir(request)) is not None and directory.is_dir()
+            ]
+        )
     if any(result.returncode != 0 for result in results):
         print("Generation failed.")
         return 1
@@ -1690,6 +1734,7 @@ def _write_jobs(
     return ready
 
 
+@installation_batch()
 def _save_finished_generations(
     results: list[RunResult],
     requests: list[GenerationRequest],
@@ -1704,6 +1749,9 @@ def _save_finished_generations(
     follow_up: bool = False,
     lookup_targets: bool = False,
     stage_tables: bool = False,
+    screen_selection: str | None = None,
+    screen_methods: Sequence[str] = (),
+    choose_screens: Callable[[Path, str], Sequence[str]] | None = None,
     disease_query: str = "",
     focus: BiologicalFocus | None = None,
     search: SearchTrace | None = None,
@@ -1739,6 +1787,7 @@ def _save_finished_generations(
             # Before the screen, not after: the screen reads what is on disk
             # when it runs.
             _stage_screen_tables(output_dir, disease.name, option.accession)
+        methods = choose_screens(output_dir, binder_kind) if choose_screens is not None else screen_methods
         screen = _record_screen(
             output_dir,
             binder_kind,
@@ -1746,6 +1795,8 @@ def _save_finished_generations(
             proteome=proteome,
             read_json=reader,
             limits=limits,
+            screen_selection="explicit" if choose_screens is not None else screen_selection,
+            screen_methods=methods,
         )
         trios.extend(structure_trios(output_dir, entry_id=option.entry_id, chain=option.chain))
         write_research_traces(
@@ -2198,6 +2249,8 @@ def _screen_one(
             proteome=_resolve_proteome(args),
             read_json=reader,
             limits=limits,
+            screen_selection=args.screen_selection or ("explicit" if args.screen_methods else "recommended"),
+            screen_methods=args.screen_methods or (),
         )
     except (HTTPException, LookupMissError, OSError, ValueError) as exc:
         print(f"Screen was not written for {shown}: {exc}")
@@ -2253,7 +2306,7 @@ def _follow_up_leaf(run: Path, label: str) -> str:
     return f"{run.name}-{digest}"
 
 
-def _screened_identity(run: Path, incoming: list[str]) -> tuple[str | None, str]:
+def _screened_identity(run: Path, incoming: list[str], *, regular_files_only: bool = False) -> tuple[str | None, str]:
     """The binder kind and target for a finished run, from the files beside it.
 
     ``generation.json`` is preferred over the job file: the archive wrote it
@@ -2271,6 +2324,11 @@ def _screened_identity(run: Path, incoming: list[str]) -> tuple[str | None, str]
     for source in (run / "generation.json", job_file_for_directory(run)):
         if source is None or not source.is_file():
             continue
+        if regular_files_only:
+            from rfproteina.disease.screen_inventory import Evidence
+
+            if not Evidence.safe_table(source):
+                continue
         try:
             payload = json.loads(source.read_text(encoding="utf-8"))
         # RecursionError is listed on purpose and is not covered by the others:
@@ -2415,7 +2473,7 @@ def _absolute_path(value: str) -> bool:
 
     Accepting the other platform's spelling as well looked free and was not.
     ``_portable_path`` resolves what it is handed, and a value this platform
-    cannot read as absolute -- ``C:\\Users\\name\\runs`` under WSL -- was joined
+    cannot read as absolute, such as a Windows drive path under WSL, was joined
     onto the working directory instead, so the stored token came out as a
     different non-path from every directory the program might be run from.
     Left alone it stays exactly what the caller wrote, and the free-text
@@ -2563,6 +2621,8 @@ def _record_screen(
     read_json: ReadJson | None = None,
     limits: TargetLimits | None = None,
     lookup_targets: bool = False,
+    screen_selection: str | None = None,
+    screen_methods: Sequence[str] = (),
 ) -> dict[str, object] | None:
     """Write the measured screen. A read or write error skips that screen only.
 
@@ -2606,6 +2666,8 @@ def _record_screen(
             target_id=option.accession,
             proteome=proteome,
             read_json=reader,
+            screen_selection=screen_selection,
+            screen_methods=screen_methods,
             limits=limits,
         )
     except (HTTPException, LookupMissError, OSError, ValueError) as exc:

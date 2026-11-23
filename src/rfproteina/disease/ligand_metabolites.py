@@ -14,7 +14,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rfproteina.disease.corpus_provenance import declare
-from rfproteina.disease.ligand_inputs import parse_nominated_smiles, read_sdf_candidates, read_smiles_candidates
+from rfproteina.disease.ligand_inputs import (
+    manifest_options,
+    nominated_inputs,
+    parse_nominated_smiles,
+    read_sdf_candidates,
+)
 from rfproteina.disease.sygma_engine import ENDPOINT, METHOD, RULE_HASHES, ScreenError, scenario_valid, structure_id
 
 if TYPE_CHECKING:
@@ -176,26 +181,19 @@ def _run(smiles: str, phase1: int, phase2: int) -> dict:
         return {**failure, "blocker": "sygma_worker_failed"}
 
 
-def profile(
-    candidates: Iterable[Sequence[str]], *, phase1: int = 1, phase2: int = 1, source: str = "smiles", sdf: bool = False
-) -> dict:
-    report = _base(source, phase1, phase2)
-    rows = list(candidates)
-    report["attempted"] = len(rows)
-    if not scenario_valid(phase1, phase2):
-        return {**report, "blocker": "invalid_sygma_scenario"}
-    if not rows:
-        return {**report, "blocker": "no_candidates"}
+def prepare_parents(rows: Sequence[Sequence[str]], *, sdf: bool) -> tuple[list[dict], dict[str, str]]:
+    """Validate nominations and identify distinct parent graphs without enumerating metabolites."""
     try:
         from rdkit import Chem
     except (ImportError, OSError):
         Chem = None
     names = [r[0] if r and r[0] else (f"sdf_{i}" if sdf else "") for i, r in enumerate(rows, 1)]
     counts = Counter(names)
+    inputs = []
     parents = {}
     for name, row in zip(names, rows, strict=True):
         item = {"candidate_id": name}
-        report["inputs"].append(item)
+        inputs.append(item)
         try:
             if len(row) != (3 if sdf else 2):
                 raise ScreenError("invalid_candidate_table_width")
@@ -220,7 +218,21 @@ def profile(
         key = structure_id(smiles)
         item["compound_id"] = key
         parents[key] = smiles
-    report["unique_parents"] = len(parents)
+    return inputs, parents
+
+
+def profile(
+    candidates: Iterable[Sequence[str]], *, phase1: int = 1, phase2: int = 1, source: str = "smiles", sdf: bool = False
+) -> dict:
+    report = _base(source, phase1, phase2)
+    rows = list(candidates)
+    report["attempted"] = len(rows)
+    if not scenario_valid(phase1, phase2):
+        return {**report, "blocker": "invalid_sygma_scenario"}
+    if not rows:
+        return {**report, "blocker": "no_candidates"}
+    inputs, parents = prepare_parents(rows, sdf=sdf)
+    report.update(inputs=inputs, unique_parents=len(parents))
     if not parents:
         return {**report, "blocker": "no_usable_candidates"}
     for key, smiles in parents.items():
@@ -252,32 +264,24 @@ def profile_sdf(path: Path, *, phase1: int = 1, phase2: int = 1) -> dict:
         return {**_base("sdf", phase1, phase2), "blocker": "sdf_input_unreadable"}
 
 
-def _settings(pairs: list) -> dict:
-    value = dict(pairs)
-    if len(value) != len(pairs):
-        raise ValueError("duplicate setting")
-    return value
+def settings_for(directory: Path) -> tuple[int, int, str, bool]:
+    options, configured = manifest_options(directory, MANIFEST)
+    phase1, phase2 = options.get("phase1_cycles", 1), options.get("phase2_cycles", 1)
+    if options.keys() - {"input", "phase1_cycles", "phase2_cycles"} or not scenario_valid(phase1, phase2):
+        raise ValueError("invalid_sygma_manifest")
+    return phase1, phase2, options.get("input", "smiles"), configured
 
 
-def screen_run(directory: Path, *, kind: str) -> dict | None:
-    manifest = directory / MANIFEST
-    if not manifest.exists() and not manifest.is_symlink():
-        return None
+def screen_run(directory: Path, *, kind: str, candidate: str | None = None, use_defaults: bool = False) -> dict | None:
     try:
-        options = json.loads(manifest.read_text(encoding="utf-8-sig"), object_pairs_hook=_settings)
-        if not isinstance(options, dict) or options.keys() - {"input", "phase1_cycles", "phase2_cycles"}:
-            raise ValueError("invalid settings")
-        source = options.get("input", "smiles")
-        p1, p2 = options.get("phase1_cycles", 1), options.get("phase2_cycles", 1)
-        if source not in ("sdf", "smiles") or not scenario_valid(p1, p2):
-            raise ValueError("invalid scenario")
+        p1, p2, source, configured = settings_for(directory)
     except (OSError, ValueError, RecursionError):
         return {**_base("unreadable_manifest", None, None), "blocker": "invalid_sygma_manifest"}
+    if not configured and not use_defaults:
+        return None
     if kind != "ligand":
         return {**_base(source, p1, p2), "blocker": "ligand_binder_kind_required"}
-    if source == "sdf":
-        return profile_sdf(directory / "ligand_candidates.sdf", phase1=p1, phase2=p2)
-    scope, rows, reason = read_smiles_candidates(directory)
-    if reason or rows is None:
-        return {**_base(scope, p1, p2), "blocker": reason or "ligand_input_missing"}
-    return profile(rows, source=scope, phase1=p1, phase2=p2)
+    scope, rows, reason = nominated_inputs(directory, source, candidate)
+    if reason:
+        return {**_base(scope, p1, p2), "blocker": reason}
+    return profile(rows, source=scope, sdf=source == "sdf", phase1=p1, phase2=p2)

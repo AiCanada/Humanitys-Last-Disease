@@ -5,8 +5,8 @@ enabled = true
 startup_timeout_sec = 30
 tool_timeout_sec = 600
 
-# One entry per tool the server declares. The two live tools keep the full budget;
-# the eight read-only tools read files already on disk and get the short one.
+# One entry per tool the server declares. Selected scientific panels get a longer budget;
+# local inspection and report operations get the short one.
 [mcp_servers.Humanitys-Last-Disease.tool_timeouts]
 run = 600
 screen_directory = 600
@@ -17,4 +17,13 @@ retrieve_databases = 120
 retrieve_structures = 120
 read_sequence_measures = 120
 read_results = 120
+list_output_files = 120
+read_output_file = 120
 backend_status = 120
+declare_corpora = 120
+plan_validation = 120
+validate_output_files = 120
+save_validation_report = 120
+list_validation_reports = 120
+plan_screening = 120
+run_selected_screens = 3600

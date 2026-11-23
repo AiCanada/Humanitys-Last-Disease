@@ -23,7 +23,12 @@ if TYPE_CHECKING:
     from rdkit import Chem
 
 from rfproteina.disease.corpus_provenance import declare
-from rfproteina.disease.ligand_inputs import parse_nominated_smiles, read_sdf_candidates, read_smiles_candidates
+from rfproteina.disease.ligand_inputs import (
+    manifest_options,
+    nominated_inputs,
+    parse_nominated_smiles,
+    read_sdf_candidates,
+)
 from rfproteina.disease.qupkake_worker import METHOD, REVISION, SEED
 
 ENDPOINT = "aqueous_microscopic_pKa"
@@ -216,24 +221,20 @@ def _identify(mol: Chem.Mol | None, chem: ModuleType) -> tuple[str, list[int]]:
     return smiles, [core.GetAtomWithIdx(i).GetIntProp("_q_source") for i in ordering]
 
 
-def profile(
-    candidates: Iterable[Sequence[str]], *, tautomerize: bool = False, source: str = "smiles", sdf: bool = False
-) -> dict:
-    record = _base(tautomerize, source)
+def prepare_nominations(candidates: Iterable[Sequence[str]], *, sdf: bool) -> tuple[list[dict], dict[str, str]]:
+    """Resolve the exact provider graphs and input atom maps before any quantum calculation."""
     try:
         from rdkit import Chem
     except (OSError, ImportError):
         Chem = None
     rows = list(candidates)
-    record["attempted"] = len(rows)
-    if not rows:
-        return {**record, "blocker": "no_candidates"}
     names = [row[0] if row and row[0] else (f"sdf_{i}" if sdf else "") for i, row in enumerate(rows, 1)]
     counts = Counter(names)
+    inputs = []
     graphs = {}
     for row, name in zip(rows, names, strict=True):
         item = {"candidate_id": name}
-        record["inputs"].append(item)
+        inputs.append(item)
         if len(row) != (3 if sdf else 2):
             item["blocker"] = "invalid_candidate_table_width"
             continue
@@ -260,9 +261,17 @@ def profile(
         key = "smiles_sha256_" + hashlib.sha256(smiles.encode("ascii")).hexdigest()
         item.update(compound_id=key, source_atom_indices_by_map=order)
         graphs[key] = smiles
-    record["unique_compounds"] = len(graphs)
+    return inputs, graphs
+
+
+def profile(
+    candidates: Iterable[Sequence[str]], *, tautomerize: bool = False, source: str = "smiles", sdf: bool = False
+) -> dict:
+    record = _base(tautomerize, source)
+    inputs, graphs = prepare_nominations(candidates, sdf=sdf)
+    record.update(inputs=inputs, attempted=len(inputs), unique_compounds=len(graphs))
     if not graphs:
-        return {**record, "blocker": "no_usable_candidates"}
+        return {**record, "blocker": "no_usable_candidates" if inputs else "no_candidates"}
     for key, smiles in graphs.items():
         result = _run(smiles, tautomerize)
         record["structures"][key] = {"canonical_input_smiles": smiles, "states": result.pop("states", {})}
@@ -294,36 +303,29 @@ def profile_sdf(path: Path, *, tautomerize: bool = False) -> dict:
         return {**_base(tautomerize, "sdf"), "blocker": "sdf_input_unreadable"}
 
 
-def _unique(pairs: list) -> dict:
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("duplicate setting")
-        result[key] = value
-    return result
+def settings_for(directory: Path) -> tuple[bool, str, bool]:
+    """Return the tautomer option, molecular source and whether the run requested QupKake."""
+    settings, configured = manifest_options(directory, MANIFEST)
+    if settings.keys() - {"tautomerize", "input"}:
+        raise ValueError("invalid_qupkake_manifest")
+    mode, selection = settings.get("tautomerize", False), settings.get("input", "smiles")
+    if type(mode) is not bool:
+        raise ValueError("invalid_qupkake_manifest")
+    return mode, selection, configured
 
 
-def screen_run(directory: Path, *, kind: str) -> dict | None:
-    manifest = directory / MANIFEST
-    if not manifest.exists() and not manifest.is_symlink():
-        return None
+def screen_run(directory: Path, *, kind: str, candidate: str | None = None, use_defaults: bool = False) -> dict | None:
     try:
-        settings = json.loads(manifest.read_text(encoding="utf-8-sig"), object_pairs_hook=_unique)
-        if not isinstance(settings, dict) or settings.keys() - {"tautomerize", "input"}:
-            raise ValueError("invalid settings")
-        mode = settings.get("tautomerize", False)
-        selection = settings.get("input", "smiles")
-        if type(mode) is not bool or selection not in ("smiles", "sdf"):
-            raise ValueError("invalid mode")
+        mode, selection, configured = settings_for(directory)
     except (ValueError, OSError, RecursionError):
         result = _base(False, "unreadable_manifest")
         result["tautomerize"] = None
         return {**result, "blocker": "invalid_qupkake_manifest"}
+    if not configured and not use_defaults:
+        return None
     if kind != "ligand":
         return {**_base(mode, selection), "blocker": "ligand_binder_kind_required"}
-    if selection == "sdf":
-        return profile_sdf(directory / "ligand_candidates.sdf", tautomerize=mode)
-    scope, rows, blocker = read_smiles_candidates(directory)
-    if blocker or rows is None:
-        return {**_base(mode, scope), "blocker": blocker or "ligand_input_missing"}
-    return profile(rows, tautomerize=mode, source=scope)
+    scope, rows, blocker = nominated_inputs(directory, selection, candidate)
+    if blocker:
+        return {**_base(mode, scope), "blocker": blocker}
+    return profile(rows, tautomerize=mode, source=scope, sdf=selection == "sdf")

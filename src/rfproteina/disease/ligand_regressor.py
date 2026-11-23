@@ -897,8 +897,8 @@ def save(regressor: PanelRegressor, directory: Path) -> Path:
     return directory / _MANIFEST
 
 
-def load_regressor(path: Path) -> PanelRegressor:
-    """Read a saved regressor, refusing one written by another layout."""
+def regressor_manifest(path: Path) -> tuple[Path, dict, str]:
+    """Validate the saved layout and estimator files without loading weights into the picker."""
     path = Path(path)
     # Decided by name, not by what exists. Testing ``path.is_dir()`` reads a
     # model directory that has not been created yet as a file path and then
@@ -909,15 +909,21 @@ def load_regressor(path: Path) -> PanelRegressor:
     if not manifest_path.is_file():
         raise RegressorUnavailableError(f"manifest_not_found:{manifest_path}")
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        with manifest_path.open("rb") as stream:
+            raw = stream.read(16 * 1024 * 1024 + 1)
+        if len(raw) > 16 * 1024 * 1024:
+            raise RegressorUnavailableError("manifest_too_large")
+        manifest = json.loads(raw)
+    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError) as error:
         raise RegressorUnavailableError(f"manifest_unreadable:{type(error).__name__}") from error
+    if not isinstance(manifest, dict):
+        raise RegressorUnavailableError("manifest_unreadable")
     version = manifest.get("version")
     if type(version) is not int or version not in (1, _VERSION):
         raise RegressorUnavailableError(f"manifest_version_unsupported:{manifest.get('version')}")
     morgan = manifest.get("morgan") or {}
     if (
-        morgan.get("radius") != MORGAN_RADIUS
+        not isinstance(morgan, dict) or morgan.get("radius") != MORGAN_RADIUS
         or morgan.get("bits") != MORGAN_BITS
         or morgan.get("counts") != MORGAN_COUNTS
     ):
@@ -928,14 +934,33 @@ def load_regressor(path: Path) -> PanelRegressor:
     expected_method = METHOD_CHEMPROP if backend == "chemprop" else METHOD_FOREST
     if manifest.get("method", expected_method) != expected_method:
         raise RegressorUnavailableError("manifest_method_backend_mismatch")
-
-    axes: dict[str, AxisModel] = {}
-    for axis, record in (manifest.get("axes") or {}).items():
-        if axis not in UNCOVERED_AXES:
+    axes = manifest.get("axes")
+    if not isinstance(axes, dict) or not axes:
+        raise RegressorUnavailableError("manifest_has_no_axes")
+    root = directory.resolve()
+    for axis, record in axes.items():
+        if axis not in UNCOVERED_AXES or not isinstance(record, dict):
             raise RegressorUnavailableError(f"unknown_panel_axis:{axis}")
-        payload = directory / str(record.get("estimator"))
-        if not payload.is_file():
-            raise RegressorUnavailableError(f"estimator_not_found:{payload.name}")
+        for filename_key in ("estimator", "fingerprints"):
+            name = record.get(filename_key)
+            if filename_key == "fingerprints" and name is None:
+                continue
+            if not isinstance(name, str) or not name or not (root / name).resolve().is_relative_to(root):
+                raise RegressorUnavailableError(f"invalid_manifest_path:{filename_key}")
+            data = root / name
+            if filename_key == "estimator" and (not data.is_file() or not data.stat().st_size):
+                raise RegressorUnavailableError(f"estimator_not_found:{data.name}")
+    return directory, manifest, backend
+
+
+def load_regressor(path: Path) -> PanelRegressor:
+    """Load a verified saved layout for inference."""
+    directory, manifest, backend = regressor_manifest(path)
+    version = manifest["version"]
+    expected_method = METHOD_CHEMPROP if backend == "chemprop" else METHOD_FOREST
+    axes: dict[str, AxisModel] = {}
+    for axis, record in manifest["axes"].items():
+        payload = directory / record["estimator"]
         if backend == "forest":
             try:
                 import joblib
@@ -968,8 +993,6 @@ def load_regressor(path: Path) -> PanelRegressor:
             training_fingerprints=prints,
             training_rows=training_rows,
         )
-    if not axes:
-        raise RegressorUnavailableError("manifest_has_no_axes")
     return PanelRegressor(
         axes=axes,
         backend=backend,

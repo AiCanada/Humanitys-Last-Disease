@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 from collections.abc import Mapping
 from pathlib import Path
@@ -28,6 +29,7 @@ MODIFIED_MODEL = "ModRFD4"
 #: from :data:`NOT_PERFORMED`, which means it was told and the answer was no.
 NOT_INSTALLED = "not_installed"
 _MAX_JSON_BYTES = 2_000_000
+_DIRECTORY_ENTRY_LIMIT = 2_048
 #: How far up a tool looks for an artifact the program writes beside the output
 #: directory rather than inside a run. Four is the archive's own depth --
 #: ``generations/<disease>/<target>/<run>`` -- which is the longest climb there
@@ -45,7 +47,7 @@ _CUT_MARK = " [cut]"
 #: pTM and ipTM are all scores, and so is anything whose name says confidence.
 #:
 #: That last alternative was missing. The trace writer stores a metric whose
-#: name matches its own rule (``trace._CONFIDENCE``) and this one read the same
+#: name matches its own rule (``refold.trace_metric_kind``) and this one read the same
 #: rule back minus ``confidence``, so a column the writer kept on purpose was
 #: filtered out again here -- and a trace carrying only such columns reached
 #: ``_ranking`` with no shared metric at all, which falls back to ordering by
@@ -173,7 +175,7 @@ _SCREEN_OMITTED = frozenset(
 #: the whole list past that, so the worst case is bounded rather than open.
 _SCREEN_TRIMMED: dict[str, frozenset[str]] = {"cuts": frozenset({"provenance"})}
 #: The fields of that summary, in the order ``refold_report`` writes them.
-_REFOLD_SUMMARY = ("declared", "evaluated", "criteria_file", "refold_blocker")
+_REFOLD_SUMMARY = ("declared", "evaluated", "criteria_file", "threshold_source", "refold_blocker")
 #: One design's measurements, and the three reasons a measurement is missing.
 #: Without those a null arrives with no cause: a run whose designs were written
 #: compressed, one whose chain was never named, and one whose metrics row was
@@ -327,6 +329,14 @@ def describe_architecture() -> dict[str, object]:
                         ),
                     },
                     {"name": "Results retrieval", "tool": "read_results"},
+                    {"name": "Output artifact inventory", "tool": "list_output_files"},
+                    {"name": "Output artifact reading", "tool": "read_output_file"},
+                    {"name": "Candidate validation recommendations", "tool": "plan_validation"},
+                    {"name": "Read-only output validation", "tool": "validate_output_files"},
+                    {"name": "Save output validation report", "tool": "save_validation_report"},
+                    {"name": "List saved validation reports", "tool": "list_validation_reports"},
+                    {"name": "Installed scientific screen recommendations", "tool": "plan_screening"},
+                    {"name": "Selected scientific screens", "tool": "run_selected_screens"},
                     {
                         "name": "Training-corpus declaration",
                         "tool": "declare_corpora",
@@ -1474,7 +1484,12 @@ def _reject(arguments: Mapping[str, object], allowed: set[str]) -> None:
 
 def _children(path: Path) -> list[Path]:
     try:
-        found = list(path.iterdir())
+        found = []
+        with os.scandir(path) as entries:
+            for count, entry in enumerate(entries, 1):
+                if count > _DIRECTORY_ENTRY_LIMIT:
+                    raise ValueError(f"{path.name} has too many entries to inspect in one call.")
+                found.append(Path(entry.path))
     except OSError:
         raise ValueError(f"{path.name} is not readable.") from None
     return sorted(found, key=lambda item: item.name)

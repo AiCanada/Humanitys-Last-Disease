@@ -32,6 +32,24 @@ class PoseBustersResultError(Exception):
     """The backend could not return one attributable set of check results."""
 
 
+def molecule_checks_available() -> bool:
+    """Inspect the installed ligand-only checklist without running any geometry tests."""
+    from posebusters import PoseBusters
+    from rdkit.Chem import inchi
+    from yaml import YAMLError
+
+    try:
+        config = PoseBusters(config="mol", max_workers=0).config
+        outputs = [
+            module["rename_outputs"].get(key, key).lower().replace(" ", "_")
+            for module in config["modules"]
+            for key in module.get("chosen_binary_test_output", ())
+        ]
+    except (AttributeError, KeyError, OSError, TypeError, ValueError, YAMLError):
+        return False
+    return inchi.INCHI_AVAILABLE and all(outputs.count(check) == 1 for check in POSEBUSTERS_MOL_CHECKS)
+
+
 def pose_checks(mol: Mol, receptor: Mol | None = None) -> tuple[str, dict[str, bool | None]]:
     from pandas import DataFrame
     from rdkit import Chem

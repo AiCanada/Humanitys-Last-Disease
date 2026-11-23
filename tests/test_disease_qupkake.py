@@ -118,6 +118,37 @@ def test_absent_runtime_preserves_denominator(monkeypatch: pytest.MonkeyPatch) -
     assert rec["blocker"] == rec["compounds"][0]["blocker"] == "qupkake_runtime_unavailable"
 
 
+def test_default_costs_one_verified_state_and_does_not_run_xtb(tmp_path, monkeypatch):
+    from rfproteina.disease import screen_selection
+
+    monkeypatch.setattr(pka, "_run", lambda *args: pytest.fail("picker ran the quantum worker"))
+    file = tmp_path / "ligand_candidates.tsv"
+    prefix = "candidate_id\tsmiles\nsample\tCC(=O)O\n"
+    file.write_text(prefix)
+
+    def choice(example=None):
+        (row,) = screen_selection.plan(tmp_path, "ligand", example=example, available={"qupkake": True})
+        return row
+
+    assert choice().applicable and not choice().recommended
+    (tmp_path / pka.MANIFEST).write_text("{}")
+    file.write_text(prefix + "same\tOC(C)=O\n")
+    assert choice().recommended
+    file.write_text(prefix + "amine\tCN\n")
+    assert choice("amine").recommended and not choice().recommended
+    file.write_text(prefix + "salt\tCC(=O)[O-].[Na+]\n")
+    assert choice().applicable and not choice().recommended and not choice("salt").applicable
+    file.write_text("candidate_id\tsmiles\nsample\tc1ccccc1\n")
+    assert choice().applicable and not choice().recommended
+
+
+def test_legacy_run_smiles_cannot_supply_a_named_qupkake_candidate(tmp_path, monkeypatch):
+    (tmp_path / "ligand_smiles.txt").write_text("CC(=O)O")
+    monkeypatch.setattr(pka, "_run", lambda *args: pytest.fail("unattributed molecule reached xTB"))
+    result = pka.screen_run(tmp_path, kind="ligand", candidate="run_ligand", use_defaults=True)
+    assert result["blocker"] == "candidate_requires_named_nomination"
+
+
 def test_outside_pretraining_elements() -> None:
     report = pka.profile([("boronic acid", "OB(O)c1ccccc1")])
     assert report["inputs"][0]["blocker"] == "element_outside_qupkake_training_domain"

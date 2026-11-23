@@ -45,6 +45,8 @@ Each structure is then ranked by LLM/Bot for Binding
 
 **60 working screens after generation.** The review covers predictions, structural measurements and evidence readers exercised with live controls. [Reviewed methods](docs/post-generation-method-review.md) and [screen inputs](docs/reference/screen-inputs.md).
 
+**Choosing screens for a finished candidate.** The picker recommends installed methods using the candidate’s inputs, the available model assets and the expected workload. Choose individual methods or select all installed screens. The results give a reason for each skipped method. MCP clients can inspect the same recommendations with `plan_screening` and execute them with `run_selected_screens`. [Screen selection guide](docs/reference/screen-inputs.md#choose-scientific-screens-for-a-finished-candidate).
+
 Structure and binder visual presentation after generation
 
 OUTPUT=Target Binder, identifying promising candidates for experimental validation and potentially therapeutic development.

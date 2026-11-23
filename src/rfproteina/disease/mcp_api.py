@@ -9,6 +9,7 @@ not read a prompt from stdin, because stdin belongs to the MCP client.
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import hashlib
 import io
@@ -16,8 +17,11 @@ import json
 import math
 import os
 import re
+import stat
 from collections.abc import Callable, Mapping
-from pathlib import Path
+from datetime import UTC, datetime
+from pathlib import Path, PurePosixPath
+from uuid import uuid4
 
 # The one spelling of the program name. Repeated as a literal here and in
 # mcp_layers, it had to be edited in both on the rename to
@@ -121,6 +125,7 @@ _VERDICT_FIELDS = (
     "ligand_solubility",
     "qupkake",
     "sygma",
+    "method_selection",
     "mhc_class_i",
     "synthesis",
     # The last three were excluded by name and the reasons did not survive review.
@@ -383,12 +388,52 @@ _AXIS_FIELDS = (
 _AXIS_GROUPS = ("sequence_liability", "target_liability", "nucleic_liability", "toxicology")
 _CURATED_SOURCE = "axis_evidence"
 #: Directories this server may use besides the checkout, separated the way
-#: ``PATH`` is. Unset, an absolute path is used as given.
+#: ``PATH`` is. The MCP entry point defaults it to the checkout; direct library
+#: callers may leave it unset and retain the historical absolute-path behavior.
 _ROOTS_ENV = "RFD4_MCP_ROOTS"
+_BROWSER_ONLY_OPTIONS = {"ui", "validate_output"}
+_VALIDATION_PAGE_SIZE = 100
+_VALIDATION_BYTE_BUDGET = 256 * 1024 * 1024
+_VALIDATION_REPORT_DIR = "validation_reports"
+_VALIDATION_REPORT_NAME = re.compile(r"validation-[0-9a-f]{32}\.json")
+_VALIDATION_REPORT_ENTRY_LIMIT = 512
 _SECRET_WORD = re.compile(r"(?i)key|token|secret|password")
+_OUTPUT_PAGE_SIZE = 100
+_OUTPUT_ENTRY_LIMIT = 2_000
+_OUTPUT_DIRECTORY_LIMIT = 512
+_OUTPUT_READ_DEFAULT = 64 * 1024
+_OUTPUT_READ_MAX = 1024 * 1024
+_OUTPUT_PATH_MAX = 512
+_OUTPUT_CLASSIFY_MAX = 256 * 1024 * 1024
+_OUTPUT_SCAN_CHUNK = 64 * 1024
+_OUTPUT_SCAN_OVERLAP = 4 * 1024
+_SCREEN_JSON_MAX = 16 * 1024 * 1024
+_CAPTURE_MAX_CHARS = 4 * 1024 * 1024
+_CAPTURE_MAX_LINES = 4_096
+_CAPTURE_LINE_MAX = 64 * 1024
+_CAPTURE_MARKER = "[program output truncated by MCP]"
+_MAX_REMOTE_HOSTS = 64
+_REMOTE_HOST = re.compile(
+    r"(?:(?:[A-Za-z0-9_][A-Za-z0-9_.-]{0,63})@)?"
+    r"(?:[A-Za-z0-9_][A-Za-z0-9_.-]{0,252}|\[[0-9A-Fa-f:.%]+\])"
+)
+_REMOTE_PATH_SEGMENT = re.compile(r"[A-Za-z0-9_.][A-Za-z0-9._-]{0,127}")
+_SENSITIVE_ARTIFACT = re.compile(
+    r"(?i)(?:^|[._-])(?:api[_-]?keys?|tokens?|secrets?|passwords?|credentials?|authorization)(?:[._-]|$)"
+)
+_PRIVATE_KEY_NAME = re.compile(r"(?i)^(?:id_(?:rsa|dsa|ecdsa|ed25519)|ssh_host_[A-Za-z0-9_]+_key)$")
+_SECRET_BYTES = re.compile(
+    rb"(?:sk-|xai-|nvapi-|hf_|ghp_|github_pat_|AKIA)[A-Za-z0-9_./+=-]{8,}"
+    rb"|Authorization\s*:\s*(?:Bearer|Basic)\s+\S{4,}"
+    rb"|(?:api[_-]?key|access[_-]?token|token|secret|password)[\"']?\s*[:=]\s*[\"']?[^\s\"']{4,}"
+    rb"|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----",
+    re.IGNORECASE,
+)
 SCREEN_FIELDS = frozenset(
     {
         "directory",
+        "screen_selection",
+        "screen_methods",
         "binder_kind",
         "bar",
         "proteome",
@@ -397,9 +442,11 @@ SCREEN_FIELDS = frozenset(
         "plasma_hub_max",
         "plasma_fold_max",
         "follow_up",
+        "stage_tables",
         "out_dir",
         "log_file",
         "include_record",
+        "paralog_identity_max",
     }
 )
 #: The options only the refold mode reads. ``cli._refold_only`` is the one
@@ -424,7 +471,12 @@ _LAYER_TOOLS = (
     "backend_status",
     "declare_corpora",
 )
-TOOL_NAMES = ("list_options", "run", "screen_directory", "read_verdict", *_LAYER_TOOLS)
+TOOL_NAMES = (
+    "list_options", "run", "screen_directory", "read_verdict", *_LAYER_TOOLS[:5],
+    "list_output_files", "read_output_file", *_LAYER_TOOLS[5:],
+    "plan_validation", "validate_output_files", "save_validation_report", "list_validation_reports",
+    "plan_screening", "run_selected_screens",
+)
 #: Called with each finished line the program prints, as it is printed rather
 #: than when the run ends. Raising from it abandons the run, which is how a
 #: cancelled call stops.
@@ -460,8 +512,22 @@ def call_tool(
         return run_program(supplied, on_line=on_line)
     if name == "screen_directory":
         return screen_directory(supplied, on_line=on_line)
+    if name in {"plan_screening", "run_selected_screens"}:
+        return _screening_panel(name, supplied, on_line=on_line)
     if name == "read_verdict":
         return read_verdict(supplied)
+    if name == "list_output_files":
+        return list_output_files(supplied)
+    if name == "read_output_file":
+        return read_output_file(supplied)
+    if name == "plan_validation":
+        return plan_validation(supplied)
+    if name == "validate_output_files":
+        return validate_output_files(supplied)
+    if name == "save_validation_report":
+        return save_validation_report(supplied)
+    if name == "list_validation_reports":
+        return list_validation_reports(supplied)
     if name in _LAYER_TOOLS:
         from rfproteina.disease.mcp_layers import call_layer
 
@@ -489,7 +555,7 @@ def list_options() -> dict[str, object]:
 
     options: list[dict[str, object]] = []
     for action in build_parser()._actions:
-        if not action.option_strings or action.dest in {"help", "ui"}:
+        if not action.option_strings or action.dest in {"help", *_BROWSER_ONLY_OPTIONS}:
             continue
         entry: dict[str, object] = {
             "name": action.dest,
@@ -514,7 +580,7 @@ def list_options() -> dict[str, object]:
         "notes": [
             "Pass these names to run. A false flag is omitted. null omits the option.",
             "screen and the browser panel cannot be used together.",
-            "run takes one mode per call: the disease pipeline, screen, or refold.",
+            "run accepts a disease pipeline, screen or refold call.",
             (
                 "refold prepares a finished run for folding elsewhere, or files the folds that came back, "
                 "and returns that record as refold. refold_dir, refold_import and refold_oracle need it."
@@ -523,12 +589,16 @@ def list_options() -> dict[str, object]:
             "This server does not prompt. Pass accept_only, or choice when several names match.",
             "Without confirm_inference, a finished download does not start generation.",
             "Screen a directory with screen_directory. Read a stored screen with read_verdict.",
+            "Use plan_screening to inspect recommendations and run_selected_screens to execute a selection.",
+            "Use plan_validation and validate_output_files for the output validation panel's local checks.",
+            "Use save_validation_report to run selected checks and save a JSON report inside the run.",
+            "Use list_validation_reports to find saved report paths for the run.",
             "A verdict call of screened_clear is every axis in that bar clear.",
             "An axis with source axis_evidence was declared by a person. It was not measured.",
             "A relative path is inside this checkout and cannot leave it.",
             (
-                f"When {_ROOTS_ENV} is set, every path must be inside this checkout "
-                "or a directory it names. Unset, an absolute path is used as given."
+                "The launched MCP server confines every path to this checkout by default. "
+                f"An operator may explicitly widen that boundary with {_ROOTS_ENV}."
             ),
             "API keys are not an option.",
             "describe_architecture names the AI interface, the MCP tools, and the computational backend.",
@@ -550,7 +620,7 @@ def options_schema() -> dict[str, object]:
 
     properties: dict[str, object] = {}
     for action in build_parser()._actions:
-        if not action.option_strings or action.dest in {"help", "ui"}:
+        if not action.option_strings or action.dest in {"help", *_BROWSER_ONLY_OPTIONS}:
             continue
         if _SECRET_WORD.search(action.dest):
             continue
@@ -572,6 +642,8 @@ def _option_schema(action: argparse.Action) -> dict[str, object]:
     entry: dict[str, object] = {"type": kind}
     if kind == "array":
         entry["items"] = {"type": "string"}
+    elif action.type is Path:
+        entry["pattern"] = r".*\S.*"
     if action.choices is not None:
         entry["enum"] = [str(choice) for choice in action.choices]
     if action.help:
@@ -604,9 +676,10 @@ def run_program(arguments: Mapping[str, object], *, on_line: ProgressLine | None
     options = arguments["options"]
     if not isinstance(options, Mapping):
         raise ValueError("options must be an object.")
-    if "ui" in options:
+    if _BROWSER_ONLY_OPTIONS.intersection(options):
         raise ValueError("This server does not open the browser panel.")
     _reject_secrets(options)
+    _validate_remote_options(options)
     # An option whose value is null is not an option: :func:`argv_from_options`
     # leaves it out. Tested for presence instead, ``screen: null`` read as a
     # screen to both guards below and reached the program as neither -- so the
@@ -688,8 +761,13 @@ def _printed_json(lines: list[str]) -> dict[str, object] | None:
     record got its fragments instead. It is printed as JSON precisely because
     the sequel to that command is usually another command.
 
-    Parse the original lines before redacting individual record fields. The
-    free-text scrubber can otherwise collapse distinct paths. The
+    ``lines`` are the raw lines, not the ones returned in ``messages``. Those
+    have each been through the free-text scrubber, and reassembling a document
+    from them handed back something that parsed and was not what was printed:
+    ``scrub_for_upload`` replaces a home segment wherever it sits, so a run at
+    a directory with an internal home segment came back as a redacted label, not a path
+    that exists, and the same string for another person's identical run, which
+    is the very fault ``scrub_path_prefix`` was written to fix. The
     nine-residue rule did the same to an example id: ``KALLIKREIN_A_0`` became
     ``[sequence omitted]_A_0``. The document is parsed first and redacted as a
     record by :func:`_refold_record`, where a path can be scrubbed as a path.
@@ -756,6 +834,18 @@ def screen_directory(arguments: Mapping[str, object], *, on_line: ProgressLine |
     does not start them.
     """
     _reject_unknown(arguments, SCREEN_FIELDS)
+    if "screen_methods" in arguments:
+        from rfproteina.disease.screen_selection import METHOD_IDS
+
+        methods = arguments["screen_methods"]
+        if not isinstance(methods, list) or not all(isinstance(k, str) and k in METHOD_IDS for k in methods):
+            raise ValueError("Choose a list of known screen method IDs.")
+        if len(set(methods)) != len(methods) or arguments.get("screen_selection") not in (None, "explicit"):
+            raise ValueError("Choose distinct individual screen methods or a screening preset.")
+    if "screen_selection" in arguments and arguments["screen_selection"] not in (
+        "explicit", "recommended", "all_installed",
+    ):
+        raise ValueError("Choose a named screening preset.")
     directory = arguments.get("directory")
     if not isinstance(directory, str) or not directory.strip():
         raise ValueError("Name the directory to screen.")
@@ -764,6 +854,8 @@ def screen_directory(arguments: Mapping[str, object], *, on_line: ProgressLine |
     if not root.is_dir():
         raise ValueError("That directory is not on this computer.")
     options: dict[str, object] = {"screen": directory}
+    if "screen_methods" in arguments:
+        options["screen_selection"] = "explicit"
     for name in SCREEN_FIELDS - {"directory", "include_record"}:
         if name in arguments and arguments[name] is not None:
             options[name] = arguments[name]
@@ -793,6 +885,528 @@ def read_verdict(arguments: Mapping[str, object]) -> dict[str, object]:
     return _screens(root, include_record=_optional_flag(arguments.get("include_record")))
 
 
+def _output_scope(arguments: Mapping[str, object]) -> Path:
+    """One concrete run under an explicitly approved output root."""
+    path, _candidate = _validation_scope({"directory": arguments.get("directory")})
+    return path
+
+
+def _sensitive_artifact(relative: PurePosixPath) -> bool:
+    """Whether a run-local file name looks like configuration or a credential."""
+    for part in relative.parts:
+        lowered = part.casefold()
+        if part.startswith(".") or lowered in {"api_keys.json", "master.key"}:
+            return True
+        if (
+            lowered.endswith((".key", ".pem", ".p12", ".pfx", ".ppk"))
+            or _PRIVATE_KEY_NAME.fullmatch(part)
+            or _SENSITIVE_ARTIFACT.search(part)
+        ):
+            return True
+    return False
+
+
+def _artifact_media_type(relative: PurePosixPath) -> str:
+    name = relative.name.casefold()
+    if name.endswith(".json"):
+        return "application/json"
+    if name.endswith((".csv", ".tsv", ".txt", ".log", ".fasta", ".fa", ".yaml", ".yml")):
+        return "text/plain"
+    if name.endswith((".cif", ".mmcif", ".pdb")):
+        return "chemical/x-structure"
+    if name.endswith(".gz"):
+        return "application/gzip"
+    if name.endswith(".zst"):
+        return "application/zstd"
+    return "application/octet-stream"
+
+
+def _artifact_inventory(root: Path) -> list[dict[str, object]]:
+    """Count entries as they are examined and return a complete, ordered inventory."""
+    found: list[dict[str, object]] = []
+    examined = 0
+    directories_seen = 0
+    changed = "The run changed during inventory. Request a fresh listing."
+
+    def visit(descriptor: int, prefix: PurePosixPath) -> None:
+        nonlocal examined, directories_seen
+        directories_seen += 1
+        if directories_seen > _OUTPUT_DIRECTORY_LIMIT:
+            raise ValueError("The run has too many directories to inventory in one call.")
+        before = os.fstat(descriptor)
+        with os.scandir(descriptor) as entries:
+            for entry in entries:
+                examined += 1
+                if examined > _OUTPUT_ENTRY_LIMIT + _OUTPUT_DIRECTORY_LIMIT:
+                    raise ValueError("The run has too many directory entries to inventory in one call.")
+                if _sensitive_artifact(PurePosixPath(entry.name)):
+                    continue
+                relative = prefix / entry.name
+                details = entry.stat(follow_symlinks=False)
+                if stat.S_ISDIR(details.st_mode):
+                    child = _open_directory(entry.name, dir_fd=descriptor)
+                    try:
+                        if not os.path.samestat(details, os.fstat(child)):
+                            raise ValueError(changed)
+                        visit(child, relative)
+                    finally:
+                        os.close(child)
+                elif stat.S_ISREG(details.st_mode):
+                    if len(found) >= _OUTPUT_ENTRY_LIMIT:
+                        raise ValueError("The run has too many output files to inventory in one call.")
+                    found.append(
+                        {
+                            "path": relative.as_posix(),
+                            "bytes": details.st_size,
+                            "media_type": _artifact_media_type(relative),
+                        }
+                    )
+        after = os.fstat(descriptor)
+        if (before.st_mtime_ns, before.st_ctime_ns) != (after.st_mtime_ns, after.st_ctime_ns):
+            raise ValueError(changed)
+
+    try:
+        root_descriptor = _open_directory(root)
+        try:
+            visit(root_descriptor, PurePosixPath())
+            if not os.path.samestat(os.fstat(root_descriptor), root.stat()) or _resolved(root) != root:
+                raise ValueError(changed)
+        finally:
+            os.close(root_descriptor)
+    except OSError:
+        raise ValueError("The full run inventory could not be read. Request a fresh listing.") from None
+    return sorted(found, key=lambda item: str(item["path"]))
+
+
+def _page_value(arguments: Mapping[str, object], name: str, default: int, maximum: int | None = None) -> int:
+    value = arguments.get(name, default)
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if type(value) is not int or value < 0 or (maximum is not None and value > maximum):
+        bound = f" no greater than {maximum}" if maximum is not None else ""
+        raise ValueError(f"{name} must be a nonnegative integer{bound}.")
+    return value
+
+
+def _expected_sha256(arguments: Mapping[str, object]) -> str | None:
+    if "expected_sha256" not in arguments:
+        return None
+    value = arguments["expected_sha256"]
+    if not isinstance(value, str) or not re.fullmatch("[0-9a-f]{64}", value):
+        raise ValueError("expected_sha256 must be a lowercase SHA-256 digest from the previous response.")
+    return value
+
+
+def list_output_files(arguments: Mapping[str, object]) -> dict[str, object]:
+    """List bounded, non-secret regular artifacts under one finished run."""
+    _reject_unknown(arguments, {"directory", "offset", "limit", "expected_sha256"})
+    root = _output_scope(arguments)
+    offset = _page_value(arguments, "offset", 0)
+    limit = _page_value(arguments, "limit", _OUTPUT_PAGE_SIZE, _OUTPUT_PAGE_SIZE)
+    if limit < 1:
+        raise ValueError("limit must be at least 1.")
+    expected = _expected_sha256(arguments)
+    inventory = _artifact_inventory(root)
+    encoded = json.dumps(inventory, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii")
+    inventory_digest = hashlib.sha256(encoded).hexdigest()
+    if expected is not None and inventory_digest != expected:
+        raise ValueError("The inventory has changed since the previous page. Restart at offset zero.")
+    page = inventory[offset : offset + limit]
+    next_offset = offset + len(page) if offset + len(page) < len(inventory) else None
+    return {
+        "program": PROGRAM,
+        "directory": _shown(root),
+        "files": page,
+        "next_offset": next_offset,
+        "total_files": len(inventory),
+        "inventory_sha256": inventory_digest,
+    }
+
+
+def _relative_output_path(value: object) -> PurePosixPath:
+    if not isinstance(value, str) or not value or len(value) > _OUTPUT_PATH_MAX:
+        raise ValueError("Name a short output path returned by list_output_files.")
+    _plain(value)
+    if "\\" in value:
+        raise ValueError("Use the POSIX-style path returned by list_output_files.")
+    relative = PurePosixPath(value)
+    if not relative.parts or relative.is_absolute() or ".." in relative.parts:
+        raise ValueError("The output path must stay inside the finished run.")
+    if _sensitive_artifact(relative):
+        raise ValueError("Credential and private-key files are not output artifacts.")
+    return relative
+
+
+def _scan_output_chunk(descriptor: int, size: int, offset: int, count: int) -> tuple[bytes, str]:
+    """Hash and classify the whole file, retaining the requested slice from those same bytes."""
+    if size > _OUTPUT_CLASSIFY_MAX:
+        raise ValueError("The output is too large to classify safely for MCP reading.")
+    digest = hashlib.sha256()
+    data = bytearray()
+    overlap = b""
+    position = 0
+    while position < size:
+        chunk = os.read(descriptor, min(_OUTPUT_SCAN_CHUNK, size - position))
+        if not chunk:
+            raise ValueError("The output changed while it was being read.")
+        digest.update(chunk)
+        combined = overlap + chunk
+        if _SECRET_BYTES.search(combined):
+            raise ValueError("The output appears to contain a credential and was not returned.")
+        overlap = combined[-_OUTPUT_SCAN_OVERLAP:]
+        start = max(offset, position)
+        stop = min(offset + count, position + len(chunk))
+        if start < stop:
+            data.extend(chunk[start - position : stop - position])
+        position += len(chunk)
+    return bytes(data), digest.hexdigest()
+
+
+def read_output_file(arguments: Mapping[str, object]) -> dict[str, object]:
+    """Read one bounded chunk from a regular run artifact without following links."""
+    _reject_unknown(arguments, {"directory", "path", "offset", "max_bytes", "expected_sha256"})
+    root = _output_scope(arguments)
+    relative = _relative_output_path(arguments.get("path"))
+    offset = _page_value(arguments, "offset", 0)
+    max_bytes = _page_value(arguments, "max_bytes", _OUTPUT_READ_DEFAULT, _OUTPUT_READ_MAX)
+    if max_bytes < 1:
+        raise ValueError("max_bytes must be at least 1.")
+    expected = _expected_sha256(arguments)
+
+    original_root = root.stat()
+    with contextlib.ExitStack() as resources:
+        root_descriptor = _open_directory(root)
+        resources.callback(os.close, root_descriptor)
+        if not os.path.samestat(original_root, os.fstat(root_descriptor)):
+            raise ValueError("The run directory changed while opening the output.")
+        parent_descriptor = root_descriptor
+        for part in relative.parts[:-1]:
+            opened = _open_directory(part, dir_fd=parent_descriptor)
+            resources.callback(os.close, opened)
+            parent_descriptor = opened
+        try:
+            descriptor = os.open(relative.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_descriptor)
+        except OSError:
+            raise ValueError("That output is not a readable regular file.") from None
+        resources.callback(os.close, descriptor)
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("That output is not a readable regular file.")
+        if offset > before.st_size:
+            raise ValueError("offset is past the end of the output.")
+        data, file_digest = _scan_output_chunk(descriptor, before.st_size, offset, max_bytes)
+        after = os.fstat(descriptor)
+        if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+            after.st_size, after.st_mtime_ns, after.st_ctime_ns
+        ):
+            raise ValueError("The output changed while it was being read.")
+        if not os.path.samestat(original_root, root.stat()) or _resolved(root) != root:
+            raise ValueError("The run directory changed while the output was being read.")
+        if expected is not None and file_digest != expected:
+            raise ValueError("The output has changed since the previous read. Restart from the first chunk.")
+
+    media_type = _artifact_media_type(relative)
+    content = None
+    binary = media_type in {"application/gzip", "application/zstd"} or re.search(
+        rb"[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]", data
+    )
+    if not binary:
+        with contextlib.suppress(UnicodeDecodeError):
+            content = data.decode("utf-8")
+    if content is None:
+        content = base64.b64encode(data).decode("ascii")
+        encoding = "base64"
+    else:
+        encoding = "utf-8"
+    end = offset + len(data)
+    return {
+        "program": PROGRAM,
+        "directory": _shown(root),
+        "path": relative.as_posix(),
+        "media_type": media_type,
+        "encoding": encoding,
+        "content": content,
+        "offset": offset,
+        "bytes_returned": len(data),
+        "total_bytes": before.st_size,
+        "next_offset": end if end < before.st_size else None,
+        "chunk_sha256": hashlib.sha256(data).hexdigest(),
+        "file_sha256": file_digest,
+    }
+
+
+def _validation_scope(arguments: Mapping[str, object]) -> tuple[Path, str | None]:
+    """Resolve a concrete run in an output root and accept only an opaque candidate ID."""
+    from rfproteina.disease.screen import _is_generation_directory
+    from rfproteina.disease.trace import VALIDATION_FILE
+    from rfproteina.disease.validation_checks import synthesis_receipt_attached
+
+    directory = arguments.get("directory")
+    if not isinstance(directory, str) or not directory.strip():
+        raise ValueError("Name one finished run directory.")
+    _plain(directory)
+    candidate = arguments.get("candidate_id")
+    if "candidate_id" in arguments and (
+        not isinstance(candidate, str) or re.fullmatch("[0-9a-f]{24}", candidate) is None
+    ):
+        raise ValueError("Use a candidate ID returned by plan_validation.")
+
+    path = _resolved(_path(directory))
+    checkout = _resolved(_repo_root())
+    roots = (checkout / "disease_runs", checkout / "runs", *(_allowed_roots() or ()))
+    if not _inside(path, roots):
+        raise ValueError("Choose a directory under runs, disease_runs, or RFD4_MCP_ROOTS.")
+    record = path / VALIDATION_FILE
+    if not path.is_dir() or not (
+        _is_generation_directory(path, follow_symlinks=False)
+        or (not record.is_symlink() and record.is_file())
+        or synthesis_receipt_attached(path)
+    ):
+        raise ValueError("Choose a concrete finished run directory, rather than a parent directory.")
+    return path, candidate if isinstance(candidate, str) else None
+
+
+def plan_validation(arguments: Mapping[str, object]) -> dict[str, object]:
+    """Show available and recommended local checks with an optional candidate scope."""
+    from rfproteina.disease.validation_checks import candidate_validation_plan
+
+    _reject_unknown(arguments, {"directory", "candidate_id", "candidate_offset"})
+    offset = arguments.get("candidate_offset", 0)
+    if isinstance(offset, float) and offset.is_integer():
+        offset = int(offset)
+    if type(offset) is not int or offset < 0:
+        raise ValueError("candidate_offset must be a nonnegative integer.")
+    path, candidate = _validation_scope(arguments)
+    candidates, choices = candidate_validation_plan((path,), candidate)
+    if not choices:
+        raise ValueError("That candidate is unavailable in this run. Refresh the plan.")
+    end = offset + _VALIDATION_PAGE_SIZE
+    return {
+        "program": PROGRAM,
+        "candidate_id": candidate,
+        "candidates": [{"id": item.key, "label": item.label} for item in candidates[offset:end]],
+        "next_candidate_offset": end if end < len(candidates) else None,
+        "checks": [
+            {
+                "id": item.key,
+                "label": item.label,
+                "installed": item.installed,
+                "recommended": item.recommended,
+                "reason": item.reason,
+                "workload": item.workload,
+            }
+            for item in choices
+        ],
+    }
+
+
+def _screening_panel(name: str, arguments: Mapping[str, object], *, on_line: ProgressLine | None) -> dict:
+    from rfproteina.disease import screen_panel
+
+    scope = {"directory", "candidate_id"}
+    _reject_unknown(arguments, scope if name == "plan_screening" else scope | {"selection", "methods"})
+    path, candidate = _validation_scope(arguments)
+    result = {"program": PROGRAM, "candidate_id": candidate, "directory": _shown(path)}
+    if name == "plan_screening":
+        choices = screen_panel.choices_for(path, candidate)
+        return {**result, "methods": [item.as_record() for item in choices]}
+    if ("methods" in arguments) == ("selection" in arguments):
+        raise ValueError("Pass a list of method IDs or one selection mode.")
+    methods = arguments.get("methods", [])
+    if not isinstance(methods, list) or any(not isinstance(key, str) for key in methods):
+        raise ValueError("Methods must be a list of screen IDs.")
+    mode = arguments.get("selection", "explicit")
+    if "selection" in arguments and mode not in ("recommended", "all_installed"):
+        raise ValueError("selection must be recommended or all_installed.")
+    return {**result, "results": screen_panel.run(path, candidate, mode, methods, on_line=on_line)}
+
+
+def _validation_request(arguments: Mapping[str, object]) -> tuple[Path, str | None, list[str]]:
+    from rfproteina.disease.validation_checks import CHECKS, candidate_validation_plan
+
+    _reject_unknown(arguments, {"directory", "candidate_id", "checks", "selection"})
+    selection = arguments.get("selection")
+    checks = arguments.get("checks")
+    if "selection" in arguments and "checks" in arguments:
+        raise ValueError("Pass explicit checks or one selection mode, not both.")
+    if "selection" in arguments and selection not in ("recommended", "all_installed"):
+        raise ValueError("selection must be recommended or all_installed.")
+    if selection is None and (not isinstance(checks, list) or not 1 <= len(checks) <= len(CHECKS)):
+        raise ValueError("Choose one or more check IDs from plan_validation.")
+    allowed = {check.key for check in CHECKS}
+    if isinstance(checks, list) and (
+        any(not isinstance(key, str) or key not in allowed for key in checks) or len(set(checks)) != len(checks)
+    ):
+        raise ValueError("Choose distinct check IDs returned by plan_validation.")
+    path, candidate = _validation_scope(arguments)
+    if isinstance(selection, str):
+        _candidates, choices = candidate_validation_plan((path,), candidate)
+        if not choices:
+            raise ValueError("That candidate is unavailable in this run. Refresh the plan.")
+        checks = [
+            item.key
+            for item in choices
+            if item.installed and (selection == "all_installed" or item.recommended)
+        ]
+        if not checks:
+            raise ValueError(f"No {selection.replace('_', ' ')} checks are available for this scope.")
+    assert isinstance(checks, list)
+    return path, candidate, checks
+
+
+def _validation_results(path: Path, candidate: str | None, checks: list[str]) -> dict[str, object]:
+    from rfproteina.disease.validation_checks import run_validation_checks
+
+    report = run_validation_checks(
+        (path,), checks, candidate_key=candidate, name_files=False, read_budget=_VALIDATION_BYTE_BUDGET
+    )
+    return {
+        "program": PROGRAM,
+        "candidate_id": candidate,
+        "results": [{"id": key, "result": result} for key, result in report.items()],
+    }
+
+
+def validate_output_files(arguments: Mapping[str, object]) -> dict[str, object]:
+    """Run an explicit selection of read-only checks against a finished run."""
+    return _validation_results(*_validation_request(arguments))
+
+
+def _validation_report_folder(path: Path) -> Path:
+    folder = path / _VALIDATION_REPORT_DIR
+    if _resolved(folder) != folder:
+        raise ValueError("The validation report directory must be inside the run.")
+    return folder
+
+
+def list_validation_reports(arguments: Mapping[str, object]) -> dict[str, object]:
+    """List finished report filenames without opening them or running checks."""
+    _reject_unknown(arguments, {"directory"})
+    path, _candidate = _validation_scope(arguments)
+    folder = _validation_report_folder(path)
+    report_files = []
+    try:
+        original = folder.lstat()
+    except FileNotFoundError:
+        return {"program": PROGRAM, "report_files": []}
+    except OSError:
+        raise ValueError("The validation report directory could not be listed.") from None
+    try:
+        with contextlib.ExitStack() as resources:
+            scan_target: Path | int = folder
+            if os.scandir in os.supports_fd:
+                descriptor = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                resources.callback(os.close, descriptor)
+                if not os.path.samestat(original, os.fstat(descriptor)):
+                    raise ValueError("The validation report directory changed while listing it.")
+                scan_target = descriptor
+            entries = resources.enter_context(os.scandir(scan_target))
+            for count, entry in enumerate(entries, 1):
+                if count > _VALIDATION_REPORT_ENTRY_LIMIT:
+                    raise ValueError("Too many entries in the validation report directory to list.")
+                if _VALIDATION_REPORT_NAME.fullmatch(entry.name) and entry.is_file(follow_symlinks=False):
+                    report_files.append(f"{_VALIDATION_REPORT_DIR}/{entry.name}")
+        if not os.path.samestat(original, folder.lstat()) or _resolved(folder) != folder:
+            raise ValueError("The validation report directory changed while listing it.")
+    except OSError:
+        raise ValueError("The validation report directory could not be listed.") from None
+    return {"program": PROGRAM, "report_files": sorted(report_files)}
+
+
+def save_validation_report(arguments: Mapping[str, object]) -> dict[str, object]:
+    """Run the chosen checks and publish a new JSON report inside the run."""
+    from rfproteina.disease.publish import scrubbed_json
+
+    path, candidate, checks = _validation_request(arguments)
+    _validation_report_folder(path)
+    report_file = ""
+    published = ""
+    try:
+        original = path.stat()
+        with contextlib.ExitStack() as resources:
+            run_descriptor = _open_directory(path)
+            resources.callback(os.close, run_descriptor)
+            if not os.path.samestat(original, os.fstat(run_descriptor)):
+                raise ValueError("The run directory changed during validation.")
+            result = _validation_results(path, candidate, checks)
+            if not os.path.samestat(original, path.stat()) or _resolved(path) != path:
+                raise ValueError("The run directory changed during validation.")
+
+            with contextlib.suppress(FileExistsError):
+                os.mkdir(_VALIDATION_REPORT_DIR, dir_fd=run_descriptor)
+            folder_descriptor = _open_directory(_VALIDATION_REPORT_DIR, dir_fd=run_descriptor)
+            resources.callback(os.close, folder_descriptor)
+
+            destination = f"validation-{uuid4().hex}.json"
+            temporary = f".validation-{uuid4().hex}.tmp"
+            report_file = f"{_VALIDATION_REPORT_DIR}/{destination}"
+            document = {
+                "schema_version": 1,
+                "created_at": datetime.now(UTC).isoformat(),
+                "report_file": report_file,
+                **result,
+            }
+            text = scrubbed_json(document)
+            temporary_descriptor = None
+            try:
+                temporary_descriptor = os.open(
+                    temporary,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o600,
+                    dir_fd=folder_descriptor,
+                )
+                with os.fdopen(temporary_descriptor, "w", encoding="utf-8", closefd=False) as handle:
+                    handle.write(text)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.link(
+                    temporary,
+                    destination,
+                    src_dir_fd=folder_descriptor,
+                    dst_dir_fd=folder_descriptor,
+                    follow_symlinks=False,
+                )
+                destination_identity = os.stat(destination, dir_fd=folder_descriptor, follow_symlinks=False)
+                if not os.path.samestat(os.fstat(temporary_descriptor), destination_identity):
+                    with contextlib.suppress(OSError):
+                        os.unlink(destination, dir_fd=folder_descriptor)
+                    raise ValueError("The staged validation report changed before publication.")
+                published = destination
+            finally:
+                if temporary_descriptor is not None:
+                    with contextlib.suppress(OSError):
+                        os.close(temporary_descriptor)
+                with contextlib.suppress(OSError):
+                    os.unlink(temporary, dir_fd=folder_descriptor)
+
+            if not os.path.samestat(original, path.stat()) or _resolved(path) != path:
+                if published:
+                    with contextlib.suppress(OSError):
+                        os.unlink(published, dir_fd=folder_descriptor)
+                raise ValueError("The run directory changed while saving the validation report.")
+            current_folder = os.stat(_VALIDATION_REPORT_DIR, dir_fd=run_descriptor, follow_symlinks=False)
+            if (
+                not os.path.samestat(current_folder, os.fstat(folder_descriptor))
+                or _resolved(path / _VALIDATION_REPORT_DIR) != path / _VALIDATION_REPORT_DIR
+            ):
+                if published:
+                    with contextlib.suppress(OSError):
+                        os.unlink(published, dir_fd=folder_descriptor)
+                raise ValueError("The validation report directory changed while saving the report.")
+    except OSError:
+        raise ValueError("The validation report could not be saved inside this run.") from None
+    return {**result, "report_file": report_file}
+
+
+def _open_directory(path: str | Path, *, dir_fd: int | None = None) -> int:
+    """Open a directory without following its final link, optionally below an approved directory."""
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        raise OSError("Directory descriptors are unavailable.")
+    if any(operation not in os.supports_dir_fd for operation in (os.open, os.mkdir, os.link, os.unlink)):
+        raise OSError("Relative directory descriptors are unavailable.")
+    return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
+
+
 def argv_from_options(options: Mapping[str, object]) -> list[str]:
     """Flags for the same parser as the command. Only provided options are included."""
     from rfproteina.disease.cli import build_parser
@@ -800,7 +1414,7 @@ def argv_from_options(options: Mapping[str, object]) -> list[str]:
     _reject_secrets(options)
     parser = build_parser()
     by_dest = {action.dest: action for action in parser._actions if action.option_strings}
-    unknown = [str(name) for name in options if name not in by_dest or name in {"help", "ui"}]
+    unknown = [str(name) for name in options if name not in by_dest or name in {"help", *_BROWSER_ONLY_OPTIONS}]
     if unknown:
         raise ValueError("Unknown option.")
     argv: list[str] = []
@@ -869,6 +1483,8 @@ class _LineStream(io.TextIOBase):
         super().__init__()
         self._on_line = on_line
         self._partial = ""
+        self._captured_chars = 0
+        self._truncated = False
         self.lines: list[str] = []
         #: The same lines before redaction. Never returned to a client: they
         #: are here so a printed JSON document can be parsed as the record it
@@ -882,14 +1498,24 @@ class _LineStream(io.TextIOBase):
     def write(self, text: str) -> int:
         if not isinstance(text, str) or not text:
             return 0
-        self._partial += text
-        while "\n" in self._partial:
+        if self._truncated:
+            return len(text)
+        remaining = max(_CAPTURE_MAX_CHARS - self._captured_chars, 0)
+        kept = text[:remaining]
+        self._captured_chars += len(kept)
+        self._partial += kept
+        while not self._truncated and "\n" in self._partial:
             line, self._partial = self._partial.split("\n", 1)
             self._report(line)
+        if len(kept) != len(text):
+            self._truncate()
         return len(text)
 
     def flush_partial(self) -> None:
         """Report a final line the program left without a newline."""
+        if self._truncated:
+            self._partial = ""
+            return
         remaining, self._partial = self._partial, ""
         if remaining:
             self._report(remaining)
@@ -902,8 +1528,16 @@ class _LineStream(io.TextIOBase):
         it sits under the home directory, so a log moved elsewhere by
         ``RFD4_KEY_DIR`` or ``--log-file`` went out with the second line intact.
         """
-        stripped = raw.strip()
+        if self._truncated:
+            return
+        if len(self.raw) >= _CAPTURE_MAX_LINES:
+            self._truncate()
+            return
+        oversized = len(raw) > _CAPTURE_LINE_MAX
+        stripped = raw[:_CAPTURE_LINE_MAX].strip()
         if not stripped or stripped.startswith(("Run log:", "The traceback is in ")):
+            if oversized:
+                self._truncate()
             return
         self.raw.append(stripped)
         redacted = _redact(stripped)
@@ -912,6 +1546,18 @@ class _LineStream(io.TextIOBase):
         self.lines.append(redacted)
         if self._on_line is not None:
             self._on_line(redacted)
+        if oversized:
+            self._truncate()
+
+    def _truncate(self) -> None:
+        """Stop retaining output and make the loss explicit in the returned lines."""
+        if self._truncated:
+            return
+        self._truncated = True
+        self._partial = ""
+        self.lines.append(_CAPTURE_MARKER)
+        if self._on_line is not None:
+            self._on_line(_CAPTURE_MARKER)
 
 
 def _decline(prompt: str) -> str:
@@ -925,9 +1571,49 @@ def _decline(prompt: str) -> str:
     return ""
 
 
+def _read_screen_no_follow(directory: Path) -> Mapping[str, object] | None:
+    """Read one bounded screen record through its own regular-file descriptor."""
+    path = directory / "screen.json"
+    try:
+        original = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise ValueError("screen.json is not readable.") from None
+    if not stat.S_ISREG(original.st_mode) or stat.S_ISLNK(original.st_mode):
+        raise ValueError("screen.json must be a regular file inside the run.")
+    if original.st_size > _SCREEN_JSON_MAX:
+        raise ValueError("screen.json is too large to return.")
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, "rb") as handle:
+            opened = os.fstat(handle.fileno())
+            if not os.path.samestat(original, opened):
+                raise ValueError("screen.json changed while it was opened.")
+            raw = handle.read(_SCREEN_JSON_MAX + 1)
+            after = os.fstat(handle.fileno())
+        if len(raw) > _SCREEN_JSON_MAX:
+            raise ValueError("screen.json is too large to return.")
+        if not os.path.samestat(opened, after) or (opened.st_size, opened.st_mtime_ns) != (
+            after.st_size,
+            after.st_mtime_ns,
+        ):
+            raise ValueError("screen.json changed while it was read.")
+        if not os.path.samestat(original, path.lstat()):
+            raise ValueError("screen.json changed while it was read.")
+        payload = json.loads(raw.decode("utf-8"))
+    except ValueError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise ValueError("screen.json is not a readable screen.") from None
+    if not isinstance(payload, dict) or not isinstance(payload.get("call"), str):
+        raise ValueError("screen.json is not a screen.")
+    return payload
+
+
 def _screens(directory: Path, *, include_record: bool) -> dict[str, object]:
     """Stored screens under ``directory``, without walking into another screen's samples."""
-    from rfproteina.disease.screen import ScreenWalkTruncatedError, label_for, read_screen, walk_for_screens
+    from rfproteina.disease.screen import ScreenWalkTruncatedError, label_for, walk_for_screens
 
     if not directory.is_dir():
         return {
@@ -938,7 +1624,7 @@ def _screens(directory: Path, *, include_record: bool) -> dict[str, object]:
         }
     runs: list[dict[str, object]] = []
     complete = True
-    own = _one_screen(directory, "", include_record=include_record, read_screen=read_screen)
+    own = _one_screen(directory, "", include_record=include_record, read_screen=_read_screen_no_follow)
     if own is not None:
         runs.append(own)
     try:
@@ -949,7 +1635,7 @@ def _screens(directory: Path, *, include_record: bool) -> dict[str, object]:
                 current,
                 label_for(directory, current),
                 include_record=include_record,
-                read_screen=read_screen,
+                read_screen=_read_screen_no_follow,
             )
             if found is not None:
                 runs.append(found)
@@ -1486,6 +2172,7 @@ _VERDICT_TYPES: dict[str, Callable[[object], bool]] = {
     "ligand_solubility": _is_object,
     "qupkake": _is_object,
     "sygma": _is_object,
+    "method_selection": _is_object,
     "protein_sol": _is_object,
     "mhc_class_i": _is_object,
     "synthesis": _is_object,
@@ -1525,7 +2212,22 @@ def _redact(value: object) -> object:
     if isinstance(value, float) and not math.isfinite(value):
         return None
     if isinstance(value, Mapping):
-        return {str(key): _redact(item) for key, item in value.items()}
+        redacted: dict[str, object] = {}
+        for key, item in value.items():
+            name = str(key)
+            # Structure selectors are SHA-256 hex, not biological sequence.
+            # Keeping only this fixed alphabet and length exception preserves
+            # the opaque selection handle without weakening sequence removal.
+            if (
+                name == "selector"
+                and isinstance(item, str)
+                and len(item) == 64
+                and all(character in "0123456789abcdef" for character in item)
+            ):
+                redacted[name] = item
+            else:
+                redacted[name] = _redact(item)
+        return redacted
     if isinstance(value, list | tuple):
         return [_redact(item) for item in value]
     if isinstance(value, Path):
@@ -1612,8 +2314,10 @@ def _inside(path: Path, roots: tuple[Path, ...]) -> bool:
 def _shown(path: Path) -> str:
     """A checkout-relative path when the file lives here, otherwise the path as it is.
 
-    Scrub a machine-specific prefix only at the start of the path. Interior
-    directory names distinguish runs inside a shared filesystem.
+    Only a personal prefix at its start is replaced. The whole path used to go
+    through the free-text scrubber, which removes a home-directory segment
+    wherever it sits, so two different run directories could be returned as
+    one string that named neither.
     """
     from rfproteina.disease.publish import repository_relative, scrub_path_prefix
 
@@ -1646,8 +2350,27 @@ def _file_state(path: Path) -> _FileState | None:
     size do not.
     """
     try:
-        found = path.stat()
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        found = path.lstat()
+        if not stat.S_ISREG(found.st_mode) or stat.S_ISLNK(found.st_mode):
+            return None
+        if found.st_size > _SCREEN_JSON_MAX:
+            digest = f"oversized:{found.st_size}"
+        else:
+            hashed = hashlib.sha256()
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(descriptor, "rb") as handle:
+                opened = os.fstat(handle.fileno())
+                if not os.path.samestat(found, opened):
+                    return None
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    hashed.update(chunk)
+                after = os.fstat(handle.fileno())
+            if not os.path.samestat(opened, after) or (opened.st_size, opened.st_mtime_ns) != (
+                after.st_size,
+                after.st_mtime_ns,
+            ):
+                return None
+            digest = hashed.hexdigest()
     except OSError:
         return None
     return (found.st_mtime_ns, found.st_ino, found.st_size), digest
@@ -1698,6 +2421,42 @@ def _reject_secrets(options: Mapping[str, object]) -> None:
             raise ValueError("API keys are not an option.")
 
 
+def _validate_remote_options(options: Mapping[str, object]) -> None:
+    """Keep SSH destinations and remote paths from becoming command options.
+
+    The generation dispatcher passes a host directly to ``ssh`` and ``scp``.
+    A destination beginning with ``-`` is therefore an SSH option rather than
+    a host, and legacy scp parses its remote path through a shell. MCP accepts
+    ordinary aliases, DNS names, IPv4, bracketed IPv6 and ``user@host`` while
+    refusing syntax that has another meaning to those programs.
+    """
+    raw_hosts = options.get("hosts")
+    if raw_hosts is not None:
+        if not isinstance(raw_hosts, str):
+            raise ValueError("hosts is a comma-separated string.")
+        _plain(raw_hosts)
+        hosts = [item.strip() for item in raw_hosts.split(",") if item.strip()]
+        if len(hosts) > _MAX_REMOTE_HOSTS:
+            raise ValueError(f"At most {_MAX_REMOTE_HOSTS} generation hosts may be selected in one call.")
+        if any(_REMOTE_HOST.fullmatch(host) is None for host in hosts):
+            raise ValueError(
+                "Each generation host must be a host alias, address, or user@host name, not an SSH option."
+            )
+
+    raw_directory = options.get("remote_dir")
+    if raw_directory is None:
+        return
+    if not isinstance(raw_directory, str):
+        raise ValueError("remote_dir is a POSIX path string.")
+    _plain(raw_directory)
+    if not raw_directory or len(raw_directory) > _OUTPUT_PATH_MAX or "\\" in raw_directory:
+        raise ValueError("remote_dir must be a short POSIX directory path.")
+    path = PurePosixPath(raw_directory)
+    parts = [part for part in path.parts if part != "/"]
+    if not parts or any(part in {"", ".", ".."} or _REMOTE_PATH_SEGMENT.fullmatch(part) is None for part in parts):
+        raise ValueError("remote_dir may contain only ordinary POSIX path segments and cannot traverse upward.")
+
+
 def _flag(action: argparse.Action) -> str:
     return max(action.option_strings, key=len)
 
@@ -1742,6 +2501,8 @@ def _encode(action: argparse.Action, value: object) -> list[str]:
         argv: list[str] = []
         for item in items:
             _plain(item)
+            if action.type is Path and not item.strip():
+                raise ValueError(f"{action.dest} must be a non-empty path.")
             argv.extend([flag, str(_path(item)) if action.type is Path else item])
         return argv
     text = _scalar(action, value)
@@ -1770,7 +2531,7 @@ def _scalar(action: argparse.Action, value: object) -> str:
         if isinstance(value, bool) or not isinstance(value, int | float):
             raise ValueError(f"{action.dest} is a number.")
         number = float(value)
-        if number != number:
+        if not math.isfinite(number):
             raise ValueError(f"{action.dest} is a number.")
         return format(number, "g")
     if not isinstance(value, str):
@@ -1779,6 +2540,8 @@ def _scalar(action: argparse.Action, value: object) -> str:
     if action.type is Path:
         # Every path option, not only the directory: the same refusal applies
         # to where the program writes as to where it reads.
+        if not value.strip():
+            raise ValueError(f"{action.dest} must be a non-empty path.")
         return str(_path(value))
     return value
 

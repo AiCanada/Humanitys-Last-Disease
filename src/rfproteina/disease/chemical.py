@@ -141,6 +141,11 @@ def net_charge(sequence: str, ph: float) -> float:
     return positive - negative
 
 
+def has_isoelectric_crossing(sequence: str) -> bool:
+    """Whether the model's charge curve brackets zero between pH 0 and 14."""
+    return net_charge(sequence, 0.0) >= 0.0 and net_charge(sequence, 14.0) <= 0.0
+
+
 def isoelectric_point(sequence: str) -> float:
     """The pH where the Bjellqvist net charge crosses zero.
 
@@ -152,7 +157,7 @@ def isoelectric_point(sequence: str) -> float:
         raise ValueError("The sequence is not a standard protein chain.")
     low = 0.0
     high = 14.0
-    if net_charge(sequence, low) < 0.0 or net_charge(sequence, high) > 0.0:
+    if not has_isoelectric_crossing(sequence):
         raise ValueError(PI_BLOCKER)
     while high - low > _PI_SPAN:
         mid = (low + high) / 2.0

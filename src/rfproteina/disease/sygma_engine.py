@@ -70,9 +70,8 @@ class Rule:
     reaction: ChemicalReaction
 
 
-def load_rules() -> dict[str, list[Rule]]:
-    from rdkit.Chem import rdChemReactions
-
+def installed_rule_tables() -> dict[str, bytes]:
+    """Check the released local rule files without initializing a reaction or scoring a molecule."""
     path = archive_path()
     if path.exists() or path.is_symlink() or "SYGMA_RULE_ARCHIVE" in os.environ:
         try:
@@ -90,10 +89,17 @@ def load_rules() -> dict[str, list[Rule]]:
             }
         except (metadata.PackageNotFoundError, OSError) as error:
             raise ScreenError("sygma_rules_unavailable") from error
-    rules = {}
     for phase, data in tables.items():
         if hashlib.sha256(data).hexdigest() != RULE_HASHES[phase]:
             raise ScreenError("sygma_rules_digest_mismatch")
+    return tables
+
+
+def load_rules() -> dict[str, list[Rule]]:
+    from rdkit.Chem import rdChemReactions
+
+    rules = {}
+    for phase, data in installed_rule_tables().items():
         rules[phase] = []
         for number, line in enumerate(data.decode("ascii").splitlines(), 1):
             if not line.strip() or line.startswith("#"):

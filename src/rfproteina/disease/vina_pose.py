@@ -421,10 +421,15 @@ def _match(source: list[Atom], prepared: Preparation, role: str, bonds: LigandBo
     return record
 
 
-def _execute(pose: Pose, receptor: bytes, ligand: bytes) -> dict:
+def installed_executable() -> str | Path | None:
     name = "vina.exe" if os.name == "nt" else "vina"
     configured = os.getenv("AUTODOCK_VINA_EXEC")
     exe = shutil.which(configured) if configured else tool_code_path("autodock-vina", name) or shutil.which(name)
+    return exe if exe and os.access(exe, os.X_OK) else None
+
+
+def _execute(pose: Pose, receptor: bytes, ligand: bytes) -> dict:
+    exe = installed_executable()
     if not exe:
         raise PoseError("vina_unavailable")
     try:
@@ -499,6 +504,27 @@ def _reported_score(output: str) -> tuple[float, str]:
     return score, versions[0]
 
 
+def verified_inputs(pose: Pose, text: str, identity: dict) -> tuple[bytes, bytes]:
+    """Verify both prepared files against the supplied structure before any native scoring."""
+    identity.update(pose.selection(), structure_text_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest())
+    receptor = _read(pose.receptor, _MAX_INPUT_BYTES, "prepared_receptor_unreadable")
+    ligand = _read(pose.ligand, _MAX_INPUT_BYTES, "prepared_ligand_unreadable")
+    identity.update(
+        receptor_pdbqt_sha256=hashlib.sha256(receptor).hexdigest(),
+        ligand_pdbqt_sha256=hashlib.sha256(ligand).hexdigest(),
+    )
+    protein_input = _prepared(receptor, ligand=False)
+    ligand_input = _prepared(ligand, ligand=True)
+    source_protein, source_ligand, inventory, bonds = _source(text, pose)
+    identity["ligand_inventory_basis"] = inventory
+    identity["receptor_match"] = _match(source_protein, protein_input, "receptor")
+    identity["ligand_match"] = _match(source_ligand, ligand_input, "ligand", bonds)
+    for atom in ligand_input.atoms:
+        if any(abs(v - c) > s / 2 for v, c, s in zip(atom.xyz, pose.center, pose.size, strict=True)):
+            raise PoseError("ligand_outside_scoring_box")
+    return receptor, ligand
+
+
 @dataclass
 class RunPoses:
     directory: Path
@@ -543,22 +569,7 @@ class RunPoses:
             if example not in self.settings:
                 raise PoseError("sample_settings_absent")
             pose = Pose.parse(self.directory, self.settings[example])
-            identity.update(pose.selection(), structure_text_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest())
-            receptor = _read(pose.receptor, _MAX_INPUT_BYTES, "prepared_receptor_unreadable")
-            ligand = _read(pose.ligand, _MAX_INPUT_BYTES, "prepared_ligand_unreadable")
-            identity.update(
-                receptor_pdbqt_sha256=hashlib.sha256(receptor).hexdigest(),
-                ligand_pdbqt_sha256=hashlib.sha256(ligand).hexdigest(),
-            )
-            protein_input = _prepared(receptor, ligand=False)
-            ligand_input = _prepared(ligand, ligand=True)
-            source_protein, source_ligand, inventory, bonds = _source(text, pose)
-            identity["ligand_inventory_basis"] = inventory
-            identity["receptor_match"] = _match(source_protein, protein_input, "receptor")
-            identity["ligand_match"] = _match(source_ligand, ligand_input, "ligand", bonds)
-            for atom in ligand_input.atoms:
-                if any(abs(v - c) > s / 2 for v, c, s in zip(atom.xyz, pose.center, pose.size, strict=True)):
-                    raise PoseError("ligand_outside_scoring_box")
+            receptor, ligand = verified_inputs(pose, text, identity)
             result = _execute(pose, receptor, ligand)
         except PoseError as error:
             result = _untested(str(error))

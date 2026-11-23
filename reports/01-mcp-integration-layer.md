@@ -38,12 +38,12 @@ open a shell, does not read from standard input for a prompt, and does not open 
 Two protocol eras are answered from one server:
 
 - `2026-07-28` — stateless, carried in `_meta` (`MODERN_VERSIONS`).
-- `2025-06-18`, `2025-03-26`, `2024-11-05` — the handshake revisions (`LEGACY_VERSIONS`).
+- `2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05` — the handshake revisions (`LEGACY_VERSIONS`).
 
 `SUPPORTED_VERSIONS` is the concatenation, so a client of either era connects without a
 shim.
 
-## The ten tools
+## Available tools
 
 Descriptions are the tools' own, as declared in `scripts/humanitys_last_disease_mcp.py`.
 
@@ -59,43 +59,27 @@ Descriptions are the tools' own, as declared in `scripts/humanitys_last_disease_
 | `read_sequence_measures` | Reads stored sequence measurements. **The sequence text is not returned.** |
 | `read_results` | Reads stored research traces, generation records and screen verdicts. |
 | `backend_status` | Reports the computational backend for one directory. Does not start GPU work, docking, or a prediction. |
+| `declare_corpora` | Returns declared training corpora and available overlap information. |
+| `plan_screening` | Lists installed and unavailable methods, their input requirements and candidate-specific recommendations. |
+| `run_selected_screens` | Runs the recommended set, all installed methods or explicit method IDs and reports each outcome. |
+| `plan_validation` | Lists local output checks for the selected run or candidate. |
+| `validate_output_files` | Executes the selected output checks and returns their findings. |
+| `save_validation_report` | Executes the checks and saves a JSON report in the finished run. |
+| `list_validation_reports` | Lists saved report filenames for the run. |
+| `list_output_files` | Lists eligible regular artifacts with pagination. |
+| `read_output_file` | Returns a bounded chunk of a selected artifact and its SHA-256 digest. |
 
-Each tool carries MCP annotations. Only `run` and `screen_directory` declare
-`readOnlyHint: false`, `destructiveHint: true`, `openWorldHint: true`. The other eight
-declare `readOnlyHint: true`, `openWorldHint: false`.
+The browser and MCP share the screening planner. A method can be installed and manually selectable even when the candidate lacks the inputs needed for a measurement. Execution records that outcome and its reason. [Screen selection guide](../docs/reference/screen-inputs.md#choose-scientific-screens-for-a-finished-candidate).
 
-## The eight declared capabilities, and what each one actually does
+## Capability discovery
 
-`describe_architecture()` in `mcp_layers.py` declares the capability-to-tool mapping. The
-third column is the part a reader needs and the tool names do not convey.
-
-| Capability | Tool | What it does |
-|---|---|---|
-| Program options | `list_options` | Lists the option names `run` accepts. Starts nothing. |
-| Verdict retrieval | `read_verdict` | **Reads stored verdicts with their per-axis evidence. Rescreens nothing.** |
-| Database retrieval | `retrieve_databases` | **Reads stored JSON. Contacts no database.** |
-| Protein structure retrieval | `retrieve_structures` | **Reads stored rows. Downloads nothing.** |
-| Sequence processing | `read_sequence_measures` | **Reads stored measurements.** Returns no sequence text. |
-| Generative design execution | `run` | Live, and only when `options.run` is true. |
-| Screening pipeline execution | `screen_directory` | Live. Contacts public databases only when `lookup_targets` is true. |
-| Results retrieval | `read_results` | Reads stored records. |
-
-**Six of the eight are read-only views of files on disk, not the retrieval their names
-suggest.** The real database traffic and the real structure downloads happen inside `run`,
-or inside `screen_directory` with `lookup_targets` enabled. This is deliberate and the
-module says so in its own docstring: *"None of these calls starts a model, a GPU job,
-docking, or a prediction."* A directory with no stored lookup reads `not_recorded` rather
-than an empty result, so absence of a record is distinguishable from a record of absence.
+`describe_architecture` lists the capability-to-tool mapping. The `tools/list` response includes input schemas, output schemas and annotations for each tool. The retrieval tools read stored records. A directory with no stored lookup reports `not_recorded`.
 
 ## Safety properties
 
-**Path confinement.** A requested directory is used as given unless `RFD4_MCP_ROOTS` names
-directories the server may use, in which case every path must resolve inside this checkout
-**or** one of those directories, and a path outside both is refused.
+**Path confinement.** The launched server defaults to the checkout. Operators can add absolute directories through `RFD4_MCP_ROOTS`. Artifact tools require a finished run under an approved root.
 
-**No sequence leaves the server.** Designed sequence text is dropped on the way out, by
-key name and by residue-run pattern. `read_sequence_measures` returns the measurements of a
-chain without returning the chain.
+**Sequence and artifact access.** Stored measurement summaries redact designed sequence text. Explicit reads of an eligible output file can return its original content, including a generated structure or sequence.
 
 **Secrets are refused at the schema boundary.** A field whose name looks like a secret is
 rejected rather than forwarded, so an assistant cannot hand the program an API key through
@@ -123,15 +107,6 @@ predicted-model fetch take no slot and are unpaced; the structure download also 
 an `Accept` header, so it goes out under the bare interpreter user agent rather than this
 program's.
 
-## What this layer does not do
-
-- It does not start a model, a GPU job, docking, or a structural prediction.
-- It does not fetch a structure or query a database except through `run` /
-  `screen_directory`.
-- It does not accept API keys.
-- It does not return designed sequences.
-
 ## Verification
 
-Covered by the project's own test suite (`tests/test_disease_mcp.py`,
-`tests/test_disease_mcp_layers.py`), which runs green as part of the disease suite.
+The MCP regression suite covers discovery, tool schemas, protocol frames, output access and validation reports. The screening selection tests exercise installation checks, candidate matching, recommended selections and manual overrides.

@@ -23,27 +23,27 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import math
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import BinaryIO
 
 SERVER_NAME = "Humanitys-Last-Disease"
 #: Revisions that carry the protocol version, capabilities and identity in each
 #: request's ``_meta`` and have no handshake. Newest first.
 MODERN_VERSIONS = ("2026-07-28",)
-#: Revisions that open with ``initialize``. Newest first. 2025-11-25 is not
-#: claimed: this server has not been checked against it, and a client asking
-#: for it is answered with the newest revision that has been, which the
-#: negotiation rule allows.
-LEGACY_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
+#: Handshake revisions, newest first for version negotiation.
+LEGACY_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 SUPPORTED_VERSIONS = MODERN_VERSIONS + LEGACY_VERSIONS
 _SERVE_ENV = "HUMANITYS_LAST_DISEASE_MCP_SERVE"
+_ROOTS_ENV = "RFD4_MCP_ROOTS"
 _META = "_meta"
 _VERSION_KEY = "io.modelcontextprotocol/protocolVersion"
 _SERVER_INFO_KEY = "io.modelcontextprotocol/serverInfo"
@@ -57,6 +57,7 @@ _METHOD_NOT_FOUND = -32601
 _INVALID_PARAMS = -32602
 #: A failure in this server while answering, as opposed to a tool that failed.
 _INTERNAL_ERROR = -32603
+_SERVER_BUSY = -32000
 _UNSUPPORTED_VERSION = -32022
 #: How long a client may cache a list result, and who may cache it. The tool
 #: list does not change while the process lives. The scope is private because
@@ -72,10 +73,15 @@ _UNREADABLE = object()
 _PROGRESS_EVERY_S = 0.25
 #: How long a line may be in a progress message before it is cut.
 _PROGRESS_LINE_MAX = 300
-#: A Content-Length body is read in one piece. An unbounded length hangs the
-#: read loop waiting for bytes that are not coming, so a frame past this is a
-#: parse error and the stream stops.
+#: Maximum body size for framed messages and line size for newline messages.
 _MAX_FRAME = 8 * 1024 * 1024
+#: Cumulative byte limit for the headers and their trailing blank line.
+_MAX_FRAME_HEADERS = 8 * 1024
+#: A batch is parsed as one frame and keeps every immediate reply until its
+#: queued calls finish. Bound the item count separately from the frame size so
+#: a tiny-invalid-item batch cannot turn one frame into hundreds of thousands
+#: of Python objects and a response larger than the request.
+_MAX_BATCH_ITEMS = 256
 #: How often a call that has gone quiet says so again.
 _HEARTBEAT_S = 20.0
 #: When the client closes stdin, how long a call already running may take to
@@ -83,21 +89,55 @@ _HEARTBEAT_S = 20.0
 #: binding asks a server to exit promptly once its input is closed.
 _SHUTDOWN_GRACE_S = 5.0
 _SHUTDOWN_CANCEL_S = 5.0
+#: One call may run while the rest wait. Bound all outstanding calls so a
+#: client cannot fill memory while a long generation occupies the worker.
+_MAX_OUTSTANDING_CALLS = 32
+
+#: Tool refusals are readable by design, unlike unexpected exceptions. They
+#: still cross the process boundary, so remove credentials and local paths
+#: before returning their text. Kept here rather than importing the program's
+#: publication helper: the protocol tests and the initial handshake deliberately
+#: load this file without importing the program or its environment.
+_ERROR_SECRET = re.compile(
+    r"(?i)(?:"
+    r"sk-[A-Za-z0-9_\-]{16,}|"
+    r"xai-[A-Za-z0-9_\-]{16,}|"
+    r"nvapi-[A-Za-z0-9_\-]{16,}|"
+    r"hf_[A-Za-z0-9]{16,}|"
+    r"ghp_[A-Za-z0-9]{16,}|"
+    r"github_pat_[A-Za-z0-9_]{16,}|"
+    r"AKIA[0-9A-Z]{16}"
+    r")"
+)
+_ERROR_BEARER = re.compile(r"(?i)(authorization:\s*bearer\s+)\S+")
+_ERROR_NAMED_SECRET = re.compile(r"(?i)\b(api[_-]?key|token|secret|password)\s*([:=])\s*\S+")
+_ERROR_WIN_PATH = re.compile(r"(?i)(?<![A-Za-z0-9_])[A-Za-z]:[/\\][^\s\"']+")
+_ERROR_UNC_PATH = re.compile(r"(?<![\\])\\\\[^\\\s\"']+(?:\\[^\\\s\"']+)+")
+_ERROR_POSIX_PATH = re.compile(r"(?<![A-Za-z0-9_:])/(?:[^/\s\"']+/)*[^/\s\"']+")
+_ERROR_REDACTED = "[redacted]"
+_ERROR_PATH = "<path>"
 _INSTRUCTIONS = (
     "Humanitys-Last-Disease is this server. Use list_options, run, screen_directory, read_verdict, "
     "describe_architecture, retrieve_databases, retrieve_structures, read_sequence_measures, "
-    "read_results, and backend_status. "
+    "read_results, list_output_files, read_output_file, backend_status, declare_corpora, plan_validation, "
+    "validate_output_files, save_validation_report, and list_validation_reports. "
     "describe_architecture names the AI interface, the MCP tools, and the computational backend. "
     "run takes one mode per call: the disease pipeline, a screen, or a refold. "
     "Do not shell out to the program or parse its printed lines. "
+    "Use plan_screening to inspect recommendations and run_selected_screens to run the chosen methods. "
+    "Use list_output_files and read_output_file for bounded access to regular artifacts in an approved finished run. "
+    "Use plan_validation for the candidate-specific output validation checklist; pass explicit check IDs or select "
+    "recommended or all_installed checks in one validation call. "
+    "Use save_validation_report to run the selected checks and create a local JSON report in that run. "
+    "Use list_validation_reports to find saved report filenames for the run. "
     "A run marked archived is a copy the generation archive made of another run's files. The "
     "copy is screened in place like any other run, so the verdict beside it is the copy's own "
     "and can differ from the verdict beside the run it was taken from. "
     "In a verdict, an axis whose source is axis_evidence was declared by a person and not measured; "
     "curated_axes names those axes beside the call. "
     "A relative path is inside this checkout and cannot leave it. "
-    "When RFD4_MCP_ROOTS is set, every path must be inside this checkout or a directory it names; "
-    "unset, an absolute path is used as given."
+    "The launched server confines every path to this checkout by default. An operator may explicitly "
+    "widen that boundary with RFD4_MCP_ROOTS."
 )
 Handler = Callable[[str, Mapping[str, object] | None], Mapping[str, object]]
 #: Where the worker leaves the progress callback for the call it is running.
@@ -733,6 +773,7 @@ _VERDICT_SCHEMA: dict[str, object] = {
                 "counted in hits. The SMILES itself stays in screen.json."
             ),
         },
+        "method_selection": {"type": "object", "description": "Chosen, attempted and inapplicable methods."},
         "sygma": {
             "type": "object",
             "description": (
@@ -1045,6 +1086,48 @@ def _screens_schema(*, ran: bool) -> dict[str, object]:
     return {"type": "object", "properties": properties, "required": required}
 
 
+_VALIDATION_SCOPE = {
+    "directory": {"type": "string", "description": "One finished run under runs, disease_runs, or RFD4_MCP_ROOTS."},
+    "candidate_id": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{24}$",
+        "description": "Optional candidate ID returned for this run by plan_validation.",
+    },
+}
+_VALIDATION_CHECKS_INPUT = {
+    "type": "object",
+    "properties": {
+        **_VALIDATION_SCOPE,
+        "checks": {
+            "type": "array", "items": {"type": "string"}, "minItems": 1, "uniqueItems": True,
+            "description": "Explicit installed check IDs from plan_validation.",
+        },
+        "selection": {
+            "type": "string",
+            "enum": ["recommended", "all_installed"],
+            "description": "Resolve the current installed recommendations inside this call instead of passing checks.",
+        },
+    },
+    "required": ["directory"],
+    "oneOf": [
+        {"required": ["checks"], "not": {"required": ["selection"]}},
+        {"required": ["selection"], "not": {"required": ["checks"]}},
+    ],
+    "additionalProperties": False,
+}
+_VALIDATION_RESULT_PROPERTIES = {
+    "program": {"type": "string"},
+    "candidate_id": {"type": ["string", "null"]},
+    "results": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}, "result": {"type": "string"}},
+            "required": ["id", "result"],
+        },
+    },
+}
+
 _TOOLS: tuple[dict[str, object], ...] = (
     {
         "name": "list_options",
@@ -1078,7 +1161,7 @@ _TOOLS: tuple[dict[str, object], ...] = (
                 },
                 "notes": {"type": "array", "items": {"type": "string"}},
             },
-            "required": ["program", "options", "notes"],
+            "required": ["program", "options", "schema", "notes"],
         },
     },
     {
@@ -1149,6 +1232,8 @@ _TOOLS: tuple[dict[str, object], ...] = (
             "type": "object",
             "properties": {
                 "directory": {"type": "string", "description": "A run directory, or a parent of run directories."},
+                "screen_selection": {"type": "string", "enum": ["recommended", "all_installed", "explicit"]},
+                "screen_methods": {"type": "array", "items": {"type": "string"}, "uniqueItems": True},
                 "binder_kind": {
                     "type": "string",
                     "enum": ["protein", "ligand", "peptide", "nucleic"],
@@ -1163,7 +1248,9 @@ _TOOLS: tuple[dict[str, object], ...] = (
                 "plasma_abundance_max": {"type": "number"},
                 "plasma_hub_max": {"type": "integer"},
                 "plasma_fold_max": {"type": "number"},
+                "paralog_identity_max": {"type": "number"},
                 "follow_up": {"type": "boolean"},
+                "stage_tables": {"type": "boolean"},
                 "out_dir": {"type": "string"},
                 "log_file": {"type": "string"},
                 "include_record": {
@@ -1248,6 +1335,89 @@ _TOOLS: tuple[dict[str, object], ...] = (
         "outputSchema": _stored_schema(directory=True, tree=True),
     },
     {
+        "name": "list_output_files",
+        "description": (
+            "List regular output artifacts in one approved finished run. Symbolic links, hidden files, "
+            "and credential filenames are excluded. Pass inventory_sha256 as expected_sha256 on later pages "
+            "to require the same listing of paths, sizes and media types."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "directory": _VALIDATION_SCOPE["directory"],
+                "offset": {"type": "integer", "minimum": 0},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "expected_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            },
+            "required": ["directory"],
+            "additionalProperties": False,
+        },
+        "outputSchema": {
+            "type": "object",
+            "properties": {
+                "program": {"type": "string"},
+                "directory": {"type": "string"},
+                "files": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "bytes": {"type": "integer", "minimum": 0},
+                            "media_type": {"type": "string"},
+                        },
+                        "required": ["path", "bytes", "media_type"],
+                    },
+                },
+                "next_offset": {"type": ["integer", "null"]},
+                "total_files": {"type": "integer", "minimum": 0},
+                "inventory_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            },
+            "required": ["program", "directory", "files", "next_offset", "total_files", "inventory_sha256"],
+        },
+    },
+    {
+        "name": "read_output_file",
+        "description": (
+            "Read a chunk from a regular artifact in the approved run. Each call checks the complete file for "
+            "credential-like content and returns its SHA-256. Pass that digest as expected_sha256 on subsequent "
+            "pages. The encoding applies to this chunk. The file limit is 256 MiB."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "directory": _VALIDATION_SCOPE["directory"],
+                "path": {"type": "string", "maxLength": 512},
+                "offset": {"type": "integer", "minimum": 0},
+                "max_bytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
+                "expected_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            },
+            "required": ["directory", "path"],
+            "additionalProperties": False,
+        },
+        "outputSchema": {
+            "type": "object",
+            "properties": {
+                "program": {"type": "string"},
+                "directory": {"type": "string"},
+                "path": {"type": "string"},
+                "media_type": {"type": "string"},
+                "encoding": {"type": "string", "enum": ["utf-8", "base64"]},
+                "content": {"type": "string"},
+                "offset": {"type": "integer", "minimum": 0},
+                "bytes_returned": {"type": "integer", "minimum": 0},
+                "total_bytes": {"type": "integer", "minimum": 0},
+                "next_offset": {"type": ["integer", "null"]},
+                "chunk_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "file_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            },
+            "required": [
+                "program", "directory", "path", "media_type", "encoding", "content", "offset",
+                "bytes_returned", "total_bytes", "next_offset", "chunk_sha256", "file_sha256",
+            ],
+        },
+    },
+    {
         "name": "backend_status",
         "description": (
             "Report the computational backend for one directory, or the backend with nothing recorded. "
@@ -1288,12 +1458,147 @@ _TOOLS: tuple[dict[str, object], ...] = (
             "additionalProperties": False,
         },
     },
+    {
+        "name": "plan_validation",
+        "description": (
+            "List candidate IDs and installed or recommended read-only output checks for one finished run. "
+            "Use candidate_id to focus recommendations on one candidate's files and bench record."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {**_VALIDATION_SCOPE, "candidate_offset": {"type": "integer", "minimum": 0}},
+            "required": ["directory"],
+            "additionalProperties": False,
+        },
+        "outputSchema": {
+            "type": "object",
+            "properties": {
+                "program": {"type": "string"},
+                "candidate_id": {"type": ["string", "null"]},
+                "candidates": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"id": {"type": "string"}, "label": {"type": "string"}},
+                        "required": ["id", "label"],
+                    },
+                },
+                "next_candidate_offset": {"type": ["integer", "null"]},
+                "checks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "label": {"type": "string"},
+                            "installed": {"type": "boolean"},
+                            "recommended": {"type": "boolean"},
+                            "reason": {"type": "string"},
+                            "workload": {"type": "string"},
+                        },
+                        "required": ["id", "label", "installed", "recommended", "reason", "workload"],
+                    },
+                },
+            },
+            "required": ["program", "candidate_id", "candidates", "next_candidate_offset", "checks"],
+        },
+    },
+    {
+        "name": "validate_output_files",
+        "description": (
+            "Run explicit checks from plan_validation, or the current recommended/all-installed selection. "
+            "Returns aggregate results for one finished run or candidate."
+        ),
+        "inputSchema": _VALIDATION_CHECKS_INPUT,
+        "outputSchema": {
+            "type": "object",
+            "properties": _VALIDATION_RESULT_PROPERTIES,
+            "required": ["program", "candidate_id", "results"],
+        },
+    },
+    {
+        "name": "save_validation_report",
+        "description": (
+            "Run explicit, recommended, or all-installed output checks and create a new JSON report under "
+            "validation_reports in the finished run."
+        ),
+        "inputSchema": _VALIDATION_CHECKS_INPUT,
+        "outputSchema": {
+            "type": "object",
+            "properties": {
+                **_VALIDATION_RESULT_PROPERTIES,
+                "report_file": {"type": "string", "description": "The new report path relative to the run."},
+            },
+            "required": ["program", "candidate_id", "results", "report_file"],
+        },
+    },
+    {
+        "name": "list_validation_reports",
+        "description": "List saved validation report filenames for one finished run.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"directory": _VALIDATION_SCOPE["directory"]},
+            "required": ["directory"],
+            "additionalProperties": False,
+        },
+        "outputSchema": {
+            "type": "object",
+            "properties": {
+                "program": {"type": "string"},
+                "report_files": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": 512,
+                    "description": "Saved report filenames relative to the run.",
+                },
+            },
+            "required": ["program", "report_files"],
+        },
+    },
+    {
+        "name": "plan_screening",
+        "description": "List installed post-generation methods, input requirements, compute and recommendations. "
+        "Pass a candidate ID from plan_validation to inspect one candidate.",
+        "inputSchema": {"type": "object", "properties": _VALIDATION_SCOPE,
+                        "required": ["directory"], "additionalProperties": False},
+        "outputSchema": {
+            "type": "object", "properties": {
+                "program": {"type": "string"}, "directory": {"type": "string"},
+                "candidate_id": {"type": ["string", "null"]},
+                "methods": {"type": "array", "items": {"type": "object", "properties": {
+                    **{k: {"type": "string"} for k in ("id", "label", "purpose", "reason", "workload")},
+                    "operation": {"type": "string", "enum": [
+                        "compute", "structure_measurement", "native_result_reader", "recorded_evidence",
+                    ]},
+                    **{k: {"type": "boolean"} for k in ("installed", "applicable", "recommended")}},
+                    "required": ["id", "label", "purpose", "reason", "workload",
+                                 "installed", "applicable", "recommended", "operation"]}},
+            }, "required": ["program", "directory", "candidate_id", "methods"],
+        },
+    },
+    {
+        "name": "run_selected_screens",
+        "description": "Run selected supplemental screening methods serially on existing candidate inputs. "
+        "Returns individual results and reasons for skipped methods.",
+        "inputSchema": {"type": "object", "properties": {
+            **_VALIDATION_SCOPE, "selection": {"type": "string", "enum": ["recommended", "all_installed"]},
+            "methods": {"type": "array", "items": {"type": "string"}, "uniqueItems": True}},
+            "oneOf": [{"required": ["selection"]}, {"required": ["methods"]}],
+            "required": ["directory"], "additionalProperties": False},
+        "outputSchema": {"type": "object", "properties": {
+            "program": {"type": "string"}, "directory": {"type": "string"},
+            "candidate_id": {"type": ["string", "null"]},
+            "results": {"type": "array", "items": {"type": "object", "properties": {
+                "id": {"type": "string"}, "status": {"type": "string"}, "reason": {"type": "string"},
+                "measurement": {"type": "object"}}, "required": ["id", "status"]}}},
+            "required": ["program", "directory", "candidate_id", "results"]},
+    },
 )
 
 #: What each tool does to the world, in the terms a client shows a person
 #: before it lets a tool run. They are hints and a client must not rely on
-#: them for safety, but a tool that only reads says so, and the two that
-#: write do not claim otherwise. ``screen_directory`` replaces a stored
+#: them for safety, but each tool advertises its actual side effects.
+#: ``screen_directory`` replaces a stored
 #: verdict and can ask public databases; screening twice writes the same
 #: bytes. ``run`` can start hours of generation here and on other machines.
 _READS_ONLY = {"readOnlyHint": True, "openWorldHint": False}
@@ -1310,7 +1615,7 @@ _ANNOTATIONS: dict[str, dict[str, object]] = {
         "title": "Screen finished runs",
         "readOnlyHint": False,
         "destructiveHint": True,
-        "idempotentHint": True,
+        "idempotentHint": False,
         "openWorldHint": True,
     },
     "read_verdict": {"title": "Read stored screen verdicts", **_READS_ONLY},
@@ -1319,8 +1624,22 @@ _ANNOTATIONS: dict[str, dict[str, object]] = {
     "retrieve_structures": {"title": "Read stored structure rows", **_READS_ONLY},
     "read_sequence_measures": {"title": "Read stored sequence measurements", **_READS_ONLY},
     "read_results": {"title": "Read stored results", **_READS_ONLY},
+    "list_output_files": {"title": "List finished-run output files", **_READS_ONLY},
+    "read_output_file": {"title": "Read a finished-run output file", **_READS_ONLY},
     "backend_status": {"title": "Report the computational backend", **_READS_ONLY},
     "declare_corpora": {"title": "Declare what the models were trained on", **_READS_ONLY},
+    "plan_validation": {"title": "Plan candidate output validation", **_READS_ONLY},
+    "validate_output_files": {"title": "Check selected output files", **_READS_ONLY},
+    "save_validation_report": {
+        "title": "Save an output validation report",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    },
+    "list_validation_reports": {"title": "List saved validation reports", **_READS_ONLY},
+    "plan_screening": {"title": "Plan post-generation screens", **_READS_ONLY},
+    "run_selected_screens": {"title": "Run selected post-generation screens", **_READS_ONLY},
 }
 for _tool in _TOOLS:
     _tool["annotations"] = dict(_ANNOTATIONS[str(_tool["name"])])
@@ -1330,7 +1649,18 @@ _TOOL_NAMES = frozenset(str(_tool["name"]) for _tool in _TOOLS)
 def main() -> int:
     """Start the server in this checkout's Linux environment."""
     if sys.platform == "win32":
-        return _relay(wsl_command(_repo()))
+        try:
+            command = wsl_command(_repo())
+        except (OSError, ValueError, subprocess.SubprocessError):
+            sys.stderr.write("Could not translate the configured MCP run roots into WSL paths. Check RFD4_MCP_ROOTS.\n")
+            return 1
+        return _relay(command)
+    # An operator may widen this list explicitly. With no setting, the MCP
+    # process is confined to this checkout rather than inheriting access to
+    # every absolute path the OS account can read or write.
+    if not os.environ.get(_ROOTS_ENV, "").strip():
+        checkout = _repo().resolve()
+        os.environ[_ROOTS_ENV] = os.pathsep.join(str(checkout / name) for name in ("runs", "disease_runs"))
     if os.environ.get(_SERVE_ENV) == "1":
         return serve()
     python = venv_python(_repo())
@@ -1347,28 +1677,38 @@ def wsl_command(repo: Path) -> list[str]:
     """
     root = os.environ.get("SYSTEMROOT", r"C:\Windows")
     wsl = str(Path(root) / "System32" / "wsl.exe")
-    return [
-        wsl,
-        "--cd",
-        str(repo),
-        "--",
-        "env",
-        f"{_SERVE_ENV}=1",
-        ".venv/bin/python",
-        "-u",
-        "scripts/humanitys_last_disease_mcp.py",
-    ]
+    command = [wsl, "--cd", str(repo), "--exec", "env", f"{_SERVE_ENV}=1"]
+    roots = os.environ.get(_ROOTS_ENV, "").strip()
+    if roots:
+        # Windows uses semicolons between paths. A POSIX root list can pass through
+        # unchanged. wslpath resolves the actual mount instead of assuming /mnt/<drive>.
+        translated = []
+        for entry in roots.split(";"):
+            entry = entry.strip()
+            if PureWindowsPath(entry).is_absolute():
+                entry = subprocess.check_output(
+                    [wsl, "--exec", "/usr/bin/wslpath", "-u", entry],
+                    stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL, encoding="utf-8", timeout=10,
+                ).rstrip("\r\n")
+                if not entry.startswith("/") or any(c in entry for c in ":\r\n"):
+                    raise ValueError("The translated run root cannot be represented as a WSL path.")
+            translated.append(entry)
+        command.append(f"{_ROOTS_ENV}={':'.join(translated)}")
+    return [*command, ".venv/bin/python", "-u", "scripts/humanitys_last_disease_mcp.py"]
 
 
 def venv_python(repo: Path) -> Path | None:
     """The checkout virtualenv, when this process is not already running it."""
     if sys.platform == "win32":
         return None
-    candidate = repo / ".venv" / "bin" / "python"
+    environment = repo / ".venv"
+    candidate = environment / "bin" / "python"
     if not candidate.is_file():
         return None
     try:
-        if candidate.resolve() == Path(sys.executable).resolve():
+        # A virtualenv executable often links to the base interpreter. Only the prefix
+        # tells us whether this process can actually import the checkout's dependencies.
+        if environment.samefile(sys.prefix):
             return None
     except OSError:
         return None
@@ -1399,6 +1739,9 @@ def serve(
             _warm()
         try:
             for message in _messages(incoming):
+                if isinstance(message, list):
+                    _handle_batch(message, calls, writer)
+                    continue
                 for reply in _handle(message, calls):
                     writer.send(reply)
         except OSError:
@@ -1467,13 +1810,31 @@ class _Writer:
     def __init__(self, stream: BinaryIO) -> None:
         self._stream = stream
         self._lock = threading.Lock()
+        self._pending_ids: set[str] = set()
 
-    def send(self, message: Mapping[str, object]) -> None:
+    def reserve_id(self, request_id: object) -> bool:
+        key = _key(request_id)
+        with self._lock:
+            if key in self._pending_ids:
+                return False
+            self._pending_ids.add(key)
+            return True
+
+    def forget_id(self, request_id: object) -> None:
+        with self._lock:
+            self._pending_ids.discard(_key(request_id))
+
+    def send(self, message: object) -> None:
         text = json.dumps(message, separators=(",", ":"), ensure_ascii=True)
         with self._lock:
             self._stream.write(text.encode("ascii"))
             self._stream.write(b"\n")
             self._stream.flush()
+            # A batch holds all its IDs until the whole response reaches the client.
+            replies = message if isinstance(message, list) else (message,)
+            for reply in replies:
+                if isinstance(reply, dict) and _valid_request_id(reply.get("id")):
+                    self._pending_ids.discard(_key(reply["id"]))
 
 
 class _Cancelled(BaseException):
@@ -1485,6 +1846,50 @@ class _Cancelled(BaseException):
     like a failed run instead of no run. This passes through that handler while
     still letting its ``finally`` close the panel and the run log.
     """
+
+
+class _Batch:
+    """Collect one batch's immediate and worker replies into one response frame."""
+
+    def __init__(self, writer: _Writer) -> None:
+        self._writer = writer
+        self._replies: list[dict[str, object]] = []
+        self._pending = 0
+        self._closed = False
+        self._sent = False
+        self._lock = threading.Lock()
+
+    def expect(self) -> None:
+        with self._lock:
+            self._pending += 1
+
+    def immediate(self, reply: dict[str, object]) -> None:
+        with self._lock:
+            self._replies.append(reply)
+
+    def complete(self, reply: dict[str, object] | None) -> None:
+        send = None
+        with self._lock:
+            if reply is not None:
+                self._replies.append(reply)
+            self._pending -= 1
+            send = self._ready_locked()
+        if send is not None:
+            self._writer.send(send)
+
+    def finish(self) -> None:
+        send = None
+        with self._lock:
+            self._closed = True
+            send = self._ready_locked()
+        if send is not None:
+            self._writer.send(send)
+
+    def _ready_locked(self) -> list[dict[str, object]] | None:
+        if self._sent or not self._closed or self._pending:
+            return None
+        self._sent = True
+        return list(self._replies) if self._replies else None
 
 
 class _Calls:
@@ -1501,39 +1906,49 @@ class _Calls:
     def __init__(self, writer: _Writer, handler: Handler) -> None:
         self._writer = writer
         self._handler = handler
-        self._queue: queue.Queue[tuple[Mapping[str, object], bool, threading.Event, str] | None] = queue.Queue()
+        self._queue: queue.Queue[
+            tuple[Mapping[str, object], bool, threading.Event, str, _Batch | None] | None
+        ] = queue.Queue()
         self._events: dict[str, threading.Event] = {}
         #: The call the worker is inside, as opposed to the ones still queued.
-        self._running: str | None = None
+        self._running: threading.Event | None = None
         self._lock = threading.Lock()
         self._drained = threading.Event()
         self._drained.set()
         self._worker = threading.Thread(target=self._work, name="Humanitys-Last-Disease-tool", daemon=True)
         self._worker.start()
 
-    def submit(self, message: Mapping[str, object], *, modern: bool) -> None:
-        """Take a call for the worker. Nothing is answered from the read loop."""
+    def reserve_id(self, request_id: object) -> bool:
+        return self._writer.reserve_id(request_id)
+
+    def submit(self, message: Mapping[str, object], *, modern: bool, batch: _Batch | None = None) -> bool:
+        """Queue a call whose response ID has already been reserved."""
         key = _key(message.get("id"))
-        event = threading.Event()
         with self._lock:
+            if len(self._events) >= _MAX_OUTSTANDING_CALLS and key not in self._events:
+                return False
+            event = threading.Event()
             self._events[key] = event
             self._drained.clear()
-        self._queue.put((message, modern, event, key))
+            if batch is not None:
+                batch.expect()
+        self._queue.put((message, modern, event, key, batch))
+        return True
 
     def cancel(self, request_id: object) -> None:
         """Mark a call cancelled. An unknown or finished id is ignored, as the spec allows."""
+        if not _valid_request_id(request_id):
+            return
         key = _key(request_id)
         with self._lock:
             event = self._events.get(key)
-            running = self._running == key
-        if event is None:
-            return
-        event.set()
-        # Only for the call actually in flight. A queued one has started nothing
-        # to stop, and ending the running call's child because a different
-        # request was withdrawn would cancel work nobody asked to cancel.
-        if running:
-            _stop_work()
+            if event is None:
+                return
+            event.set()
+            # Hold the worker lock through the signal so the current call
+            # owns any running children until the stop request is issued.
+            if self._running is event:
+                _stop_work()
 
     def shutdown(self) -> None:
         """Give a call in flight a moment to finish, then tell it to stop."""
@@ -1560,15 +1975,17 @@ class _Calls:
             job = self._queue.get()
             if job is None:
                 return
-            message, modern, event, key = job
+            message, modern, event, key, batch = job
             with self._lock:
-                self._running = key
+                self._running = event
             try:
                 # Withdrawn while it waited behind another call. Starting it
                 # anyway would open the run log and begin the work for a request
                 # the client has already let go of.
-                if not event.is_set():
-                    self._answer(message, modern, event)
+                if event.is_set() or not self._answer(message, modern, event, batch):
+                    self._writer.forget_id(message["id"])
+                    if batch is not None:
+                        batch.complete(None)
             except Exception as exc:
                 # A tool that fails is answered inside ``_call``. What reaches
                 # here failed in this server while answering, and the worker
@@ -1576,15 +1993,22 @@ class _Calls:
                 # every later call waiting for an answer that never comes.
                 sys.stderr.write(f"Humanitys-Last-Disease: a call could not be answered: {type(exc).__name__}\n")
                 with contextlib.suppress(Exception):
-                    self._writer.send(_error(message.get("id"), _INTERNAL_ERROR, "Internal error."))
+                    reply = _error(message.get("id"), _INTERNAL_ERROR, "Internal error.")
+                    if batch is None:
+                        self._writer.send(reply)
+                    else:
+                        batch.complete(reply)
             finally:
                 with self._lock:
                     self._running = None
-                    self._events.pop(key, None)
+                    if self._events.get(key) is event:
+                        self._events.pop(key)
                     if not self._events:
                         self._drained.set()
 
-    def _answer(self, message: Mapping[str, object], modern: bool, event: threading.Event) -> None:
+    def _answer(
+        self, message: Mapping[str, object], modern: bool, event: threading.Event, batch: _Batch | None
+    ) -> bool:
         params = message.get("params")
         progress = _Progress(self._writer, _progress_token(params), event)
         _CURRENT.report = progress.line
@@ -1601,7 +2025,7 @@ class _Calls:
         except _Cancelled:
             # The spec asks a server to stop, free what it held, and send no
             # response at all for a cancelled request.
-            return
+            return False
         finally:
             _CURRENT.report = None
             finished.set()
@@ -1610,8 +2034,13 @@ class _Calls:
         # callback, so a cancellation for one is only visible here. Answering it
         # would be a response for a request the client has released.
         if event.is_set():
-            return
-        self._writer.send(_result(message, _decorate(result, modern=modern)))
+            return False
+        reply = _result(message, _decorate(result, modern=modern))
+        if batch is None:
+            self._writer.send(reply)
+        else:
+            batch.complete(reply)
+        return True
 
 
 def _heartbeat(progress: _Progress, finished: threading.Event) -> None:
@@ -1758,6 +2187,8 @@ def _key(request_id: object) -> str:
     as either, so the type is part of the key. An id that is neither still gets
     a key rather than raising, because it has already been answered by then.
     """
+    if isinstance(request_id, float) and request_id.is_integer():
+        request_id = int(request_id)
     return f"{type(request_id).__name__}:{request_id!r}"
 
 
@@ -1780,25 +2211,28 @@ def _progress_token(params: object) -> object:
 
 
 def _handle(message: object, calls: _Calls) -> list[dict[str, object]]:
-    """The replies one frame earns. A batch frame earns one per request in it.
-
-    A top-level array is a JSON-RPC batch, which the base protocol of the
-    handshake revisions this server advertises requires it to accept. Rejecting
-    the array as a single invalid request answered none of the ids inside it, so
-    every request in the batch waited for its timeout.
-    """
-    if isinstance(message, list):
-        if not message:
-            return [_error(None, _INVALID_REQUEST, "Invalid request.")]
-        replies: list[dict[str, object]] = []
-        for item in message:
-            replies.extend(_handle(item, calls))
-        return replies
+    """The immediate replies one non-batch frame earns."""
     reply = _reply_to(message, calls)
     return [] if reply is None else [reply]
 
 
-def _reply_to(message: object, calls: _Calls) -> dict[str, object] | None:
+def _handle_batch(message: list[object], calls: _Calls, writer: _Writer) -> None:
+    """Answer a JSON-RPC batch once, after every requested tool call finishes."""
+    if not message:
+        writer.send(_error(None, _INVALID_REQUEST, "Invalid request."))
+        return
+    if len(message) > _MAX_BATCH_ITEMS:
+        writer.send(_error(None, _INVALID_REQUEST, "Batch request has too many items."))
+        return
+    batch = _Batch(writer)
+    for item in message:
+        reply = _reply_to(item, calls, batch=batch)
+        if reply is not None:
+            batch.immediate(reply)
+    batch.finish()
+
+
+def _reply_to(message: object, calls: _Calls | None, *, batch: _Batch | None = None) -> dict[str, object] | None:
     if message is _UNREADABLE:
         return _error(None, _PARSE_ERROR, "Parse error.")
     if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
@@ -1809,10 +2243,14 @@ def _reply_to(message: object, calls: _Calls) -> dict[str, object] | None:
     if "id" not in message:
         if message.get("method") == "notifications/cancelled":
             params = message.get("params")
-            if isinstance(params, dict):
+            if isinstance(params, dict) and calls is not None:
                 calls.cancel(params.get("requestId"))
         return None
     request_id = message.get("id")
+    if not _valid_request_id(request_id):
+        return _error(None, _INVALID_REQUEST, "Invalid request.")
+    if calls is not None and not calls.reserve_id(request_id):
+        return _error(None, _INVALID_REQUEST, "Request ID is already in use.")
     method = message.get("method")
     if not isinstance(method, str):
         return _error(request_id, _INVALID_REQUEST, "Invalid request.")
@@ -1839,12 +2277,18 @@ def _reply_to(message: object, calls: _Calls) -> dict[str, object] | None:
         # A call no tool can be given is refused here, at once, as a protocol
         # error. It is the request that is wrong, not a tool that failed, and
         # it should not wait its turn behind a call that is still running.
-        problem = _call_problem(message.get("params"))
+        params = message.get("params")
+        if isinstance(params, dict) and "task" in params:
+            return _error(request_id, _METHOD_NOT_FOUND, "Task-augmented tool calls are unavailable.")
+        problem = _call_problem(params)
         if problem is not None:
             return _error(request_id, _INVALID_PARAMS, problem)
         # Answered by the worker, not here: this loop has to stay free to read
         # the cancellation that stops it.
-        calls.submit(message, modern=modern)
+        if calls is None:
+            return _error(request_id, _INTERNAL_ERROR, "Internal error.")
+        if not calls.submit(message, modern=modern, batch=batch):
+            return _error(request_id, _SERVER_BUSY, "Server is busy.")
         return None
     return _error(request_id, _METHOD_NOT_FOUND, "Method not found.")
 
@@ -1859,6 +2303,11 @@ def _declared_version(message: Mapping[str, object]) -> str | None:
         return None
     version = meta.get(_VERSION_KEY)
     return version if isinstance(version, str) else None
+
+
+def _valid_request_id(request_id: object) -> bool:
+    """MCP request IDs must be strings or integers, including integer-valued JSON numbers."""
+    return type(request_id) in (str, int) or (isinstance(request_id, float) and request_id.is_integer())
 
 
 def _decorate(result: Mapping[str, object], *, modern: bool, cacheable: bool = False) -> dict[str, object]:
@@ -1943,7 +2392,7 @@ def _call_problem(params: object) -> str | None:
     if not isinstance(name, str):
         return "Invalid params: name must be a string."
     if name not in _TOOL_NAMES:
-        return "Unknown tool: " + " ".join(name.split())[:80]
+        return "Unknown tool: " + _scrub_error_text(name)[:80]
     arguments = params.get("arguments", {})
     if arguments is not None and not isinstance(arguments, dict):
         return "Invalid params: arguments must be an object."
@@ -1986,7 +2435,19 @@ def _call(params: object, handler: Handler) -> dict[str, object]:
 
 
 def _tool_error(message: str) -> dict[str, object]:
-    return {"content": [{"type": "text", "text": message}], "isError": True}
+    return {"content": [{"type": "text", "text": _scrub_error_text(message)}], "isError": True}
+
+
+def _scrub_error_text(message: str) -> str:
+    """One readable refusal without a credential, machine path, or control line."""
+    cleaned = _ERROR_SECRET.sub(_ERROR_REDACTED, message)
+    cleaned = _ERROR_BEARER.sub(r"\1" + _ERROR_REDACTED, cleaned)
+    cleaned = _ERROR_NAMED_SECRET.sub(r"\1\2" + _ERROR_REDACTED, cleaned)
+    cleaned = _ERROR_WIN_PATH.sub(_ERROR_PATH, cleaned)
+    cleaned = _ERROR_UNC_PATH.sub(_ERROR_PATH, cleaned)
+    cleaned = _ERROR_POSIX_PATH.sub(_ERROR_PATH, cleaned)
+    cleaned = " ".join(cleaned.split())
+    return cleaned or "The tool could not be run."
 
 
 def _result(message: Mapping[str, object], result: object) -> dict[str, object]:
@@ -2019,7 +2480,7 @@ def _messages(stream: BinaryIO) -> Iterator[object]:
     """Yield one JSON value per MCP frame. Newline frames and Content-Length frames both count."""
     read_line = _line_reader(stream)
     while True:
-        line = read_line()
+        line = read_line(_MAX_FRAME + 1)
         if not line:
             return
         if len(line) > _MAX_FRAME and not line.endswith(b"\n"):
@@ -2028,7 +2489,7 @@ def _messages(stream: BinaryIO) -> Iterator[object]:
             # up again. Reading it whole first is how a client that sends no
             # newline takes all the memory this process can get.
             while True:
-                rest = read_line()
+                rest = read_line(_MAX_FRAME + 1)
                 if not rest or rest.endswith(b"\n"):
                     break
             yield _UNREADABLE
@@ -2042,10 +2503,10 @@ def _messages(stream: BinaryIO) -> Iterator[object]:
             if length < 0 or length > _MAX_FRAME:
                 yield _UNREADABLE
                 return
-            while True:
-                separator = stream.readline()
-                if separator in {b"", b"\n", b"\r\n"}:
-                    break
+            if not _read_frame_headers(read_line, len(line)):
+                # Without the separator the start of the body is uncertain.
+                yield _UNREADABLE
+                return
             payload = _read_exactly(stream, length)
             if payload is None:
                 yield _UNREADABLE
@@ -2057,15 +2518,28 @@ def _messages(stream: BinaryIO) -> Iterator[object]:
         yield _decode(line)
 
 
-def _line_reader(stream: BinaryIO) -> Callable[[], bytes]:
-    """Read one line of at most ``_MAX_FRAME`` bytes, plus one to tell that it was cut.
+def _line_reader(stream: BinaryIO) -> Callable[[int], bytes]:
+    """Read one line subject to the parser's current byte limit.
 
     The bound is passed only to a real stream. A stand-in that takes no size,
     as a test's does, is read as it always was.
     """
     if isinstance(stream, io.IOBase):
-        return lambda: stream.readline(_MAX_FRAME + 1)
-    return stream.readline
+        return stream.readline
+    return lambda _limit: stream.readline()
+
+
+def _read_frame_headers(read_line: Callable[[int], bytes], first_size: int) -> bool:
+    """Read through the required blank line within the remaining header budget."""
+    remaining = _MAX_FRAME_HEADERS - first_size
+    while remaining > 0:
+        header = read_line(remaining + 1)
+        if len(header) > remaining or not header.endswith(b"\n"):
+            return False
+        if header in {b"\n", b"\r\n"}:
+            return True
+        remaining -= len(header)
+    return False
 
 
 def _read_exactly(stream: BinaryIO, length: int) -> bytes | None:
@@ -2089,9 +2563,21 @@ def _read_exactly(stream: BinaryIO, length: int) -> bytes | None:
 
 def _decode(payload: bytes) -> object:
     try:
-        return json.loads(payload.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError):
+        return json.loads(payload.decode("utf-8"), parse_float=_finite_json_float, parse_constant=_reject_json_constant)
+    except (UnicodeError, ValueError, RecursionError):
         return _UNREADABLE
+
+
+def _reject_json_constant(_value: str) -> None:
+    """JSON has no NaN or infinity values."""
+    raise ValueError("Non-finite JSON number.")
+
+
+def _finite_json_float(token: str) -> float:
+    number = float(token)
+    if not math.isfinite(number):
+        raise ValueError("Non-finite JSON number.")
+    return number
 
 
 def _relay(command: list[str]) -> int:

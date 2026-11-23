@@ -8,12 +8,15 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from contextlib import redirect_stdout
 from importlib import metadata
+from io import StringIO
 from numbers import Real
 from pathlib import Path
 from types import ModuleType
@@ -22,21 +25,23 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from admet_ai import ADMETModel
     from pandas import DataFrame
+    from rdkit import Chem
 
 from rfproteina.disease.corpus_provenance import declare
+from rfproteina.disease.ligand_inputs import parse_nominated_smiles
 
 METHOD = "admet_ai_aqsoldb_v2"
 ENDPOINT = "Solubility_AqSolDB"
 UNIT = "log10(mol/L)"
-_BATCH = 64
+BATCH_SIZE = 64
 
 
 class SolubilityError(ValueError):
     """A named reason the declared measurement could not be made."""
 
 
-def _model() -> tuple[ADMETModel, dict]:
-    """Check the installed release and its five regression members before inference."""
+def installed_assets() -> tuple[metadata.Distribution, Path, list[Path]]:
+    """Locate the run's endpoint definition and all five local regression members."""
     dist = metadata.distribution("admet-ai")
     if dist.version.split(".")[0] != "2":
         raise SolubilityError("unsupported_admet_ai_version")
@@ -45,31 +50,70 @@ def _model() -> tuple[ADMETModel, dict]:
     weights = sorted(reg.rglob("*.pt"))
     if [p.relative_to(reg).as_posix() for p in weights] != [f"model_{i}.pt" for i in range(5)]:
         raise SolubilityError("incomplete_or_unrecognized_regression_ensemble")
-    manifest = {str(p): p.hash for p in dist.files or ()}
     definition = root / "data" / "admet.csv"
+    if not definition.is_file() or any(not p.is_file() or p.stat().st_size == 0 for p in weights):
+        raise SolubilityError("installed_artifact_missing")
+    return dist, definition, weights
+
+
+def verified_assets(ensemble_dir: Path | None = None) -> tuple[metadata.Distribution, list[Path], dict[str, str]]:
+    """Verify the released endpoint and regression members, optionally staging only those members for inference."""
+    dist, definition, weights = installed_assets()
+    root = definition.parent.parent
+    manifest = {p.as_posix(): p for p in dist.files or ()}
     digests = {}
+    definition_bytes = b""
     for path in [definition, *weights]:
         entry = manifest.get("admet_ai/resources/" + path.relative_to(root).as_posix())
-        digest = hashlib.sha256(path.read_bytes()).digest()
-        if not entry or entry.mode != "sha256" or base64.urlsafe_b64encode(digest).decode().rstrip("=") != entry.value:
+        if entry is None or not entry.hash or entry.hash.mode != "sha256":
+            raise SolubilityError("installed_artifact_digest_mismatch")
+        if entry.size is not None and path.stat().st_size != entry.size:
+            raise SolubilityError("installed_artifact_digest_mismatch")
+        if path == definition:
+            definition_bytes = path.read_bytes()
+            digest = hashlib.sha256(definition_bytes).digest()
+        else:
+            checked = path
+            if ensemble_dir is not None:
+                checked = ensemble_dir / path.name
+                shutil.copyfile(path, checked)
+            with checked.open("rb") as stream:
+                digest = hashlib.file_digest(stream, "sha256").digest()
+        if base64.urlsafe_b64encode(digest).decode().rstrip("=") != entry.hash.value:
             raise SolubilityError("installed_artifact_digest_mismatch")
         digests[path.name] = digest.hex()
-    with definition.open(encoding="utf-8-sig", newline="") as source:
-        rows = [row for row in csv.DictReader(source) if row.get("id") == ENDPOINT]
+    with StringIO(definition_bytes.decode("utf-8-sig"), newline="") as source:
+        reader = csv.DictReader(source, strict=True)
+        if any((reader.fieldnames or []).count(name) != 1 for name in ("id", "task_type", "units")):
+            raise SolubilityError("endpoint_definition_mismatch")
+        rows = [row for row in reader if row.get("id") == ENDPOINT]
     if len(rows) != 1 or (rows[0].get("task_type"), rows[0].get("units")) != ("regression", "log(mol/L)"):
         raise SolubilityError("endpoint_definition_mismatch")
+    return dist, weights, digests
 
-    from admet_ai import ADMETModel
 
-    model = ADMETModel(include_physchem=False, drugbank_path=None, num_workers=0)
+def _model() -> tuple[ADMETModel, dict]:
+    # The public constructor loads every ensemble under models_dir. Supply only the checked regression files.
+    with tempfile.TemporaryDirectory(prefix="admet-solubility-") as temporary:
+        ensemble_dir = Path(temporary) / "admet_regression"
+        ensemble_dir.mkdir()
+        dist, weights, digests = verified_assets(ensemble_dir)
+        from admet_ai import ADMETModel
+
+        model = ADMETModel(models_dir=temporary, include_physchem=False, drugbank_path=None, num_workers=0)
     owners = [i for i, tasks in enumerate(model.task_lists) for task in tasks if task == ENDPOINT]
-    if len(owners) != 1 or len(model.model_lists[owners[0]]) != len(weights) or model.device != "cpu":
+    if (
+        owners != [0] or len(model.model_lists) != 1 or len(model.model_lists[0]) != len(weights)
+        or model.device != "cpu"
+    ):
         raise SolubilityError("provider_ensemble_or_device_mismatch")
     return model, {
         "admet_ai": dist.version,
         "chemprop": metadata.version("chemprop"),
         "rdkit": metadata.version("rdkit"),
         "device": model.device,
+        "loaded_ensembles": len(model.model_lists),
+        "regression_members": len(weights),
         "verified_sha256": digests,
     }
 
@@ -123,8 +167,8 @@ def _infer(smiles: list[str]) -> dict:
     except Exception as error:
         return {"blocker": _blocker(error)}
     values = {}
-    for start in range(0, len(smiles), _BATCH):
-        batch = smiles[start : start + _BATCH]
+    for start in range(0, len(smiles), BATCH_SIZE):
+        batch = smiles[start : start + BATCH_SIZE]
         values.update(_score_batch(model, batch))
     return {"provider": identity, "values": values}
 
@@ -149,7 +193,7 @@ def _local_predictions(smiles: list[str]) -> dict:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             check=True,
-            timeout=600 + 60 * math.ceil(len(smiles) / _BATCH),
+            timeout=600 + 60 * math.ceil(len(smiles) / BATCH_SIZE),
         )
         return json.loads(run.stdout)
     except subprocess.TimeoutExpired:
@@ -158,22 +202,17 @@ def _local_predictions(smiles: list[str]) -> dict:
         return {"blocker": "provider_worker_failed"}
 
 
-def _canonical(smiles: str, chem: ModuleType) -> str:
-    # Disable RDKit's permissive trailing-name parsing and preserve salt, charge,
-    # isotope and stereochemistry. Atom-map numbers label atoms in reactions.
-    if not smiles or not smiles.isascii() or not smiles.isprintable() or " " in smiles or "|" in smiles:
-        raise SolubilityError("invalid_smiles")
-    params = chem.SmilesParserParams()
-    params.parseName = params.allowCXSMILES = False
+def molecular_identity(smiles: str, chem: ModuleType) -> tuple[Chem.Mol, str]:
+    """Return the submitted graph and the canonical key shared by selection and prediction."""
     try:
-        mol = chem.MolFromSmiles(smiles, params)
+        mol = parse_nominated_smiles(smiles, chem, remove_hs=True)
     except (ValueError, RuntimeError, OverflowError) as error:
         raise SolubilityError("invalid_smiles") from error
     if mol is None or not mol.GetNumAtoms() or any(a.GetAtomicNum() == 0 for a in mol.GetAtoms()):
         raise SolubilityError("invalid_smiles")
     for atom in mol.GetAtoms():
         atom.SetAtomMapNum(0)
-    return chem.MolToSmiles(mol, isomericSmiles=True)
+    return mol, chem.MolToSmiles(mol, isomericSmiles=True)
 
 
 def profile(candidates: Iterable[Sequence[str]], *, scope: str) -> dict:
@@ -215,7 +254,7 @@ def profile(candidates: Iterable[Sequence[str]], *, scope: str) -> dict:
             item["blocker"] = "rdkit_unavailable"
             continue
         try:
-            key = _canonical(row[1], Chem)
+            _, key = molecular_identity(row[1], Chem)
         except SolubilityError as error:
             item["blocker"] = str(error)
             continue
@@ -246,13 +285,15 @@ def profile(candidates: Iterable[Sequence[str]], *, scope: str) -> dict:
     return record
 
 
-def screen_run(directory: Path) -> dict | None:
-    from rfproteina.disease.ligand_inputs import read_smiles_candidates
+def screen_run(directory: Path, *, candidate: str | None = None) -> dict | None:
+    from rfproteina.disease.ligand_inputs import nominated_rows, read_smiles_candidates
 
     scope, candidates, blocker = read_smiles_candidates(directory)
     if candidates is None:
         return None
-    result = profile(candidates, scope=scope)
+    if candidate is not None and scope != "candidate_table":
+        return {**profile([], scope=scope), "blocker": blocker or "candidate_requires_named_nomination"}
+    result = profile(nominated_rows(candidates, candidate), scope=scope)
     if blocker:
         result["blocker"] = blocker
     return result

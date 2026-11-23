@@ -101,6 +101,7 @@ from rfproteina.disease.results_actions import RETRIEVE_AF3 as RESULTS_AF3_IMPOR
 from rfproteina.disease.results_actions import RETRIEVE_AF3C as RESULTS_AF3C
 from rfproteina.disease.screen import SCREEN_LISTING_PREFIX, screen_reports_for_directory
 from rfproteina.disease.screen_board import render_closing
+from rfproteina.disease.screen_selection import Choice as ScreenChoice
 from rfproteina.disease.shards import GENERATION_MODELS
 from rfproteina.disease.structure_view import (
     StructureTrio,
@@ -116,6 +117,12 @@ from rfproteina.disease.structures import (
     score_parts,
     structure_campaigns,
     structure_kind,
+)
+from rfproteina.disease.validation_checks import (
+    ValidationCandidate,
+    ValidationChoice,
+    candidate_validation_plan,
+    run_validation_checks,
 )
 
 Exchange = Callable[[str], dict[str, list[str]]]
@@ -135,6 +142,13 @@ DYNAMICS_TAB = "dynamics"
 #: Which tabs the results page has, so a stale or hand-typed value falls back
 #: to the first rather than opening nothing at all.
 RESULTS_TABS = ("binder", "combined", HUMAN_TAB, DYNAMICS_TAB)
+VALIDATION_ACTION = "results-validate-output"
+VALIDATION_FIELD = "validation_check"
+VALIDATION_SCOPE_ACTION = "results-validation-scope"
+VALIDATION_SCOPE_FIELD = "validation_scope"
+VALIDATION_CANDIDATE_FIELD = "validation_candidate"
+SCREENING_ACTION = "results-screen-methods"
+SCREENING_FIELD = "screen_method"
 #: The sentence above the analyst's buttons. The model takes one polypeptide
 #: chain -- its own stated limitation -- so the thing a reader is most likely
 #: to want from it is the thing it cannot do, and that is said before the run
@@ -428,6 +442,31 @@ _PAGE_SCRIPT = """
 (function () {
   var form = document.querySelector("form");
   if (!form) return;
+  var validation = form.querySelector("[data-validation-checks]");
+  if (validation) {
+    var refreshChecks = validation.querySelector("[data-validation-refresh]");
+    if (refreshChecks) {
+      validation.querySelectorAll("[data-validation-scope]").forEach(function (selector) {
+        selector.addEventListener("change", function () { refreshChecks.click(); });
+      });
+    }
+  }
+  form.querySelectorAll("[data-validation-checks], [data-screening-methods]").forEach(function (panel) {
+    var count = panel.querySelector("[data-screening-count]");
+    function updateCount() {
+      if (count) count.textContent = panel.querySelectorAll("input[type=checkbox]:enabled:checked").length;
+    }
+    if (count) panel.addEventListener("change", updateCount);
+    panel.addEventListener("click", function (event) {
+      var choice = event.target.closest("button[data-validation-select]");
+      if (!choice) return;
+      var mode = choice.getAttribute("data-validation-select");
+      panel.querySelectorAll("input[type=checkbox]:enabled").forEach(function (box) {
+        box.checked = mode === "all" || (mode === "recommended" && box.hasAttribute("data-recommended"));
+      });
+      updateCount();
+    });
+  });
   // The confirm page uses the named disease while its tick is set. While the
   // tick is clear, the matching-names menu is the choice. The inference page
   // has the same tick name and no menu, so both have to be present.
@@ -1071,20 +1110,18 @@ class OptionForm:
 def wants_option_ui(incoming: list[str]) -> bool:
     """True when the user asked for the panel, or passed no arguments at all.
 
-    A screen-only run never opens the panel: it reads a directory that already
-    exists and has no options to collect. It is named here as well as refused
-    by the parser, because the panel rebuilds the command from its own form and
-    would drop the flag before the parser ever saw it.
+    Screen-only and validation-only runs bypass the landing form. Their paths
+    belong to the CLI rather than the form's rebuilt command.
     """
     if "--help" in incoming or "-h" in incoming:
         return False
-    if _names_screen(incoming):
+    if _names_finished_run(incoming):
         return False
     return not incoming or "--ui" in incoming
 
 
-def _names_screen(incoming: list[str]) -> bool:
-    """Whether this argv asks for a screen-only run, in any spelling.
+def _names_finished_run(incoming: list[str]) -> bool:
+    """Whether argv asks to screen or validate a finished run, including abbreviations.
 
     Asked of a parser rather than of the strings. argparse accepts
     ``--screen=DIR`` and every unambiguous abbreviation as well -- ``--sc``,
@@ -1101,6 +1138,7 @@ def _names_screen(incoming: list[str]) -> bool:
     """
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--screen")
+    parser.add_argument("--validate-output")
     try:
         # Stderr is swallowed because this is a question, not the parse. A
         # dangling `--screen` makes argparse print a usage block naming only
@@ -1110,11 +1148,11 @@ def _names_screen(incoming: list[str]) -> bool:
         with contextlib.redirect_stderr(io.StringIO()):
             known, _rest = parser.parse_known_args(incoming)
     except SystemExit:
-        # A dangling `--screen` with no value. Left to the real parser, whose
+        # A finished-run flag without a value. Left to the real parser, whose
         # error names the flag; answering True here would refuse the panel over
         # an argv that is not going to run either way.
         return False
-    return known.screen is not None
+    return known.screen is not None or known.validate_output is not None
 
 
 class OptionPanel:
@@ -1544,6 +1582,16 @@ class OptionPanel:
         """True when a browser is waiting, so the finished page can offer a choice."""
         return self._session is not None
 
+    def choose_screens(self, directory: Path, kind: str) -> tuple[str, ...]:
+        """Offer the actual finished run's choices before the first optional calculation."""
+        from rfproteina.disease import screen_selection
+
+        choices = screen_selection.plan(directory, kind)
+        body = _scientific_screen_panel(choices, None, [], submit_button=False)
+        page = _page(f"Choose screens for {directory.name}", body, "Continue with selected screens", restart=False)
+        fields = self._show(page, len(self._answers))
+        return screen_selection.select(choices, "explicit", fields.get(SCREENING_FIELD, ()))
+
     def finish_choice(self) -> str:
         """The finished page. Close ends the run. The other two start it again.
 
@@ -1757,6 +1805,13 @@ class OptionPanel:
             return
         self._session.note_structures(trios)
 
+    def note_validation_runs(self, directories: Sequence[Path], *, open_panel: bool = False) -> None:
+        """Attach finished run directories to the results page."""
+        if open_panel and self._session is None:
+            self._session = BrowserSession()
+        if self._session is not None:
+            self._session.note_validation_runs(directories, standalone=open_panel)
+
     def _flush_structures(self) -> None:
         """Hand structures noted before the session existed to that session."""
         if self._session is None or not self._pending_structures:
@@ -1825,6 +1880,14 @@ class BrowserSession:
         self._file_bytes: dict[str, bytes] = {}
         self._path_tokens: dict[Path, str] = {}
         self._catalog: list[dict[str, object]] = []
+        self._validation_runs: tuple[Path, ...] = ()
+        self._validation_only = False
+        self._validation_scope = "all"
+        self._validation_candidate: str | None = None
+        self._validation_selection: tuple[str, ...] | None = None
+        self._validation_report: dict[str, str] = {}
+        self._screen_method_selection: tuple[str, ...] | None = None
+        self._screen_method_results: list[dict] = []
         self._shutdown = False
         #: Set when this session opened the panel window, so Close can end that window.
         self._window_port: str | None = None
@@ -1932,6 +1995,14 @@ class BrowserSession:
             self._file_bytes.clear()
             self._path_tokens.clear()
             self._catalog.clear()
+            self._validation_runs = ()
+            self._validation_only = False
+            self._validation_scope = "all"
+            self._validation_candidate = None
+            self._validation_selection = None
+            self._validation_report.clear()
+            self._screen_method_selection = None
+            self._screen_method_results.clear()
 
     def sealed(self) -> bool:
         with self._lock:
@@ -2059,16 +2130,19 @@ class BrowserSession:
         it does have is the structures behind the viewers and the chain each
         one calls the binder.
         """
-        from rfproteina.disease.results_actions import perform
-
-        with self._lock:
-            catalog = [dict(item) for item in self._catalog]
-        for entry in fields or []:
+        for entry in fields or ():
             if entry.startswith("results-tab="):
                 asked = entry.removeprefix("results-tab=").strip()
                 with self._lock:
                     self._results_tab = asked if asked in RESULTS_TABS else "binder"
+
+        if action in {VALIDATION_ACTION, VALIDATION_SCOPE_ACTION, SCREENING_ACTION}:
+            return self._run_validation_action(action, fields or ())
+
+        from rfproteina.disease.results_actions import perform
+
         with self._lock:
+            catalog = [dict(item) for item in self._catalog]
             earlier = dict(self._action_record)
         done = perform(action, catalog, self.structure_bytes, fields or [], held=earlier)
         token = self.token_for_text(done.payload) if done.payload else ""
@@ -2089,6 +2163,95 @@ class BrowserSession:
                     item[f"{which}_token"] = token
                     item[f"{which}_detail"] = detail
         return done.sentence
+
+    def _run_validation_action(self, action: str, fields: Sequence[str]) -> str:
+        scope_field = f"{VALIDATION_SCOPE_FIELD}="
+        scopes = [entry.removeprefix(scope_field) for entry in fields if entry.startswith(scope_field)]
+        with self._lock:
+            directories = self._validation_runs
+            if not directories:
+                raise ValueError("There is no finished run to validate.")
+            chosen = "all"
+            if len(directories) > 1:
+                if len(scopes) != 1 or scopes[0] not in dict(_validation_scope_options(directories)):
+                    raise ValueError("Choose a finished run from the list.")
+                chosen = scopes[0]
+            if chosen != self._validation_scope:
+                self._validation_scope = chosen
+                self._validation_candidate = None
+                self._validation_selection = None
+                self._validation_report.clear()
+                self._screen_method_selection = None
+                self._screen_method_results.clear()
+                return "Recommendations refreshed for the selected run scope."
+            if chosen != "all":
+                directories = (directories[int(chosen)],)
+            candidate_key = self._validation_candidate
+
+        candidate_field = f"{VALIDATION_CANDIDATE_FIELD}="
+        posted = [entry.removeprefix(candidate_field) for entry in fields if entry.startswith(candidate_field)]
+        if len(posted) > 1 or (posted and len(directories) != 1):
+            raise ValueError("Choose an available candidate from the list.")
+        chosen_candidate = candidate_key
+        if posted:
+            chosen_candidate = None if posted[0] == "all" else posted[0]
+        if chosen_candidate != candidate_key or action == VALIDATION_SCOPE_ACTION:
+            if chosen_candidate is not None:
+                _, choices = candidate_validation_plan(directories, chosen_candidate)
+                if not choices:
+                    raise ValueError("Choose an available candidate from the list.")
+            with self._lock:
+                self._validation_candidate = chosen_candidate
+                self._validation_selection = None
+                self._validation_report.clear()
+                self._screen_method_selection = None
+                self._screen_method_results.clear()
+            return "Recommendations refreshed. Review the selected checks before running them."
+
+        if action == SCREENING_ACTION:
+            from rfproteina.disease import screen_panel
+
+            if len(directories) != 1:
+                raise ValueError("Choose one finished run for scientific screening.")
+            prefix = f"{SCREENING_FIELD}="
+            methods = tuple(entry.removeprefix(prefix) for entry in fields if entry.startswith(prefix))
+            completed = 0
+
+            def progress(label: str) -> None:
+                nonlocal completed
+                if not label.startswith("Running "):
+                    completed += 1
+                self.note_progress(completed, len(methods), label, SCREENING_ACTION)
+
+            results = screen_panel.run(directories[0], candidate_key, "explicit", methods, on_line=progress)
+            with self._lock:
+                self._screen_method_selection = methods
+                self._screen_method_results = results
+            if not results:
+                return "No scientific screens selected."
+            return f"Returned {len(results)} screening result{'s' if len(results) != 1 else ''}."
+
+        field_prefix = f"{VALIDATION_FIELD}="
+        selected = tuple(entry.removeprefix(field_prefix) for entry in fields if entry.startswith(field_prefix))
+        report = run_validation_checks(directories, selected, candidate_key=candidate_key)
+        with self._lock:
+            self._validation_selection = selected
+            self._validation_report = report
+        if not report:
+            return "Select at least one installed validation check."
+        return f"Completed {len(report)} validation {'checks' if len(report) > 1 else 'check'}."
+
+    def note_validation_runs(self, directories: Sequence[Path], *, standalone: bool = False) -> None:
+        """Register local directories from the completed requests."""
+        with self._lock:
+            self._validation_runs = tuple(dict.fromkeys(directories))
+            self._validation_only = standalone
+            self._validation_scope = "0" if len(self._validation_runs) > 1 else "all"
+            self._validation_candidate = None
+            self._validation_selection = None
+            self._validation_report.clear()
+            self._screen_method_selection = None
+            self._screen_method_results.clear()
 
     def note_structures(self, trios: Sequence[StructureTrio]) -> None:
         """Register the files behind the three views. A missing file is left out."""
@@ -2191,15 +2354,37 @@ class BrowserSession:
             payload_token = self._payload_token
             active = self._results_tab
             action_record = dict(self._action_record)
+            directories = self._validation_runs
+            validation_only = self._validation_only
+            scope = self._validation_scope
+            candidate_key = self._validation_candidate
+            selected = self._validation_selection
+            validation_report = dict(self._validation_report)
+            method_selection = self._screen_method_selection
+            method_results = list(self._screen_method_results)
         structures = render_structure_views(catalog)
-        if not lines and not screens and not structures:
+        validation = ""
+        if directories:
+            included = directories if scope == "all" else (directories[int(scope)],)
+            candidates, choices = candidate_validation_plan(included, candidate_key)
+            validation = _validation_panel(
+                choices, selected, validation_report, directories, scope, candidates, candidate_key
+            )
+            if len(included) == 1 and choices:
+                from rfproteina.disease import screen_panel
+
+                methods = screen_panel.choices_for(included[0], candidate_key)
+                validation += _scientific_screen_panel(methods, method_selection, method_results)
+        if not lines and not screens and not structures and not validation:
             return _done_page()
         board = render_closing(lines, screens) if lines or screens else ""
         # In the body, never the actions row: ``_page`` keeps Close as the last
         # submit control, and both the page script's Enter handling and a test
         # depend on that ordering.
         tools = _results_tools(result, payload, payload_name, payload_token, active, action_record) if catalog else ""
-        return _page(PANEL_TITLE, structures + tools + board, "Close")
+        notice = f'<p class="screen-readout">{_esc(result)}</p>' if validation and result and not catalog else ""
+        body = structures + tools + notice + validation + board
+        return _page(PANEL_TITLE, body, "Close", restart=not validation_only)
 
     def close(self) -> None:
         """Unblock the waiting page, close the panel window, and stop the server."""
@@ -4811,6 +4996,121 @@ def _results_payload(payload: str, name: str, token: str) -> str:
 """
 
 
+def _validation_scope_options(directories: Sequence[Path]) -> list[tuple[str, str]]:
+    options = [("all", f"All {len(directories)} finished runs")]
+    options.extend((str(i), f"{i + 1}. {path.name or 'Run'}") for i, path in enumerate(directories))
+    return options
+
+
+def _scientific_screen_panel(
+    choices: Sequence[ScreenChoice], selected: tuple[str, ...] | None, results: list[dict],
+    *, submit_button: bool = True,
+) -> str:
+    outcomes = {row["id"]: row for row in results}
+    groups = {"Calculations": [], "Local result readers": [], "Previously recorded observations": []}
+    installed = sum(c.installed for c in choices)
+    checked_count = 0
+    for choice in choices:
+        key = choice.method.key
+        checked = choice.installed and (choice.recommended if selected is None else key in selected)
+        checked_count += checked
+        attributes = (" data-recommended" if choice.recommended else "") + ("" if choice.installed else " disabled")
+        outcome = outcomes.get(key, {})
+        detail = ""
+        if outcome:
+            body = (json.dumps(outcome["measurement"], ensure_ascii=False, indent=2)
+                    if "measurement" in outcome else outcome["reason"])
+            detail = f'<details><summary>{_esc(outcome["status"])}</summary><pre>{_esc(body)}</pre></details>'
+        group = {"recorded_evidence": "Previously recorded observations",
+                 "native_result_reader": "Local result readers"}.get(choice.method.operation, "Calculations")
+        groups[group].append(
+            f'<div><label><input type="checkbox" name="{SCREENING_FIELD}" '
+            f'value="{_esc(key)}"{attributes}{_on(checked)}> '
+            f'<strong>{_esc(choice.method.label)}</strong></label> '
+            f'<small>{_esc(choice.method.workload)}</small><p class="hint">{_esc(choice.reason)}</p>{detail}</div>'
+        )
+    return (
+        '<section class="results-tools" data-screening-methods><h2>Post-generation screening</h2>'
+        '<p class="hint">Recommendations use the candidate type, supplied inputs and installed software. '
+        'Selected methods run one at a time.</p><p class="results-row">'
+        '<button type="button" class="nav" data-validation-select="all">Select all installed screens</button>'
+        '<button type="button" class="nav" data-validation-select="recommended">Select recommended screens</button>'
+        '<button type="button" class="nav" data-validation-select="none">Clear screen selection</button></p>'
+        f'<p aria-live="polite"><span data-screening-count>{checked_count}</span>'
+        f' of {installed} installed screens selected'
+        f' · {len(choices)} listed</p>'
+        + "".join(f'<fieldset><legend>{heading}</legend>{"".join(rows)}</fieldset>'
+                  for heading, rows in groups.items() if rows)
+        + (f'<button type="submit" class="nav" name="__action" value="{SCREENING_ACTION}" formnovalidate>'
+           'Run selected screens</button>' if submit_button else '')
+        + '</section>'
+    )
+
+
+def _validation_panel(
+    choices: Sequence[ValidationChoice],
+    selected: tuple[str, ...] | None,
+    report: Mapping[str, str],
+    directories: Sequence[Path],
+    scope: str,
+    candidates: Sequence[ValidationCandidate],
+    candidate_key: str | None,
+) -> str:
+    scope_control = ""
+    if len(directories) > 1:
+        options = _select_options(_validation_scope_options(directories), scope)
+        scope_control = (
+            f'<label>Validation scope <select name="{VALIDATION_SCOPE_FIELD}" data-validation-scope>'
+            f'{options}</select></label>'
+        )
+    candidate_control = ""
+    if candidates or candidate_key is not None:
+        options = [("all", "All candidates"), *((candidate.key, candidate.label) for candidate in candidates)]
+        if candidate_key is not None and candidate_key not in dict(options):
+            options.append((candidate_key, "Candidate unavailable"))
+        candidate_options = _select_options(options, "all" if candidate_key is None else candidate_key)
+        candidate_control = (
+            f'<label>Candidate <select name="{VALIDATION_CANDIDATE_FIELD}" data-validation-scope>'
+            f'{candidate_options}</select></label>'
+        )
+    guidance = "Recommendations are selected from installed checks with matching files or bench records."
+    if candidate_key is not None and not choices:
+        guidance = "The selected candidate is unavailable. Choose another candidate to refresh the checks."
+    rows = []
+    available = any(choice.installed for choice in choices)
+    for choice in choices:
+        checked = choice.installed and (choice.recommended if selected is None else choice.key in selected)
+        recommended = " data-recommended" if choice.recommended else ""
+        recommendation = " <small>Recommended</small>" if choice.recommended else ""
+        disabled = " disabled" if not choice.installed else ""
+        outcome = (
+            f'<p class="hint" style="white-space:pre-wrap;overflow-wrap:anywhere">{_esc(report[choice.key])}</p>'
+            if choice.key in report else ""
+        )
+        rows.append(
+            f'<div><label><input type="checkbox" name="{VALIDATION_FIELD}" value="{_esc(choice.key)}"'
+            f'{recommended}{disabled}{_on(checked)}> <strong>{_esc(choice.label)}</strong>{recommendation}</label>'
+            f'<p class="hint">{_esc(choice.description)} {_esc(choice.reason)} {_esc(choice.workload)}</p>'
+            f'{outcome}</div>'
+        )
+    run_disabled = " disabled" if not available else ""
+    return f'''<section class="results-tools" data-validation-checks>
+<h2>Validate output files</h2>
+<p class="hint">{guidance}</p>
+<p class="results-row">{scope_control}{candidate_control}
+<button type="submit" class="nav" name="__action" value="{VALIDATION_SCOPE_ACTION}"
+data-validation-refresh formnovalidate>Refresh recommendations</button></p>
+<p class="results-row">
+<button type="button" class="nav" data-validation-select="all"{run_disabled}>Select all installed</button>
+<button type="button" class="nav" data-validation-select="recommended"{run_disabled}>Select recommended</button>
+<button type="button" class="nav" data-validation-select="none"{run_disabled}>Clear selection</button>
+</p>
+{"".join(rows)}
+<p class="results-row"><button type="submit" class="nav" name="__action" value="{VALIDATION_ACTION}"
+ formnovalidate{run_disabled}>Run selected checks</button></p>
+</section>'''
+
+
 def _results_tools(
     result: str,
     payload: str = "",
@@ -5295,7 +5595,7 @@ def _retrieve_row(which: str, label: str, action: str, *, accession: bool, label
 """
 
 
-def _page(title: str, body: str, submit: str) -> str:
+def _page(title: str, body: str, submit: str, *, restart: bool = True) -> str:
     """One panel page. The project name is the top heading on every page.
 
     Back, Forward, and the action sit beside that heading. The buttons stay
@@ -5304,7 +5604,7 @@ def _page(title: str, body: str, submit: str) -> str:
     """
     actions = (
         '<div class="page-actions page-actions-top">'
-        f"{_session_buttons()}"
+        f"{_session_buttons() if restart else ''}"
         f"{NAV_SLOT}"
         f'<button type="submit">{_esc(submit)}</button></div>'
     )
