@@ -62,6 +62,7 @@ _LOWER_IS_BETTER = r"ipae|(?<![A-Za-z])pae(?![A-Za-z])"
 #: cannot come to know a metric this filter does not, or the reverse.
 _CONFIDENCE = re.compile(f"{_HIGHER_IS_BETTER}|{_LOWER_IS_BETTER}", re.IGNORECASE)
 _ERROR_METRIC = re.compile(_LOWER_IS_BETTER, re.IGNORECASE)
+_DOCKING_NOTE = "Docking pose search is unavailable. AutoDock Vina can score supplied poses during screening."
 #: ``record_version`` and ``run_id`` are this record's shape and its identity,
 #: and ``scrubbed_files`` how many of the copied files were rewritten before
 #: the copy could be read. All three were being dropped, so two archived runs
@@ -370,7 +371,7 @@ def describe_architecture() -> dict[str, object]:
                         "id": "docking",
                         "name": "Docking",
                         "status": NOT_PERFORMED,
-                        "note": "No docking program is connected.",
+                        "note": _DOCKING_NOTE,
                     },
                     {
                         "id": "binding_assessment",
@@ -563,7 +564,7 @@ def backend_status(arguments: Mapping[str, object]) -> dict[str, object]:
         _modified(stored.traces),
         _idle("gpu", "GPU processing", "This call does not start GPU work."),
         _structural(stored.traces, stored.screens),
-        _idle("docking", "Docking", "No docking program is connected."),
+        _idle("docking", "Docking", _DOCKING_NOTE),
         _binding(stored.screens),
         _ranking(stored.traces, stored.screens),
     ]

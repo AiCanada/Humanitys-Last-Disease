@@ -41,7 +41,8 @@ def test_describe_architecture_names_the_three_layers(monkeypatch):
     from rfproteina.disease.mcp_api import call_tool
     from rfproteina.disease.research import MODEL_CHOICES
 
-    monkeypatch.setenv("XAI_API_KEY", "sk-test-should-not-leak-0000")
+    probe_key = "sk-" + "testfixture" * 3
+    monkeypatch.setenv("XAI_API_KEY", probe_key)
     result = call_tool("describe_architecture", {})
     layers = {layer["id"]: layer for layer in result["layers"]}
     assert list(layers) == ["ai_interface", "mcp_integration", "computational_backend"]
@@ -71,14 +72,18 @@ def test_describe_architecture_names_the_three_layers(monkeypatch):
         "screen_directory",
         "read_verdict",
         "read_results",
+        "declare_corpora",
     ]
     docking = next(item for item in layers["computational_backend"]["components"] if item["id"] == "docking")
     assert docking["status"] == "not_performed"
-    assert docking["note"] == "No docking program is connected."
+    assert docking["note"] == (
+        "Docking pose search is unavailable. AutoDock Vina can score supplied poses during screening."
+    )
     encoded = json.dumps(result)
     names = []
     _keys(result, names)
     assert "sequence" not in names
+    assert probe_key not in encoded
     assert "sk-" not in encoded
     assert "XAI_API_KEY" not in encoded
     assert "api.x.ai" not in encoded
@@ -257,6 +262,7 @@ def test_read_sequence_measures_returns_gravy_and_drops_the_sequence(tmp_path):
 def test_read_results_returns_the_trace_and_scrubs_the_home_path(tmp_path):
     from rfproteina.disease.mcp_api import call_tool
 
+    home_fixture = "/".join(("", "home", tmp_path.name))
     _write(
         tmp_path / "research_traces" / "binder_0.json",
         {"kind": "binder", "example_id": "binder_0", "note": "kept", "sequence": _PEPTIDE},
@@ -271,7 +277,7 @@ def test_read_results_returns_the_trace_and_scrubs_the_home_path(tmp_path):
             "entry_id": "1EGF",
             "chain": "A",
             "binder_kind": "protein",
-            "source": "/home/someone/disease_runs/gene_1EGF_A",
+            "source": f"{home_fixture}/disease_runs/gene_1EGF_A",
             "saved_at": "2026-01-01T00:00:00+00:00",
             "sequence": _PEPTIDE,
         },
@@ -283,8 +289,8 @@ def test_read_results_returns_the_trace_and_scrubs_the_home_path(tmp_path):
             "binder_kind": "protein",
             "target_id": "P00533",
             "generation_started": False,
-            "annotated_cif": "/home/someone/gene_1EGF_A.cif",
-            "design_spec": "/home/someone/gene_1EGF_A.yaml",
+            "annotated_cif": f"{home_fixture}/gene_1EGF_A.cif",
+            "design_spec": f"{home_fixture}/gene_1EGF_A.yaml",
         },
     )
     _write(
@@ -302,7 +308,7 @@ def test_read_results_returns_the_trace_and_scrubs_the_home_path(tmp_path):
     assert result["screens"][0]["call"] == "untested"
     encoded = json.dumps(result)
     assert _PEPTIDE not in encoded
-    assert "/home/someone" not in encoded
+    assert home_fixture not in encoded
     names = []
     _keys(result, names)
     assert "sequence" not in names
@@ -322,7 +328,7 @@ def test_backend_status_without_a_directory_does_not_invent_a_number():
         "id": "docking",
         "name": "Docking",
         "status": "not_performed",
-        "note": "No docking program is connected.",
+        "note": "Docking pose search is unavailable. AutoDock Vina can score supplied poses during screening.",
     }
     assert gpu == {
         "id": "gpu",

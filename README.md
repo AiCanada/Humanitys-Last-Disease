@@ -43,7 +43,7 @@ Any Additional diseased structures found via LLM search added to list
 
 Each structure is then ranked by LLM/Bot for Binding 
 
-Screening tests after generation, In the process of adding global-medical-computational-screening-tools
+**60 working screens after generation.** The review covers predictions, structural measurements and evidence readers exercised with live controls. [Reviewed methods](docs/post-generation-method-review.md) and [screen inputs](docs/reference/screen-inputs.md).
 
 Structure and binder visual presentation after generation
 
