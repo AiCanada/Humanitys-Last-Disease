@@ -7,9 +7,7 @@ declared pass criteria.
 
 ## Where the code lives
 
-Paths are relative to the repository root of the RFD4-Proteina fork carrying the disease
-flow, which is not in this repository yet. The criteria file is upstream and is present
-here.
+The paths below are relative to this checkout.
 
 | Component | Path |
 |---|---|
@@ -57,11 +55,9 @@ table** without retraining. Every check added to this program since has therefor
 added either as a report block — which records numbers and moves no verdict — or as a
 measurement for an axis that was already declared and previously unimplemented.
 
-All 22 axes now have a measurement path, and all 12 bars are reachable by measurement. One
-axis refuses a measured clear by design — innate immune (report 5) — and clears only by a
-curated, reasoned declaration. Paralog's UniRef50 clustering refuses one too, but when the
-caller names an identity cut the singleton goes to Ensembl Compara, which can clear it from
-a measurement (report 4); without a cut it still clears only by declaration.
+The program exposes 22 axes and 12 selectable bars. Both nucleic bars include innate
+immune response. A measured motif can flag that axis, while a clear requires a documented
+curated reason. Consequently, neither nucleic bar can be cleared entirely by measurement.
 
 ## The repository's declared pass criteria
 
@@ -83,52 +79,18 @@ writes a per-criterion pass column into the per-design metrics table.
 | `disco` | 2 |
 | `developability` | 4 |
 
-**This screen read one of them.** The interface criterion became a recorded flag, and a
-pre-oracle filter flag — not one of the eleven — was read directly; the other ten were
-evaluated, written into the file this screen opens, and discarded.
+### Reading a criterion
 
-`developability` is the pointed one: it bounds Rosetta SAP and hydrophobic exposed surface
-area *alongside* the same GRAVY and instability index this screen recomputes from the
-sequence. The screen was recomputing half of a criterion while throwing away the whole of
-it.
+The report counts applicable designs and records how many have a determinate result.
+When all applicable rows pass, the criterion passes. One measured failure establishes a
+failure. Incomplete rows leave the remaining coverage unresolved. The pre-oracle filter
+and the final screening bar have their own results.
 
-A bare interface `false` also said nothing about **which** of its three bounds was missed —
-a predicted TM-score floor, an interface predicted-aligned-error ceiling, and an aligned
-binder RMSD ceiling decide very different things about a design, and a reader choosing
-between re-folding and redesigning needs to know which.
-
-### What is recorded now
-
-Every declared criterion, with its stored verdict, each bound, the worst value the run
-reached against that bound, whether it held, and which bounds were missed.
-
-Three properties of that record:
-
-- **The criteria and their cuts are read from the config file at screen time, never copied
-  into code.** A cut written into the module would become a second opinion about the same
-  bar the moment the config changed.
-- One criterion borrows another's bounds by reference in the config; that reference is
-  followed once, by name. Any other form of reference is reported as unresolved rather than
-  parsed. Two bounds on one column, or a spec with no recognised cut, is recorded as
-  unsupported and claims nothing. A reduction over several columns is read for its single cut
-  against the reduction's label, which is not a metrics column, so it reports no measurement
-  and claims nothing either.
-- The reported value is the **worst** any design in the run reached, so the summary cannot
-  read milder than the designs it summarises. A criterion fails if any design failed it: a
-  run is not a passer because one of its designs was.
-
-A criterion whose pass column is absent was not evaluated. On a run with no refolding oracle
-that is all eleven, so the reason is given **once** rather than eleven times — but every
-criterion still carries its bounds, so you can see what would have to hold before paying for
-an oracle run. A config that cannot be read at all is a different silence and is named
-differently.
-
-### None of it moves the call
-
-The interface flag has always been recorded without changing the verdict, and the other ten
-are recorded on the same terms. They are the **evaluation's** verdict, not this screen's,
-and a screen that silently adopted ten new ways to fail would change the meaning of every
-stored call that had none of them.
+Each bound lists the least favorable value over applicable designs. Multiple bounds
+on one metric appear separately. The evaluator and reader share the implementation of
+per-design minimum, maximum and mean reductions and require every operand to be finite.
+The comparison uses the checkout's default thresholds. The stored flag records the
+run's decision, including any overrides it used.
 
 ## Reading a verdict correctly
 

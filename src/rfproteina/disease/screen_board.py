@@ -150,6 +150,32 @@ _BLOCKERS = {
     "tnp_provider_unavailable": "The Therapeutic Nanobody Profiler runtime could not be loaded.",
     "tnp_runtime_io_error": "The Therapeutic Nanobody Profiler could not read or write its working files.",
     "unsupported_residue": "AGGRESCAN has no residue score for at least one sequence position.",
+    "candidate_requires_named_nomination": (
+        "A run-level ligand has no candidate identity, so it cannot supply a candidate-scoped result."
+    ),
+    "compound_or_reference_unreadable": "The nominated compound or the installed reference data could not be read.",
+    "compound_prediction_unavailable": "The installed model could not produce a prediction for this compound.",
+    "input_unavailable": "The selected screen found no usable input.",
+    "input_validation_failed": "The prepared screen input failed validation.",
+    "invalid_nominated_smiles": "The nominated SMILES could not be parsed as a supported molecule.",
+    "invalid_or_duplicate_nomination": "A nomination is missing a unique ID or the required structure fields.",
+    "ligand_geometry_unavailable": "The nominated ligand geometry could not be checked.",
+    "ligand_input_unreadable": "The nominated ligand input could not be read.",
+    "no_attributable_prediction": "The model ran but returned no prediction attributable to this candidate.",
+    "no_matching_reference_measurements": "No installed reference measurement matches this compound.",
+    "not_selected_or_inapplicable": "This screen was not selected or does not apply to the candidate.",
+    "pose_checks_incomplete": "PoseBusters did not return every required pose check.",
+    "prepared_input_or_provider_unavailable": "The prepared result input or its provider could not be used.",
+    "provider_or_input_unavailable": "The screen provider or its required input was unavailable.",
+    "required_structure_or_measurement_unavailable": (
+        "A required structure or measurement could not be read or computed."
+    ),
+    "requires_two_readable_designed_chains": (
+        "Sequence diversity requires at least two readable designed chains."
+    ),
+    "solubility_candidate_missing": "The solubility table has no row for the selected candidate.",
+    "solubility_run_only": "The solubility table is run-level and cannot identify the selected candidate.",
+    "trained_model_unavailable": "The trained prediction model or its assets could not be loaded.",
     "no_pass_cut": "A number was measured. No pass cut applies to it, so the check stays undecided.",
     "cpg_not_consensus": (
         "The design holds CpG and none of it is one of the two consensus hexamers. "
@@ -367,6 +393,32 @@ _ACTIONS = {
     "sygma_worker_failed": "Inspect the SyGMa worker diagnostics for the affected parent.",
     "tnp_provider_unavailable": "Check the configured profiler runtime and its dependencies.",
     "tnp_runtime_io_error": "Check read and write access to the profiler's working directory.",
+    "candidate_requires_named_nomination": (
+        "Add the molecule to ligand_candidates.tsv with a unique candidate_id, or request run-level screening."
+    ),
+    "compound_or_reference_unreadable": "Validate the candidate structure and repair or reinstall the reference data.",
+    "compound_prediction_unavailable": "Check the candidate structure and installed model assets, then retry.",
+    "input_unavailable": "Supply the input listed for this screen and candidate.",
+    "input_validation_failed": "Correct the reported validation detail and resubmit the prepared input.",
+    "invalid_nominated_smiles": "Replace it with a valid connected SMILES for the intended compound.",
+    "invalid_or_duplicate_nomination": "Give every row a unique candidate_id and all required structure fields.",
+    "ligand_geometry_unavailable": "Supply a readable 3D ligand record and verify the PoseBusters environment.",
+    "ligand_input_unreadable": "Check that the ligand file is regular UTF-8 with the documented header and delimiter.",
+    "no_attributable_prediction": "Check model coverage and the candidate structure, or add a candidate measurement.",
+    "no_matching_reference_measurements": "Supply candidate-specific measurements or another evidence source.",
+    "not_selected_or_inapplicable": "Select the screen only for a compatible candidate with its required input.",
+    "pose_checks_incomplete": "Inspect the pose and rerun PoseBusters until every required check reports.",
+    "prepared_input_or_provider_unavailable": (
+        "Verify the result manifest, referenced files, and provider installation."
+    ),
+    "provider_or_input_unavailable": "Verify the provider installation and supply the documented input.",
+    "required_structure_or_measurement_unavailable": (
+        "Supply the required readable structure and verify the screen's optional dependency."
+    ),
+    "requires_two_readable_designed_chains": "Supply two or more readable designed-chain sequences.",
+    "solubility_candidate_missing": "Add a row using the candidate's exact candidate_id.",
+    "solubility_run_only": "Add a candidate_id column and identify every candidate-level row.",
+    "trained_model_unavailable": "Install the supported model bundle and confirm its configured data path.",
     "predictor_not_configured": "Add mhc_i.tsv or mhc_ii.tsv to the output folder.",
     "no_manifest": "Run the refold export first, or point --refold-dir at where it wrote.",
     "manifest_unreadable": "Check the file is readable JSON, or export the requests again.",
@@ -1857,14 +1909,16 @@ def _polypeptide_rows(record: Mapping[str, object]) -> list[str]:
         rows.append(f"Length {length} residues.")
     index = _as_float(record.get("aliphatic_index"))
     if index is not None and index >= 0:
-        rows.append(f"Aliphatic index {_num(index)}.")
+        unusual = record.get("nonstandard_count")
+        partial = isinstance(unusual, int) and not isinstance(unusual, bool) and unusual > 0
+        if partial or record.get("aliphatic_index_basis") == "known_residues_lower_bound":
+            rows.append(f"Aliphatic index lower bound {_num(index)}, from identified residues.")
+        else:
+            rows.append(f"Aliphatic index {_num(index)}.")
     else:
         lower_bound = _as_float(record.get("aliphatic_index_lower_bound"))
         if lower_bound is not None and lower_bound >= 0:
-            rows.append(
-                f"Identified residues contribute {_num(lower_bound)} to the aliphatic index. "
-                "The whole-chain value depends on the unresolved residues."
-            )
+            rows.append(f"Aliphatic index lower bound {_num(lower_bound)}, from identified residues.")
     mass = _as_float(record.get("molecular_weight"))
     if mass is not None and mass > 0:
         origin = ""

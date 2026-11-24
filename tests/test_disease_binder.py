@@ -144,6 +144,7 @@ from rfproteina.disease.structures import (
     options_from_records,
     save_returned_structures,
     select_options,
+    structure_selector,
 )
 from rfproteina.disease.tokens import (
     DISEASE_AE_CROP,
@@ -994,6 +995,66 @@ def test_cure_pick_downloads_a_predicted_row_and_all_can_add_it(tmp_path, monkey
     assert len(_commands(stdout)) == 3
 
 
+def test_structure_selector_survives_reordered_live_options(tmp_path, monkeypatch, capsys):
+    reported: dict[str, object] = {}
+
+    def report(name: str, value: object) -> None:
+        reported[name] = value
+
+    records = structures_json(tmp_path, ROW_P00533, ROW_P35225)
+    listed = _run_cure(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        ["--structures-json", str(records)],
+        report=report,
+    )
+    assert listed.code == 0 and listed.fetched == []
+    choices = reported["structure_options"]
+    assert isinstance(choices, list)
+    selected = next(row for row in choices if row["entry_id"] == "1EGFR")
+    selector = selected["selector"]
+    assert isinstance(selector, str) and len(selector) == 64
+
+    records = structures_json(tmp_path, ROW_P35225, ROW_P00533)
+    chosen = _run_cure(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        ["--structures-json", str(records), "--select-structure", selector, "--confirm-inference"],
+    )
+    assert chosen.code == 0
+    assert chosen.fetched == [("protein", "1EGFR")]
+
+
+def test_stale_structure_selector_stops_before_download(tmp_path, monkeypatch, capsys):
+    records = structures_json(tmp_path, ROW_P00533)
+    result = _run_cure(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        ["--structures-json", str(records), "--select-structure", "0" * 64, "--confirm-inference"],
+    )
+    assert result.code == 2
+    assert result.fetched == []
+    assert "no longer listed" in result.err
+
+
+def test_structure_selector_uses_structure_identity_not_display_order():
+    original = _option("protein", "1ABC")
+    relabelled = StructureOption(
+        group=original.group,
+        accession="another accession",
+        entry_id=original.entry_id,
+        chain=original.chain,
+        title="another title",
+        predicted=True,
+        source="another source",
+    )
+    assert structure_selector(original) == structure_selector(relabelled)
+    assert structure_selector(original) != structure_selector(_option("dna", "1ABC"))
+
+
 def test_a_download_directory_keeps_the_structure_file(tmp_path, monkeypatch, capsys):
     """Structure files land in the download directory and are copied for the job."""
     download = tmp_path / "downloads"
@@ -1041,7 +1102,7 @@ def test_cure_asks_for_a_choice_before_download(tmp_path, monkeypatch, capsys):
     assert code == 0
     assert fetched == []
     assert not out_dir.exists()
-    assert "Pass --all, or choose structures with --pick before download." in stdout
+    assert "Pass --all, --pick, or --select-structure before download." in stdout
     assert _commands(stdout) == []
 
 

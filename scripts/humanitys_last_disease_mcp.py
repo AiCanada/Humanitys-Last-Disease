@@ -122,9 +122,13 @@ _INSTRUCTIONS = (
     "read_results, list_output_files, read_output_file, backend_status, declare_corpora, plan_validation, "
     "validate_output_files, save_validation_report, and list_validation_reports. "
     "describe_architecture names the AI interface, the MCP tools, and the computational backend. "
-    "run takes one mode per call: the disease pipeline, a screen, or a refold. "
+    "run takes one mode per call: the disease pipeline, benchmark answer, dynamics, H.U.M.A.N. protocol, "
+    "screen, refold, or corpus declaration. "
     "Do not shell out to the program or parse its printed lines. "
     "Use plan_screening to inspect recommendations and run_selected_screens to run the chosen methods. "
+    "Run returns structured structure_options, dynamics, and human_protocol records when those stages produce them. "
+    "To select a returned structure reliably, pass its selector back through options.select_structure; repeat it "
+    "for multiple rows. A stale selector is refused before download or generation. "
     "Use list_output_files and read_output_file for bounded access to regular artifacts in an approved finished run. "
     "Use plan_validation for the candidate-specific output validation checklist; pass explicit check IDs or select "
     "recommended or all_installed checks in one validation call. "
@@ -1168,8 +1172,8 @@ _TOOLS: tuple[dict[str, object], ...] = (
         "name": "run",
         "description": (
             "Run Humanitys-Last-Disease with the selected options. Does not open the browser and does not prompt. "
-            "One mode per call: the disease pipeline, options.screen to screen a finished run, or options.refold "
-            "to prepare one for folding elsewhere and file the folds that come back. "
+            "One mode per call: the disease pipeline, benchmark answer, dynamics, H.U.M.A.N. protocol, "
+            "screening, refolding, or corpus declaration. "
             "Only the pipeline would ask a question, so only it needs accept_only, or choice when several "
             "disease names match. "
             "Generation starts only when options.run is true. "
@@ -1194,6 +1198,13 @@ _TOOLS: tuple[dict[str, object], ...] = (
             "type": "object",
             "properties": {
                 "program": {"type": "string"},
+                "mode": {
+                    "type": "string",
+                    "enum": [
+                        "disease_pipeline", "declare_corpora", "benchmark_answer", "dynamics",
+                        "human_protocol", "screen", "refold",
+                    ],
+                },
                 "exit_code": {"type": "integer", "description": "0 succeeded. 2 is a usage failure."},
                 "messages": {
                     "type": "array",
@@ -1212,8 +1223,33 @@ _TOOLS: tuple[dict[str, object], ...] = (
                         "was read from are in messages either way."
                     ),
                 },
+                "benchmark_answers": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Structured answers printed by options.benchmark_answer.",
+                },
+                "corpora": {
+                    "type": "object",
+                    "description": "Structured corpus declarations when options.declare_corpora is true.",
+                },
+                "structure_options": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": (
+                        "Numbered structure choices from the disease pipeline. Each has an opaque selector that can "
+                        "be passed through options.select_structure without depending on live-list ordering."
+                    ),
+                },
+                "dynamics": {
+                    "type": "object",
+                    "description": "The structured conformational-dynamics record produced by dynamics mode.",
+                },
+                "human_protocol": {
+                    "type": "object",
+                    "description": "The structured H.U.M.A.N. protocol record or anti-target proposal.",
+                },
             },
-            "required": ["program", "exit_code", "messages"],
+            "required": ["program", "mode", "exit_code", "messages"],
         },
     },
     {

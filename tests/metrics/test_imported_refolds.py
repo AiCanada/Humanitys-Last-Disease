@@ -26,8 +26,7 @@ from rfproteina.metrics.oracles.imported_refolds import (
     place_refold,
 )
 from rfproteina.utils.common import design_output_dir
-
-_CIF = "data_refold\n#\nloop_\n_atom_site.group_PDB\nATOM\n#\n"
+from tests.helpers.disease import REFOLDED_CIF as _CIF
 
 
 class _StubOracle:

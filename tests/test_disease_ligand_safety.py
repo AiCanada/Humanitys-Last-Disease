@@ -791,6 +791,8 @@ def test_read_across_scores_the_same_molecule_as_identical(tmp_path):
     out = ls.nearest_measured_neighbours(ASPIRIN, path, min_similarity=0.0)
     assert out.neighbours["herg"][0]["similarity"] == 1.0
     assert out.closest["herg"] == 1.0
+    assert any("shares the query InChIKey" in note for note in out.notes)
+    assert not any("DIFFERENT molecule" in note for note in out.notes)
 
 
 def test_read_across_keeps_the_most_potent_reading_per_compound(tmp_path):
@@ -1063,6 +1065,8 @@ def test_offtarget_profile_groups_hits_by_family(tmp_path):
     assert profile.families["enzyme"][0]["action"] == "Inhibitor"
     (analogue,) = profile.analogues
     assert analogue["measured_targets"] == 3
+    assert any("shares the query InChIKey" in note for note in profile.notes)
+    assert not any("DIFFERENT molecule" in note for note in profile.notes)
 
 
 def test_offtarget_profile_puts_a_withdrawn_analogue_first(tmp_path):
@@ -1086,7 +1090,7 @@ def test_offtarget_profile_says_nothing_when_nothing_is_close(tmp_path):
 
 def test_offtarget_profile_is_never_a_reading_of_this_design(tmp_path):
     path = _ot_subset(tmp_path / "ot.tsv", [_ot_row(ASPIRIN)])
-    record = ls.offtarget_profile(ASPIRIN, path, min_similarity=0.0).as_record()
+    record = ls.offtarget_profile(_SALICYLIC, path, min_similarity=0.0).as_record()
     flat = json.dumps(record)
     assert '"neighbour_nanomolar"' in flat
     for hits in record["families"].values():

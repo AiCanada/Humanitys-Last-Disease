@@ -119,4 +119,4 @@ def test_a_flag_run_still_says_which_flag_to_pass(tmp_path, monkeypatch, capsys)
     )
     captured = capsys.readouterr()
     assert code == 0, captured.err
-    assert "Pass --all, or choose structures with --pick before download." in captured.out
+    assert "Pass --all, --pick, or --select-structure before download." in captured.out

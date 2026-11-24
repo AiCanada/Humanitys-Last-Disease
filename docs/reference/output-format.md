@@ -50,9 +50,9 @@ Depending on what you asked the run to produce, each example's own subdirectory 
 - one refolded CIF plus a confidence JSON per oracle call, when refolding metrics are on
 
 FoldSeek diversity clustering additionally stages extracted single-chain CIFs under
-`foldseek_input_chains/{dataset_hash}/{task}/`. These are deleted once clustering finishes unless
-you pass `--cleanup_chains=false` to `aggregate_metrics` — they're cheap to regenerate from the
-chain-of-interest output, so there's rarely a reason to keep them.
+`foldseek_input_chains/{dataset_hash}/{task}/`. In-place aggregation removes recorded chain
+files after saving complete assignments for their output tree. Pass `--cleanup_chains=false`
+to keep them for a fresh clustering run. Exporting to a different directory preserves them.
 
 RFD4-Proteina does not write a separate run manifest. Hydra's own config snapshot goes to
 `./hydra_outputs` (or wherever `hydra.run.dir` points), not under `out_dir`. The closest thing to a
@@ -109,8 +109,15 @@ python -m rfproteina.inference_utils.aggregate_metrics ./runs/my_run/inference_m
 ```
 
 This writes `aggregated_metrics.csv` and `per_task_metrics.csv` next to the per-job files, and
-moves the originals into `individual_job_results/`. `launch_generate.sh` runs this automatically as
-a dependent job.
+archives the originals in `individual_job_results/` when writing in place. An export to another
+directory preserves its inputs. `launch_generate.sh` runs aggregation as a dependent job.
+
+The current `aggregation_sources.csv` has columns `kind,source,mtime_ns,sha256`.
+The first `report` row identifies the primary. Additional `report` rows bind the
+summaries published with it. A `shard` row supplies an input's filename, ordering
+timestamp and digest. The original three-column format certifies only the primary.
+The sweep exporter records which tables it could verify in `sweep_coverage.csv`.
+[Retry and export behavior](../how-to/advanced/offline-metrics.md#retrying-and-exporting-reports)
 
 Pass `--cluster_with_foldseek` to also cluster designs structurally: it adds a
 `foldseek_cluster_id` column, reading the `chain_of_interest` chain the pipeline already identified

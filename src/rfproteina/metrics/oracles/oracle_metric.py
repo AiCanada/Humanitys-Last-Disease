@@ -316,8 +316,12 @@ class OracleMetric(Metric):
         return find_structure_file(self.refolded_cif_path(out_dir, example_id, save_id))
 
     def already_refolded(self, out_dir: Path, example_id: str, save_id: str | None = None) -> bool:
-        """Return True if a confidence JSON for this example already exists."""
-        return self.confidence_path(out_dir, example_id, save_id).exists()
+        """Check the confidence record and the coordinates attested by an import."""
+        from rfproteina.metrics.oracles.imported_refolds import refold_artifacts_present
+
+        return refold_artifacts_present(
+            self.refolded_cif_path(out_dir, example_id, save_id), self.confidence_path(out_dir, example_id, save_id)
+        )
 
     @staticmethod
     def manifest_job_name(job: "OracleJobInput") -> str:

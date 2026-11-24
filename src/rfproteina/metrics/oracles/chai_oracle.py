@@ -35,8 +35,10 @@ runs it during tests (the fold is mocked).
 
 from __future__ import annotations
 
-import importlib.util
+from importlib import metadata
 from pathlib import Path
+
+from packaging.requirements import Requirement
 
 from rfproteina.metrics.oracles.free_oracle_common import (
     PredictOutput,
@@ -121,7 +123,30 @@ class Chai1Oracle(SequenceRefoldOracle):
         self.device = device
 
     def _backend_available(self) -> bool:
-        return importlib.util.find_spec("chai_lab") is not None
+        return self._backend_unavailable_reason() is None
+
+    def _backend_unavailable_reason(self) -> str | None:
+        try:
+            release = metadata.distribution("chai-lab")
+        except metadata.PackageNotFoundError:
+            return "chai-lab is not installed"
+        try:
+            torch_version = metadata.version("torch")
+        except metadata.PackageNotFoundError:
+            return "PyTorch is not installed"
+        for dependency in release.requires or ():
+            req = Requirement(dependency)
+            if req.name.lower() != "torch" or (req.marker and not req.marker.evaluate()):
+                continue
+            if torch_version not in req.specifier:
+                return f"chai-lab {release.version} requires {req}, installed torch is {torch_version}"
+        try:
+            from chai_lab.chai1 import run_inference
+        except (ImportError, OSError, RuntimeError) as error:
+            return f"chai-lab {release.version} inference import failed ({type(error).__name__})"
+        if not callable(run_inference):
+            return f"chai-lab {release.version} has no callable inference entry point"
+        return None
 
     @staticmethod
     def to_fasta(sequences: dict[str, str]) -> str:

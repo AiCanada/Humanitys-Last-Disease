@@ -435,11 +435,27 @@ python -m rfproteina.inference_utils.aggregate_metrics ./inference/my_run/metric
 | --- | --- | --- | --- | --- |
 | `input` (positional) | directory or file path | **Required** | Directory containing per-job result files, or an already-concatenated `per_example_metrics.csv`. | `./inference/my_run/metrics/` |
 | `--cluster_with_foldseek` | bool | Optional — `false` | Also run [FoldSeek structural diversity clustering](../how-to/run-the-model.md#foldseek-diversity-clustering). | `--cluster_with_foldseek` |
-| `--cleanup` | bool | Optional — `true` | Move individual job result files into `individual_job_results/` after concatenation. | `--cleanup=false` |
-| `--cleanup_chains` | bool | Optional — `true` | Delete the `foldseek_input_chains/` directory after clustering completes; the chain CIFs are regenerable. | `--cleanup_chains=false` |
+| `--cleanup` | bool | Optional — `true` | Archive job files after a successful in-place concatenation. | `--cleanup=false` |
+| `--cleanup_chains` | bool | Optional — `true` | Remove recorded chain CIFs for fully assigned output trees after in-place clustering. Exports preserve the source chains. | `--cleanup_chains=false` |
 | `--output_dir` | directory path, or `null` | Optional — `null` (input's directory, or its parent when input is a file) | Directory where aggregated results are saved. | `--output_dir=./inference/my_run/metrics_agg` |
 | `--foldseek_threads` | int, or `null` | Optional — `null` (all available CPUs) | CPU threads passed to FoldSeek. Set explicitly when running several clustering jobs on one node. | `--foldseek_threads=8` |
 | `--sequence_probability_workers` | int, or `null` | Optional — `null` (up to 8 CPUs from the SLURM allocation or process affinity) | Worker processes used to reconstruct sequence-probability observations from output CIFs. | `--sequence_probability_workers=4` |
+
+### Collecting published tables across configurations
+
+```bash
+python src/script_utils/concatenate_sweep_results.py --sweep-dir ./runs/comparison \
+    --expected-config baseline --expected-config repeat
+```
+
+Repeat `--expected-config` to require complete reports from each named configuration.
+Without it, the command discovers run directories and records partial coverage.
+`--metrics-dir` accepts `inference_metrics` or `evaluation_metrics`. The default
+prefers inference when both stages contain report data or pending work.
+An empty inference directory allows the offline results through. The generation
+sweep launcher explicitly selects `inference_metrics` and the planned configurations.
+It schedules its final export after their report jobs succeed.
+[Coverage fields and report files](../how-to/advanced/offline-metrics.md#collecting-results-across-configurations)
 
 ## Cluster launcher scripts
 

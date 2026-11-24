@@ -36,6 +36,7 @@ from biotite.structure.io.pdbx import CIFFile
 from biotite.structure.residues import apply_residue_wise, residue_iter, spread_residue_wise
 
 from rfproteina.af3.af3_apptainer import build_apptainer_fold_command
+from rfproteina.af3.weight_provenance import openfold3_checkpoint, require_weight_family
 from rfproteina.metrics.oracles.oracle_metric import (
     OracleJobInput,
     OracleMetric,
@@ -273,7 +274,6 @@ def _is_implicit_backbone_link(res_name_i: str, atom_name_i: str, res_name_j: st
     return (res_name_i in STANDARD_AA) != (res_name_j in STANDARD_AA)
 
 
-_OF3_PROVENANCE_FILENAME = "of3_ported_weights.provenance.json"
 #: Decompression bound for AF3's full confidences JSON. Its arrays are O(tokens²)
 #: -- a 5,000-token job's PAE matrix alone is 25 million numbers -- so the bound
 #: is generous, but a compressed file is still not allowed to expand without one.
@@ -369,16 +369,9 @@ def _rename_covalent_modifiers_for_af3(atom_array: AtomArray) -> AtomArray:
 
 
 def _using_of3_weights() -> bool:
-    """Whether ``AF3_MODEL_DIR`` holds converted OpenFold3 parameters, per its provenance stamp.
-
-    Duplicated in ``run_alphafold_batch``, which runs in the AF3 image without ``rfproteina``.
-    """
+    """Whether the host's configured parameters match their OpenFold3 digest."""
     model_dir = os.environ.get("AF3_MODEL_DIR", "").strip()
-    provenance = Path(model_dir) / _OF3_PROVENANCE_FILENAME if model_dir else None
-    if provenance is None or not provenance.is_file():
-        return False
-    # Deliberately unguarded: a corrupt stamp must not quietly fall back to AF3 weights.
-    return json.loads(provenance.read_text()).get("weight_family") == "openfold3"
+    return bool(model_dir and openfold3_checkpoint(Path(model_dir)))
 
 
 def _atomize_ligand_bonded_residues(atom_array: AtomArray) -> AtomArray:
@@ -475,6 +468,7 @@ class AF3Oracle(OracleMetric):
         seed: int | None = None,
         preserve_res_id: bool = True,
         cached_only: bool = False,
+        expected_weight_family: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(oracle_name=oracle_name, template_query=template_query, **kwargs)
@@ -482,6 +476,44 @@ class AF3Oracle(OracleMetric):
         self.seed = seed
         self.preserve_res_id = preserve_res_id
         self.cached_only = cached_only
+        if expected_weight_family not in {None, "openfold3", "alphafold3"}:
+            raise ValueError(f"Unknown oracle weight family: {expected_weight_family}")
+        if oracle_name.split("_", 1)[0] == "of3":
+            if expected_weight_family == "alphafold3":
+                raise ValueError("An of3 output namespace requires OpenFold3 weights")
+            expected_weight_family = "openfold3"
+        self.expected_weight_family = expected_weight_family
+
+    def _check_configured_family(self) -> None:
+        if self.expected_weight_family is None:
+            return
+        directory = os.environ.get("AF3_MODEL_DIR", "").strip()
+        if not directory or not Path(directory).is_dir():
+            raise ValueError(f"Missing AF3_MODEL_DIR for requested {self.expected_weight_family} weights")
+        checkpoint = openfold3_checkpoint(Path(directory))
+        if checkpoint is not None or self.expected_weight_family == "openfold3":
+            require_weight_family(self.expected_weight_family, "openfold3" if checkpoint else None, checkpoint)
+
+    def _load_confidence_json(self, path: Path) -> dict:
+        record = super()._load_confidence_json(path)
+        require_weight_family(
+            self.expected_weight_family, record.get("oracle_weight_family"), record.get("oracle_checkpoint_sha256")
+        )
+        if self.expected_weight_family:
+            score = record.get("overall_plddt")
+            if isinstance(score, bool) or not isinstance(score, float | int) or not 0.0 <= score <= 100.0:
+                raise ValueError("Verified oracle cache requires overall_plddt on its 0-100 scale")
+        return record
+
+    def already_refolded(self, out_dir: Path, example_id: str, save_id: str | None = None) -> bool:
+        path = self.confidence_path(out_dir, example_id, save_id)
+        if not path.is_file():
+            return False
+        if self.expected_weight_family is not None:
+            self._load_confidence_json(path)
+            if self.existing_refolded_cif_path(out_dir, example_id, save_id) is None:
+                raise ValueError("Verified oracle cache is missing its refolded structure")
+        return super().already_refolded(out_dir, example_id, save_id)
 
     # ------------------------------------------------------------------
     # OracleMetric framework hooks
@@ -508,6 +540,7 @@ class AF3Oracle(OracleMetric):
             )
             return
 
+        self._check_configured_family()
         # A slurm launcher (or the shebang wrapper) already pre-spawned the daemons.
         if template := os.environ.get("AF3_LAUNCHER_SOCKET_TEMPLATE"):
             _prewarm_daemon(template.format(rank=_resolve_daemon_rank(_resolve_local_rank())))
@@ -601,6 +634,7 @@ class AF3Oracle(OracleMetric):
                 "(rfd4-af3server retrieve), or unset cached_only to fold locally."
             )
 
+        self._check_configured_family()
         daemon_rank = _resolve_daemon_rank(_resolve_local_rank())
 
         batch_dir = Path(tempfile.mkdtemp(prefix="af3_batch_"))
@@ -734,6 +768,8 @@ class AF3Oracle(OracleMetric):
                 "output_dir": str(af3_output_dir),
                 "cif": cif_string,
             }
+            if self.expected_weight_family is not None:
+                entry["expected_weight_family"] = self.expected_weight_family
 
             # Optional payloads when the design needs them:
             #   template     — structural template constraint (chain coords) for the design
@@ -781,6 +817,13 @@ class AF3Oracle(OracleMetric):
                 "the subprocess silently failed; check AF3 stderr."
             )
 
+        family = summary_confidences.get("oracle_weight_family")
+        checkpoint = summary_confidences.get("oracle_checkpoint_sha256")
+        require_weight_family(self.expected_weight_family, family, checkpoint)
+        if self.expected_weight_family:
+            score = summary_confidences.get("overall_plddt")
+            if isinstance(score, bool) or not isinstance(score, float | int) or not 0.0 <= score <= 1.0:
+                raise ValueError("Verified oracle worker must report overall_plddt on its 0-1 scale")
         predicted_atom_array = self._parse_af3_predicted_structure(state.af3_output_dir, state.job_name)
         if predicted_atom_array is not None:
             try:
@@ -813,12 +856,16 @@ class AF3Oracle(OracleMetric):
                 logger.warning(f"AF3 coord transfer failed for {state.example_id}: {e}")
                 predicted_atom_array = None
 
+        if self.expected_weight_family and predicted_atom_array is None:
+            raise ValueError("Verified oracle result is missing its refolded structure")
         if predicted_atom_array is not None:
             cif_path = self.refolded_cif_path(state.out_dir, state.example_id, state.save_id)
             cif_path.parent.mkdir(parents=True, exist_ok=True)
             try:
                 to_cif_file(align_atom_array_to_input_frame(predicted_atom_array), cif_path)
             except Exception as e:
+                if self.expected_weight_family:
+                    raise
                 logger.warning(f"Failed to save AF3 refolded CIF for {state.example_id}: {e}")
 
         chain_of_interest = state.chain_of_interest
@@ -848,6 +895,10 @@ class AF3Oracle(OracleMetric):
 
         # Note the COI used to compute the metrics, even if it was ultimately None due to ambiguity.
         metrics["chain_of_interest"] = chain_of_interest
+        if family:
+            metrics["oracle_weight_family"] = family
+        if checkpoint:
+            metrics["oracle_checkpoint_sha256"] = checkpoint
 
         # Cache canonical confidence JSON so per-item compute() resumability returns instantly.
         self._save_confidence_json(metrics, self.confidence_path(state.out_dir, state.example_id, state.save_id))

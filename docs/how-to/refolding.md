@@ -34,10 +34,12 @@ Docker and Pyxis through `AF2_RUNTIME_BACKEND`.
   - **Manual:** point `AF3_MODEL_DIR` at a directory of converted OpenFold3 weights. The model repository on
     Hugging Face (`nvidia/RFD4-Proteina`) ships them with their provenance file under `openfold3/weights/`.
 
-  Either way, swap the config group with `metrics/refolding_oracles=of3`. That only changes the
-  artifact namespace to `of3`, `of3_ppi` and `of3_dna`, so results do not collide with AF3 ones. The
-  parameter family follows `AF3_MODEL_DIR` alone, so one job uses one family — run AF3 and OF3 as
-  separate jobs and compare afterwards.
+  The `metrics/refolding_oracles=of3` preset requires OpenFold3 weights in its three
+  named output namespaces. Both host and worker check the checkpoint against its
+  SHA-256 provenance record. Fresh confidence files record the worker's weight
+  family and checkpoint digest. Reading an OpenFold3 cache requires those fields,
+  a confidence score and the accompanying refolded structure. Legacy caches
+  without model identity give an explicit provenance error.
 
 - **AlphaFold 2** supports protein refolding through `metrics/refolding_oracles=af2`.
   Set `AF2_IMAGE`, `AF2_MODEL_DIR` and `AF2_JAX_CACHE_DIR` for its separate runtime;

@@ -36,25 +36,11 @@ from rfproteina.af3server.bundle import (
     read_archive,
 )
 from rfproteina.metrics.oracles.imported_refolds import IMPORT_MARK, PathOracle
+from tests.helpers.disease import REFOLDED_CIF
 
 #: An _atom_site-only CIF, which is what the server actually returns: its model
 #: files carry no _entry, no _entity and no _entity_poly at all.
-SERVER_CIF = (
-    "data_fold_binder_0_model_0\n"
-    "#\n"
-    "loop_\n"
-    "_atom_site.group_PDB\n"
-    "_atom_site.id\n"
-    "_atom_site.type_symbol\n"
-    "_atom_site.label_atom_id\n"
-    "_atom_site.label_comp_id\n"
-    "_atom_site.label_asym_id\n"
-    "_atom_site.label_entity_id\n"
-    "_atom_site.B_iso_or_equiv\n"
-    "ATOM 1 N N ILE A ? 76.63\n"
-    "ATOM 2 C CA ILE A ? 78.12\n"
-    "#\n"
-)
+SERVER_CIF = REFOLDED_CIF.replace("data_refold", "data_fold_binder_0_model_0")
 
 
 @pytest.fixture

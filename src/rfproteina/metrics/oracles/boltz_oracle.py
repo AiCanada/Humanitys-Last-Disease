@@ -32,8 +32,6 @@ run. The model is large and GPU-bound in practice; tests mock the fold.
 
 from __future__ import annotations
 
-import importlib.util
-import json
 import math
 import shutil
 from pathlib import Path
@@ -48,15 +46,20 @@ from rfproteina.utils.ddp import RankedLogger
 logger = RankedLogger(__name__, rank_zero_only=True)
 
 
-def _chain_key(mapping: dict, chain_id: str, index: int) -> object | None:
+def _chain_key(mapping: object, chain_id: str, index: int) -> object | None:
     """Boltz keys per-chain dicts by the YAML ``id`` or by positional index.
 
     Try the chain id first, then its string index, so the reader works whichever
     convention the installed Boltz version uses.
     """
-    if chain_id in mapping:
-        return mapping[chain_id]
-    return mapping.get(str(index))
+    if mapping is None:
+        return None
+    if not isinstance(mapping, dict):
+        raise ValueError("expected a Boltz per-chain score mapping")
+    position = str(index)
+    if chain_id in mapping and position in mapping and mapping[chain_id] != mapping[position]:
+        raise ValueError("Boltz chain label and index give different values")
+    return mapping.get(chain_id, mapping.get(position))
 
 
 def _number(value: object) -> float:
@@ -117,7 +120,7 @@ class Boltz2Oracle(SequenceRefoldOracle):
         self._warned_single_sequence = False
 
     def _backend_available(self) -> bool:
-        return importlib.util.find_spec("boltz") is not None or shutil.which(self.executable) is not None
+        return shutil.which(self.executable) is not None
 
     @staticmethod
     def to_yaml(sequences: dict[str, str], *, single_sequence: bool = True) -> str:
@@ -180,8 +183,16 @@ class Boltz2Oracle(SequenceRefoldOracle):
         logger.info(f"{self.oracle_name}: running {' '.join(cmd)}")
         subprocess.run(cmd, check=True, capture_output=True, text=True)
 
-        predictions_dir = out_dir / "predictions" / stem
-        return self.build_output(predictions_dir, stem, list(sequences.keys()))
+        return self.build_output(self.result_directory(out_dir, stem), stem, list(sequences.keys()))
+
+    @staticmethod
+    def result_directory(out_dir: Path, stem: str) -> Path:
+        """Locate this input's result in the release layout or a legacy output tree."""
+        current = out_dir / f"boltz_results_{stem}" / "predictions" / stem
+        legacy = out_dir / "predictions" / stem
+        if current.is_dir() and legacy.is_dir():
+            raise ValueError("two Boltz prediction directories exist for the same input")
+        return legacy if legacy.is_dir() else current
 
     @staticmethod
     def build_output(predictions_dir: Path, stem: str, chain_ids: list[str]) -> PredictOutput:
@@ -193,33 +204,32 @@ class Boltz2Oracle(SequenceRefoldOracle):
         """
         predictions_dir = Path(predictions_dir)
         cif_path = predictions_dir / f"{stem}_model_0.cif"
-        if not cif_path.exists():
+        if not cif_path.is_file():
             raise FileNotFoundError(f"Boltz produced no top-model CIF at {cif_path}")
         confidence_path = predictions_dir / f"confidence_{stem}_model_0.json"
-        if not confidence_path.exists():
+        if not confidence_path.is_file():
             raise FileNotFoundError(f"Boltz produced no confidence JSON at {confidence_path}")
-        conf = json.loads(confidence_path.read_text())
-
-        chains_ptm = conf.get("chains_ptm", {}) or {}
-        pair_iptm = conf.get("pair_chains_iptm", {}) or {}
-        chain_ptm_list = [float(_chain_key(chains_ptm, chain, i) or 0.0) for i, chain in enumerate(chain_ids)]
+        conf = read_confidence_json(confidence_path)
+        if not isinstance(conf, dict) or not chain_ids or len(set(chain_ids)) != len(chain_ids):
+            raise ValueError("Boltz confidence requires an object and distinct chain identifiers")
+        chain_ptm_list = [_fraction(_chain_key(conf.get("chains_ptm"), chain, i)) for i, chain in enumerate(chain_ids)]
         matrix: list[list[float | None]] = []
         for i, chain_i in enumerate(chain_ids):
-            row_src = _chain_key(pair_iptm, chain_i, i) or {}
-            row: list[float | None] = []
-            for j, chain_j in enumerate(chain_ids):
-                row.append(None if i == j else float(_chain_key(row_src, chain_j, j) or 0.0))
-            matrix.append(row)
+            row_src = _chain_key(conf.get("pair_chains_iptm"), chain_i, i)
+            matrix.append([
+                None if i == j else _fraction(_chain_key(row_src, chain_j, j)) for j, chain_j in enumerate(chain_ids)
+            ])
 
         summary: dict[str, object] = {
-            "overall_plddt": float(conf.get("complex_plddt", 0.0)),
-            "ptm": float(conf.get("ptm", 0.0)),
-            "iptm": float(conf.get("iptm", 0.0)),
-            "ranking_score": float(conf.get("confidence_score", 0.0)),
-            "chain_ptm": chain_ptm_list,
-            "chain_pair_iptm": matrix,
-            "chain_ids": chain_ids,
+            "overall_plddt": _fraction(conf.get("complex_plddt")),
+            "ptm": _fraction(conf.get("ptm")),
+            "iptm": _fraction(conf.get("iptm")) if len(chain_ids) > 1 else None,
+            "ranking_score": _fraction(conf.get("confidence_score")),
         }
+        available = [*summary.values(), *chain_ptm_list, *(score for row in matrix for score in row)]
+        if all(score is None for score in available):
+            raise ValueError("Boltz reported no applicable structural confidence")
+        summary.update(chain_ptm=chain_ptm_list, chain_pair_iptm=matrix, chain_ids=chain_ids)
         return PredictOutput(cif_path=cif_path, summary_confidences=summary)
 
 

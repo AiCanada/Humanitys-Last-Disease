@@ -1310,7 +1310,9 @@ one residue is stored as a length, a single residue letter, and a start number.
 The longest hydrophobic run uses the Kyte-Doolittle residues with positive
 hydropathy, the same scale as GRAVY: Ala, Cys, Phe, Ile, Leu, Met, and Val.
 The aliphatic index is the Ikai 1980 mole-percent formula for Ala, Val, Ile,
-and Leu. `sequence_entropy_bits` is the Shannon entropy of the residue
+and Leu. For a partly identified sequence, the reported lower bound uses the
+identified residues and the full chain length. A wholly unidentified sequence
+has no reported index. `sequence_entropy_bits` is the Shannon entropy of the residue
 composition in bits, so the scale is fixed: a chain drawing evenly on all
 twenty residues approaches 4.3219 and one residue alone is 0.
 `most_common_residue` and `most_common_fraction` name the residue that takes

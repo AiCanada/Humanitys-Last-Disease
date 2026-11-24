@@ -1,11 +1,8 @@
 """The program's modes and the artifacts a run shares with its neighbours.
 
-``cli._run`` dispatches on three things: a ``screen``, a ``refold``, or the
-disease pipeline. The ``run`` tool's guards knew the first and the last, so a
-refold call -- which names no disease and asks no question -- was refused for
-not naming a disease, and the mode was reachable only by passing a disease the
-program would then ignore. Its result is one printed JSON document, which the
-line capture handed back as fragments.
+``cli._run`` dispatches to several headless modes before the disease pipeline.
+The ``run`` tool must apply disease confirmation only to that pipeline and must
+return machine-readable output as structured data where the CLI prints JSON.
 
 The other two tests here are about what a run directory does not hold alone.
 The generation archive copies a finished run, screen and all, so a walk returns
@@ -98,6 +95,8 @@ def test_refold_takes_a_finished_run_and_not_a_directory_above_one(tmp_path: Pat
         mcp_api.run_program({"options": {"refold": "."}})
     with pytest.raises(ValueError, match="finished generation directory"):
         mcp_api.run_program({"options": {"refold": str(tmp_path)}})
+    with pytest.raises(ValueError, match="non-empty path"):
+        mcp_api.run_program({"options": {"refold": ""}})
     # The run itself is taken: it holds inference_samples, which is the test
     # the screen applies.
     payload = mcp_api.run_program(
@@ -129,7 +128,7 @@ def test_a_screen_and_a_refold_in_one_call_are_refused(tmp_path: Path) -> None:
     """The program's modes are mutually exclusive; the parser would say so as exit code 2."""
     from rfproteina.disease import mcp_api
 
-    with pytest.raises(ValueError, match="one mode"):
+    with pytest.raises(ValueError, match="one program mode"):
         mcp_api.run_program({"options": {"screen": str(tmp_path), "refold": str(tmp_path)}})
 
 
@@ -141,10 +140,195 @@ def test_the_pipeline_still_demands_a_disease_and_an_answer(monkeypatch) -> None
         raise AssertionError("the program was called")
 
     monkeypatch.setattr(mcp_api, "_call_main", refused)
-    with pytest.raises(ValueError, match="refold a finished run"):
+    with pytest.raises(ValueError, match="headless modes"):
         mcp_api.run_program({"options": {}})
     with pytest.raises(ValueError, match="accept_only"):
         mcp_api.run_program({"options": {"disease": "Asthma"}})
+
+
+def test_every_headless_cli_mode_runs_without_a_fake_disease(tmp_path: Path, monkeypatch) -> None:
+    """The CLI dispatches these before the disease search, so MCP must do the same."""
+    from rfproteina.disease import mcp_api
+
+    calls = []
+
+    def called(argv, **_kwargs):
+        calls.append(argv)
+        return 0, []
+
+    monkeypatch.setattr(mcp_api, "_call_main", called)
+    cases = (
+        ({"dynamics": str(tmp_path / "design.cif")}, "dynamics", "--dynamics"),
+        ({"human_protocol": str(tmp_path / "design.fasta")}, "human_protocol", "--human-protocol"),
+        ({"benchmark_answer": "target-prioritisation"}, "benchmark_answer", "--benchmark-answer"),
+    )
+    for options, mode, flag in cases:
+        result = mcp_api.run_program({"options": options})
+        assert result["mode"] == mode
+        assert flag in calls[-1]
+        assert "--disease" not in calls[-1]
+
+
+def test_false_headless_flag_does_not_bypass_the_pipeline_guard(monkeypatch) -> None:
+    from rfproteina.disease import mcp_api
+
+    monkeypatch.setattr(mcp_api, "_call_main", lambda *_args, **_kwargs: pytest.fail("program was called"))
+    with pytest.raises(ValueError, match="Set disease"):
+        mcp_api.run_program({"options": {"declare_corpora": False}})
+
+
+def test_all_exclusive_headless_modes_are_checked_before_work_starts(tmp_path: Path, monkeypatch) -> None:
+    from rfproteina.disease import mcp_api
+
+    monkeypatch.setattr(mcp_api, "_call_main", lambda *_args, **_kwargs: pytest.fail("program was called"))
+    with pytest.raises(ValueError, match="one program mode"):
+        mcp_api.run_program(
+            {"options": {"dynamics": str(tmp_path / "one.cif"), "human_protocol": str(tmp_path / "two.fasta")}}
+        )
+
+
+@pytest.mark.parametrize(
+    ("owner", "companion", "value"),
+    [
+        ("benchmark_answer", "benchmark_structure", "input.cif"),
+        ("human_protocol", "not_binding", "P12345"),
+        ("human_protocol", "human_chain", "A"),
+        ("human_protocol", "resemblance_identity_max", 0.7),
+        ("dynamics", "dynamics_chain", "A"),
+        ("dynamics", "dynamics_task", "iid"),
+        ("dynamics", "dynamics_frames", 4),
+        ("dynamics", "rmsf_max", 1.5),
+        ("dynamics", "mobile_fraction_max", 0.2),
+        ("dynamics", "drift_max", 2.0),
+        ("declare_corpora", "corpora_against", "HIC"),
+    ],
+)
+def test_mode_specific_options_require_their_owner(owner, companion, value, monkeypatch) -> None:
+    from rfproteina.disease import mcp_api
+
+    monkeypatch.setattr(mcp_api, "_call_main", lambda *_args, **_kwargs: pytest.fail("program was called"))
+    with pytest.raises(ValueError, match=owner):
+        mcp_api.run_program({"options": {companion: value, "disease": "Asthma", "accept_only": True}})
+
+
+def test_benchmark_answers_are_returned_as_a_structured_array(monkeypatch) -> None:
+    from rfproteina.disease import mcp_api
+
+    raw = ["[", '{"item":"target-prioritisation","status":"answered"}', "]"]
+    monkeypatch.setattr(mcp_api, "_call_main", lambda *_args, **_kwargs: (0, mcp_api._Lines(raw, raw)))
+    result = mcp_api.run_program({"options": {"benchmark_answer": "target-prioritisation"}})
+    assert result["mode"] == "benchmark_answer"
+    assert result["benchmark_answers"] == [{"item": "target-prioritisation", "status": "answered"}]
+    schema = {str(tool["name"]): tool["outputSchema"] for tool in _server()._TOOLS}["run"]
+    jsonschema.validate(result, schema)
+
+
+def test_corpus_declaration_mode_returns_the_structured_declaration(monkeypatch) -> None:
+    from rfproteina.disease import mcp_api, mcp_layers
+
+    monkeypatch.setattr(mcp_api, "_call_main", lambda *_args, **_kwargs: (0, []))
+    monkeypatch.setattr(
+        mcp_layers,
+        "declare_corpora",
+        lambda arguments: {"models": [], "corpora": {}, "benchmark_coverage": {"against": arguments.get("against")}},
+    )
+    result = mcp_api.run_program({"options": {"declare_corpora": True, "corpora_against": "HIC"}})
+    assert result["mode"] == "declare_corpora"
+    assert result["corpora"]["benchmark_coverage"] == {"against": "HIC"}
+
+
+@pytest.mark.parametrize(
+    "hosts",
+    [
+        "-oProxyCommand=touch /tmp/pwned",
+        "gpu.example;touch-pwned",
+        "gpu.example name",
+        "user@",
+    ],
+)
+def test_mcp_generation_rejects_ssh_option_and_host_injection(hosts, monkeypatch) -> None:
+    from rfproteina.disease import mcp_api
+
+    monkeypatch.setattr(mcp_api, "_call_main", lambda *_args, **_kwargs: pytest.fail("program was called"))
+    with pytest.raises(ValueError, match="host alias"):
+        mcp_api.run_program(
+            {"options": {"disease": "Asthma", "accept_only": True, "hosts": hosts, "run": True}}
+        )
+
+
+@pytest.mark.parametrize("remote_dir", ["../outside", "runs;touch-pwned", "~/.ssh", "C:\\runs", "/"])
+def test_mcp_generation_rejects_unsafe_remote_paths(remote_dir, monkeypatch) -> None:
+    from rfproteina.disease import mcp_api
+
+    monkeypatch.setattr(mcp_api, "_call_main", lambda *_args, **_kwargs: pytest.fail("program was called"))
+    with pytest.raises(ValueError, match="remote_dir"):
+        mcp_api.run_program(
+            {"options": {"disease": "Asthma", "accept_only": True, "remote_dir": remote_dir, "run": True}}
+        )
+
+
+def test_mcp_generation_accepts_ordinary_local_and_remote_destinations(monkeypatch) -> None:
+    from rfproteina.disease import mcp_api
+
+    called = []
+    monkeypatch.setattr(mcp_api, "_call_main", lambda argv, **_kwargs: (called.append(argv) or 0, []))
+    result = mcp_api.run_program(
+        {
+            "options": {
+                "disease": "Asthma",
+                "accept_only": True,
+                "hosts": "local,gpu-01,alice@gpu.example,[2001:db8::1]",
+                "remote_dir": "/srv/rfd4-runs",
+            }
+        }
+    )
+    assert result["exit_code"] == 0
+    assert "--hosts" in called[0] and "--remote-dir" in called[0]
+
+
+@pytest.mark.parametrize(("mode", "record_name"), [("dynamics", "dynamics"), ("human_protocol", "human_protocol")])
+def test_structured_headless_records_are_returned_without_parsing_messages(mode, record_name, tmp_path, monkeypatch) -> None:
+    from rfproteina.disease import mcp_api
+
+    expected = {"state": "untested", "blocker": "fixture"}
+
+    def called(_argv, **kwargs):
+        kwargs["on_record"](record_name, expected)
+        return 0, ["prose"]
+
+    monkeypatch.setattr(mcp_api, "_call_main", called)
+    result = mcp_api.run_program({"options": {mode: str(tmp_path / "design.cif")}})
+    assert result[record_name] == expected
+    schema = {str(tool["name"]): tool["outputSchema"] for tool in _server()._TOOLS}["run"]
+    jsonschema.validate(result, schema)
+
+
+def test_pipeline_returns_structured_structure_choices(monkeypatch) -> None:
+    from rfproteina.disease import mcp_api
+
+    choices = [{"number": 1, "selector": "a" * 64, "entry_id": "1ABC", "chain": "A", "predicted": False}]
+
+    def called(_argv, **kwargs):
+        kwargs["on_record"]("structure_options", choices)
+        return 0, []
+
+    monkeypatch.setattr(mcp_api, "_call_main", called)
+    result = mcp_api.run_program({"options": {"disease": "Asthma", "accept_only": True}})
+    assert result["structure_options"] == choices
+
+
+def test_mcp_encodes_stable_structure_selectors_as_repeated_flags() -> None:
+    from rfproteina.disease.mcp_api import argv_from_options, options_schema
+
+    first = "a" * 64
+    second = "b" * 64
+    assert options_schema()["properties"]["select_structure"]["type"] == "array"
+    assert argv_from_options({"select_structure": [first, second]}) == [
+        "--select-structure",
+        first,
+        "--select-structure",
+        second,
+    ]
 
 
 def test_a_document_the_capture_mangled_is_not_a_document_lost() -> None:
@@ -648,6 +832,9 @@ def test_an_integral_float_is_the_integer_the_schema_promised() -> None:
     # A bool is refused a step earlier, before the integer branch is reached.
     with pytest.raises(ValueError, match="wrong type"):
         argv_from_options({"choice": True})
+    for value in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError, match="number"):
+            argv_from_options({"plasma_abundance_max": value})
 
 
 # --- the described surface -------------------------------------------------

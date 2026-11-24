@@ -258,7 +258,9 @@ def build_fold_input_from_cif(
     return fold_input
 
 
-def _augment_summary_confidences(output_dir: pathlib.Path, job_name: str) -> None:
+def _augment_summary_confidences(
+    output_dir: pathlib.Path, job_name: str, weight_family: str | None = None, checkpoint_sha256: str | None = None
+) -> None:
     """Add the aggregate confidence fields consumed by RFProteina."""
     confidence_path = output_dir / f"{job_name}_confidences.json"
     summary_path = output_dir / f"{job_name}_summary_confidences.json"
@@ -298,6 +300,10 @@ def _augment_summary_confidences(output_dir: pathlib.Path, job_name: str) -> Non
             "overall_pae": round(float(np.mean(pae)), 4),
         }
     )
+    if weight_family:
+        summary["oracle_weight_family"] = weight_family
+    if checkpoint_sha256:
+        summary["oracle_checkpoint_sha256"] = checkpoint_sha256
     summary_path.write_text(json.dumps(summary, indent=1))
 
 
@@ -308,6 +314,8 @@ def write_outputs(
     job_name: str,
     compress_large_output_files: bool = False,
     save_full_outputs: bool = False,
+    weight_family: str | None = None,
+    checkpoint_sha256: str | None = None,
 ) -> None:
     """Write the top-ranked model and compact confidences for one design."""
     output_path = pathlib.Path(output_dir)
@@ -331,7 +339,7 @@ def write_outputs(
         name=job_name,
         compress=compress_large_output_files,
     )
-    _augment_summary_confidences(output_path, job_name)
+    _augment_summary_confidences(output_path, job_name, weight_family, checkpoint_sha256)
 
     if save_full_outputs:
         samples_dir = output_path / "samples"

@@ -316,6 +316,29 @@ def describe_architecture() -> dict[str, object]:
                         ),
                     },
                     {
+                        "name": "Benchmark answers",
+                        "tool": "run",
+                        "note": "options.benchmark_answer returns structured benchmark_answers.",
+                    },
+                    {
+                        "name": "Conformational dynamics analysis",
+                        "tool": "run",
+                        "note": "options.dynamics runs the installed headless dynamics workflow.",
+                    },
+                    {
+                        "name": "H.U.M.A.N. protocol analysis",
+                        "tool": "run",
+                        "note": "options.human_protocol runs the installed headless protocol workflow.",
+                    },
+                    {
+                        "name": "Refolding workflow",
+                        "tool": "run",
+                        "note": (
+                            "options.refold prepares fold requests or imports returned folds; "
+                            "the response carries the structured refold record."
+                        ),
+                    },
+                    {
                         "name": "Screening pipeline execution",
                         "tool": "screen_directory",
                         "note": "lookup_targets contacts public databases only when true.",

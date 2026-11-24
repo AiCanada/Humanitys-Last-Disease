@@ -69,6 +69,10 @@ def test_describe_architecture_names_the_three_layers(monkeypatch):
         "retrieve_structures",
         "read_sequence_measures",
         "run",
+        "run",
+        "run",
+        "run",
+        "run",
         "screen_directory",
         "read_verdict",
         "read_results",
@@ -82,6 +86,9 @@ def test_describe_architecture_names_the_three_layers(monkeypatch):
         "run_selected_screens",
         "declare_corpora",
     ]
+    refolding = next(item for item in layers["mcp_integration"]["capabilities"] if item["name"] == "Refolding workflow")
+    assert refolding["tool"] == "run"
+    assert "structured refold record" in refolding["note"]
     docking = next(item for item in layers["computational_backend"]["components"] if item["id"] == "docking")
     assert docking["status"] == "not_performed"
     assert docking["note"] == (

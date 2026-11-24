@@ -14,6 +14,7 @@ from rfproteina.metrics.oracles.free_oracle_common import (
     extract_protein_sequences,
 )
 from rfproteina.metrics.oracles.oracle_metric import OracleJobInput
+from tests.helpers.disease import REFOLDED_CIF
 
 
 def _protein_two_chains():
@@ -51,7 +52,7 @@ class _FakeOracle(SequenceRefoldOracle):
 
     def _predict(self, sequences, work_dir):
         cif = Path(work_dir) / "pred.cif"
-        cif.write_text("# fake cif\n")
+        cif.write_text(REFOLDED_CIF)
         summary = {
             "overall_plddt": 0.9,  # -> 90.0 after scaling
             "ptm": 0.8,

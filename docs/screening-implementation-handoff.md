@@ -1,11 +1,232 @@
 # Screening implementation handoff
 
-Written 2026-11-16 for an adversarial review by another model.
-Everything below was run on the machine described, not inferred. Where a number
-was not measured, it says so. Where a shortcut was taken, it says that too.
+The [method-by-method review](post-generation-method-review.md) records the
+subsequent local checks of individual post-generation screens.
 
-Nothing in this work was committed or pushed. All changes sit uncommitted in the
-working tree of this checkout.
+## Local review of reports across configurations
+
+The previous sweep exporter changed the identifier `0001` to `1` and rounded a
+score just below one to `1.0`. It could also replace part of a previous export
+before finding a malformed source. Six regression cases reproduced errors with
+identifiers, precision, missing results, offline evaluation and interrupted
+publication.
+
+The exporter now streams the original cell text and records the configuration,
+stage, original columns, row count and source digest. The per-configuration
+writer also preserves the precision of newly calculated summaries. The receipt
+identifies which summaries accompany the current per-example table. A planned
+export requires all three tables from each named configuration. Discovery mode
+records partial coverage. [Coverage fields and statuses](how-to/advanced/offline-metrics.md#collecting-results-across-configurations)
+
+Local batch tests executed the generated report scripts with a scheduler
+stand-in. They checked a missing dependency, a failing report process, an empty
+container environment, paths with spaces and an offline result left behind in a
+generation sweep. A failed refresh preserved the preceding four report files.
+
+The final offline run passed **439 tests**. Its one skipped CUDA regression
+passed separately on the local GPU and reserved 48,234,496 bytes in PyTorch.
+Both Hydra entry points composed, all changed Python files passed Ruff and the
+Git whitespace check passed.
+
+Both reporting commands completed on the CPU with CUDA hidden. The measured
+roots included the interpreter, installed environment, project source and
+configuration, resource checker and temporary fixture files.
+
+| Report program | Bytes before execution | Bytes after execution | GPU VRAM |
+| --- | ---: | ---: | ---: |
+| Per-configuration aggregation | 8,702,308,504 | 8,702,310,644 | 0 bytes |
+| Sweep CSV export | 8,702,309,188 | 8,702,311,744 | 0 bytes |
+
+The aggregation fixture verified the score in all three report tables and the
+digest of its archived input. The sweep fixture verified two configurations, six
+source tables and both original pass flags. These measurements apply to the two
+report programs and their tested inputs.
+
+## Local review of published measurements and resource limits
+
+Five malformed job tables reproduced silent changes to the data read by the old
+aggregator. One shifted a pass flag into the wrong column. Three further cases
+showed that an unpublished retry or an interrupted publication could expose an
+older result. The aggregation and screening readers now check CSV layout and
+publication state. Each in-place job aggregation records the primary table's
+digest and the identities of its input shards.
+
+Run coverage now includes discovered structures missing from the table. A shared
+basename cannot assign the same confidence score to two design traces. Duplicate
+observations of one structure count once. On the two-design fixture, one recorded
+pass gave one measured result out of two and an incomplete verdict. The second
+design's recorded failure then gave two out of two measured and a run failure.
+[Screen evidence and blocker definitions](reference/screen-inputs.md)
+
+That review's offline regression run passed **407 tests**. Its one skipped test was
+the CUDA fixture, which passed separately on the local GPU. The installed aggregation
+CLI also rejected a malformed retry and preserved the prior primary CSV byte for
+byte. Both Hydra entry points composed with explicit inputs and output settings.
+Ruff passed for every changed Python file, and the Git whitespace check passed.
+
+The local CUDA geometry check evaluated two pairs of synthetic point grids. The
+near pair scored 96.9095 and the separated pair scored 0. The workload completed
+with **8,702,240,709 installed bytes** across its declared runtime, source and
+configuration roots. CUDA reported **8,585,216,000 bytes of visible device
+capacity**. PyTorch's allocator recorded a peak reservation of **48,234,496
+bytes**. Device capacity bounds the workload's local VRAM use. The allocator
+figure covers the PyTorch reservation alone. This fixture used no model weights.
+
+To repeat the numerical check and charge the test runner's files, activate the project
+environment and run the following command from the repository root.
+
+```bash
+python scripts/check_screening_resources.py torchcms-grid \
+    --root .venv --root "$(python -c 'import sys; print(sys.base_prefix)')" \
+    --root src --root configs --root tests --root pyproject.toml \
+    --root scripts/check_screening_resources.py --cuda --run python -m pytest -q -s \
+    tests/test_screening_resource_budget.py::test_cuda_contact_geometry_on_two_point_grids
+```
+
+## Local follow-up on interrupted runs and retries
+
+Seven regression cases reproduced failures in report publication, exports, input
+identity and pass-rate denominators. In one case, two equivalent tag lists were
+written in different orders. The old calculation reported one pass out of one.
+The corrected denominator includes both applicable designs and gives one pass out of two.
+
+Evaluation and aggregation now stage complete CSVs and preserve earlier job revisions.
+The next in-place writer recovers a batch interrupted during replacement. Exporting to
+a separate directory leaves the source shards and chain files available for review.
+Calibration reports include readable-structure and soft-condition counts alongside
+the number of distinct position–token pairs.
+
+Foldseek assignments belong to the cohort that was clustered. A matching source
+table can supply its assignments on a retry. Independently numbered job shards
+require joint clustering for a combined diversity or clustered pass rate. Previous
+published assignments superseded by a refresh are archived with their reports.
+The regression cases cover interrupted writes, concurrent reuse of a job ID, literal
+identifiers, incomplete calibration coverage and changes in cluster membership.
+The disk used by job history and staging depends on the report sizes.
+
+The installed evaluation and aggregation CLIs counted 129 standard residues in the
+local lysozyme fixture. The export retained its literal task label and the original
+job CSV byte for byte. The installed Foldseek binary assigned two copies of that
+fixture to one cluster. After chain cleanup and repeat aggregation, coverage was
+1.0 and the clustered pass rate was 0.5 for two passing test rows.
+
+The CPU evaluation and aggregation installation measured 9,230,354,026 bytes,
+including the interpreter, virtual environment, source, configuration and both local
+structure mirrors. Charging the full local Foldseek installation added 4,562,288,011
+bytes, giving an upper bound of 13,792,642,037 bytes for the clustering configuration.
+Both runs used zero GPU memory. These figures cover installed files.
+
+Verification covered 102 distinct focused tests, including 21 regression cases for
+publication, exports, retry accounting and clustering. The main run passed 100
+tests. A final run covered two additional missing-input cases and repeated the
+cluster-revision and concurrent-writer checks. Ruff and the Git whitespace check passed.
+
+## Local post-generation review, 2026-11-22
+
+Screen version 5 distinguishes a measured failure from an incomplete evaluation.
+The interface measurements, assay handling and storage figures in this section
+supersede the earlier entries in this handoff.
+
+| Finding | Current behavior |
+| --- | --- |
+| Missing or nonbinary flags could pass or fail a whole run | Each criterion counts applicable and measured designs. The evaluator and reader use the same finite-input rules for bounds and reductions. Comparisons against checkout defaults identify their source. |
+| A retry or a repeated example ID could combine observations | Per-design tables preserve individual rows and precision. Dataset and task identify aggregate and cluster groups. Unreadable generated structures remain visible in the evaluation table. |
+| Isolated atoms could appear to bury each other's surface | Surface points count as buried only when the opposite partner occludes them. The Biotite contact-surface score and polar counts have no calibrated pass threshold here. |
+| A ligand table could outlive its compound, or a mixed-assay median could conceal disagreement | Exact-ligand exports identify the compound and measurement method. ChEMBL groups by endpoint and assay ID. BindingDB groups by endpoint, curation source and available study provenance. Across groups the report preserves individual values. |
+
+The geometry regression includes separated atoms, contacting chains, compressed CIF input
+and a command-line report. The ethanol RDKit smoke test reported 46.069 Da, three heavy
+atoms and zero catalogue alerts. These checks exercise software behavior. Experimental
+affinity, clinical safety and reference-method calibration require separate evidence.
+BindCraft computes its reference measures using Rosetta. Its buried surface area and
+percentage fields are distinct. [BindCraft interface implementation](https://github.com/martinpacesa/BindCraft/blob/main/functions/pyrosetta_utils.py)
+
+The local lysozyme fixture passed through evaluation, aggregation and the screen reader
+with all 129 standard residues counted. The installed `rfd4-evaluate` CLI independently
+reported the same count with CUDA disabled. The installed Foldseek CPU binary assigned two
+copies of the same fixture to the same cluster. Partial cluster assignments now expose
+their coverage and leave the diversity or clustered pass rate undefined when it cannot
+be determined.
+
+The unit suite used an isolated local profile with an empty optional-asset directory
+and the existing PDB and chemical-component fixture mirrors. With the workstation
+profile, several unit fixtures picked up installed production predictors and launched
+subprocesses. The isolated suite tests the supplied evidence and missing-data cases
+consistently. Optional GPU models require their own end-to-end runs.
+
+Verification covered 695 screening and evaluation tests plus 92 separate tests of
+compression, traces, rendering, result actions and novelty reporting. The final
+assay changes also passed the 108-test ligand, toxicology and Octant suite. The
+26 evaluator and aggregation tests passed with the local structure fixtures.
+PyTorch emitted one upstream deprecation warning for `torch.jit.script`.
+
+The ChEMBL tests use offline responses for different assays and incomplete result pages.
+The source distinguishes endpoint types and advertises additional activity pages in
+`page_meta`. [ChEMBL assay and activity definitions](https://chembl.gitbook.io/chembl-interface-documentation/frequently-asked-questions/chembl-data-questions) · [ChEMBL pagination](https://chembl.gitbook.io/chembl-interface-documentation/web-services/chembl-data-web-services)
+
+### Per-program resources
+
+The limits are **less than 25,000,000,000 installed bytes** and **at most 96,000,000,000
+bytes of GPU memory**. The CPU interface and RDKit CLI configuration, including the shared
+virtual environment and local screening code, occupied **8,626,722,109 bytes** when
+audited. The separate base Python installation occupied **108,509,576 bytes**. Both
+screens execute on CPU. The command follows links and counts each installed file once
+across the supplied roots.
+
+```bash
+python scripts/check_screening_resources.py interface-cpu \
+    --root .venv --root "$(python -c 'import sys; print(sys.base_prefix)')" \
+    --root src/rfproteina --root scripts/screen_extras.py --cpu
+```
+
+Include each required executable, runtime, source, weight and database location
+as a `--root`. For a local CUDA workload, `--cuda --run COMMAND ...` checks installed
+files and the sum of visible CUDA capacities before launching the command. A
+successful exit and a second disk check qualify that invocation. A larger device
+capacity leaves the workload unverified. A separate measured peak can be supplied
+with `--peak-vram-bytes` and is labeled as caller-supplied evidence.
+
+For a CPU implementation, `--cpu --run COMMAND ...` hides CUDA devices in the child.
+The checker applies to programs using the declared roots and respecting local
+device visibility. It counts logical installed file sizes, follows links and counts
+overlapping roots once. During a workload it samples a private temporary
+directory and checks the declared installation again at exit. Use `--scratch-cwd`
+for programs that write temporary files in their working directory, and pass
+absolute input paths in that case. `disk_peak_observed_bytes` includes the
+largest observed temporary footprint. Writes elsewhere and peaks between
+samples require separate accounting.
+The host operating system and driver are outside the installation measurement.
+
+| Tested CPU configuration | Conservative installed size | GPU memory |
+| --- | ---: | ---: |
+| Interface geometry or RDKit ligand alerts | ≤ 8.74 GB | 0 GB |
+| Offline lysozyme evaluation and aggregation, including configs and local structure mirrors | ≤ 9.27 GB | 0 GB |
+| Foldseek clustering, charging the same runtime, mirrors and complete local Foldseek installation | ≤ 13.83 GB | 0 GB |
+
+The upper bounds charge the entire base interpreter even where the virtual environment
+already links to it. The two local mirrors occupied 527,038,846 bytes (chemical components)
+and 1,117,839 bytes (sample structures), and configuration files occupied 224,135 bytes.
+Figures exclude the host operating system.
+
+| Local program or data installation | Installed assets, decimal GB | Evidence from this review |
+| --- | ---: | --- |
+| Octant | 0.008 | Panel fixture, compound binding and export tested |
+| BindingDB subset | 0.123 | Exact-ligand reader and assay grouping tested on fixtures |
+| Foldseek, including local databases | 4.562 | Installation size measured and local CPU clustering exercised |
+| DockQ | 0.133 | Installation size measured |
+| DeepSP / DeepViscosity | 0.017 / 0.009 | Installation sizes measured individually |
+| ThermoMPNN | 1.070 | Installation size measured |
+| MHCflurry | 6.232 | Installation size measured |
+| CrossAbSense | 3.271 present | Partial installation. The full configuration declares 39.38 GB of assets and exceeds the disk limit. |
+| Commec | 41.238 | Installed files alone exceed the disk limit. |
+
+These asset-directory sizes exclude the shared runtime. They do not establish peak
+VRAM or complete dependency coverage for the optional programs. RF3, AF3 and other
+GPU predictors have no workload-specific peak VRAM measurement in this review.
+
+## Historical implementation notes
+
+The entries below describe earlier configurations, measurements and threshold decisions.
 
 ---
 
@@ -558,16 +779,18 @@ mirroring `mhc_tables.py`'s "only if on PATH" rule. None is a hard dependency.
 ## D.2 Each screen: method, inputs, outputs, units, thresholds
 
 ### D.2.1 Pose validation (`pose_validation.py`)
-* **Input.** A ligand pose (SDF/MOL/MOL2/PDB, or an RDKit mol with a conformer);
-  optionally a protein PDB/CIF.
+* **Input.** One ligand with finite 3D coordinates in SDF, MOL, MOL2, PDB or an
+  RDKit molecule. The optional receptor is the first model of a PDB or mmCIF.
 * **PoseBusters** (Buttenschoen et al., Chem. Sci. 2024). `mol` mode (ligand
   alone) or `dock` mode (with protein). Each check pass/fail is PoseBusters'
-  own; this module's only convention is **any failed check is a hit**
-  (`posebusters_failures` max 0, labelled *program convention*). The exact `mol`
-  check names are pinned in `POSEBUSTERS_MOL_CHECKS` so a rename surfaces.
-* **Internal strain**, MMFF94: pose energy minus relaxed-copy energy, kcal/mol.
-  **Reported, not gated** (`no_cut`): PoseCheck (Harris et al. 2023) publishes no
-  pass mark. Returns `None` + reason when MMFF has no parameters.
+  own. The paper defines PB-valid using all tests in its suite. Here a clear
+  requires complete boolean passes for the selected mode. A measured failure
+  is a hit. Unavailable or incomplete evidence with no measured failure gives
+  `untested`. [Original PoseBusters study](https://pubs.rsc.org/en/content/articlehtml/2024/sc/d3sc04185a)
+* **Internal strain.** MMFF94 reports the energy difference to a converged
+  local minimum for the supplied atoms in kcal/mol. This project reports it
+  descriptively. Missing parameters, failed convergence and nonfinite energies
+  receive a named blocker.
 * **Protein clashes**, native: heavy-atom pairs closer than vdW sum minus a
   0.4 A tolerance (Bondi 1964 radii). *Suggested* bar of 0, no published mark.
 * **Units.** strain kcal/mol; distances angstrom; clashes a count.
@@ -578,8 +801,8 @@ mirroring `mhc_tables.py`'s "only if on PATH" rule. None is a hard dependency.
   defaults** (Bouysset & Fiorucci 2021) applied to **heavy atoms** — every count
   is a geometric proxy, not a confirmed interaction (a designed model carries no
   hydrogens). Interaction counts are `no_cut`: no published pass mark.
-* **ProLIF backend** (`prolif_fingerprint`) is the honest engine (it protonates
-  and types atoms). It is behind an import guard and raises
+* **ProLIF backend** (`prolif_fingerprint`) types the supplied structure and
+  uses its supplied protonation state. It is behind an import guard and raises
   `ProLIFUnavailableError` when ProLIF/MDAnalysis are absent. **Now installed**
   (prolif 2.1.x, capped below 2.2 because every 2.2.x needs `gemmi>=0.7.5`
   while `bionemo-ir` pins `gemmi==0.6.5`).
@@ -620,7 +843,7 @@ scores whatever chains happen to share an identifier.
 | a single-chain input | prints "Need at least two chains", writes **no JSON**, and **exits 0** |
 
 So the record names `global_dockq` (0–1, what `dockq_verdicts` gates on) apart
-from `dockq_sum` (explicitly a sum, >1 above one interface) and never emits a
+from `dockq_sum` (the sum can exceed one across multiple interfaces) and never emits a
 bare `dockq` key — reporting the sum as "the DockQ score" would read as a scale
 error on any multimer. And the wrapper validates the JSON file rather than the
 exit status, because the status is 0 on that no-result case; a wrapper trusting
@@ -647,15 +870,13 @@ a caller's `dockq_min`, recorded as `caller_supplied`.
   CHEMBL1980, CYP3A4 CHEMBL340, CYP2D6 CHEMBL289, CYP2C9 CHEMBL3397, CYP1A2
   CHEMBL3356, CYP2C19 CHEMBL3622, P-gp CHEMBL4302, BCRP CHEMBL5393, BSEP
   CHEMBL6020. None guessed.
-* **The predicted route, fenced off.** `bayesherg_probability` (BayeshERG) and
-  `admet_ai_predictions` (ADMET-AI, MIT) return **probabilities**, stored only
-  under `*_prob` keys with `unit="probability"`. Both are behind import guards
-  and raise `SafetyBackendUnavailableError` when absent. ADMET-AI **is**
-  installed here (2.0.1, via the `ligand-safety` extra) and answers seven axes.
-  BayeshERG is not, and cannot be by `pip`: it publishes no package (no
-  `setup.py`, no `pyproject.toml`), and while its *code* is MIT its README puts
-  the **trained weights** under CC-BY-NC-SA-4.0, "restricted for commercial
-  use". The weights are the part that predicts, so it is a non-commercial tool.
+* **Predicted ligand safety.** `admet_ai_predictions` reads seven classification
+  endpoints from ADMET-AI 2.0.1. `bayesherg_probability` runs the authors'
+  BayeshERG CPU command in its own environment. Both store scores under
+  `*_prob` with `unit="probability"`. BayeshERG additionally reports aleatoric
+  and epistemic variances. The upstream README restricts the trained weights
+  to noncommercial use and licenses the source under MIT.
+  [BayeshERG release](https://github.com/GIST-CSBL/BayeshERG)
 * **The trained route** (`ligand_regressor.py`). ADMET-AI has no endpoint for
   `nav1_5`, `bcrp` or `bsep` — `ADMET_AI_UNCOVERED_AXES` — so for a designed
   ligand those three axes had no answer at all. No tool fills them, but
@@ -669,10 +890,10 @@ a caller's `dockq_min`, recorded as `caller_supplied`.
   | `bcrp` | 860 | 0.631 | 4.3x | 0.715 | 321 |
   | `bsep` | 352 | 0.535 | 3.4x | 0.587 | 132 |
 
-  Pooled over three scaffold-balanced splits, on determinate rows only — a
-  `>10000 nM` row is a bound, and scoring it as a point value would be a
-  fabricated number. A typical prediction is wrong by about four-fold, so this
-  is **triage, not an assay**.
+  These are historical forest scores pooled over three scaffold splits. The
+  earlier corpus combined assay types and target preparations. Current fits
+  on the full BindingDB subset select single-chain IC50 values with matching
+  accessions and report the resulting measurement scope and held-out errors.
 * **A third units line.** `*_nm` means somebody measured it;
   `neighbour_nanomolar` means it was measured on a *different* molecule (the
   read-across); `predicted_nanomolar` means a model guessed it.
@@ -682,15 +903,12 @@ a caller's `dockq_min`, recorded as `caller_supplied`.
   `*_nm` key. Each prediction also carries the model's held-out RMSE and its
   Tanimoto to the nearest training compound, and says `EXTRAPOLATION` below
   0.4.
-* **Chemprop was measured and lost.** The named tool for this was a D-MPNN. On
-  identical splits it scored 0.520 against the forest's 0.481 on `nav1_5`,
-  0.613 against 0.507 on `bcrp`, and 0.570 against 0.551 on `bsep`, and it
-  early-stopped between 32 and 69 epochs against a 500-epoch ceiling, so
-  training longer is not the missing ingredient — at 350 to 1,700 molecules a
-  graph network has too little data to beat Morgan fingerprints. Early stopping
-  was decisive to that comparison: without it chemprop scored a *negative* R²
-  on two axes. Both backends are built and selectable (`--backend chemprop`);
-  the default is the one that measured better.
+* **Chemprop and forest checkpoints.** The historical comparison used the earlier
+  corpus. For fresh fits, `--backend chemprop` selects a separate model directory.
+  The graph model's similarity estimate uses the fitting partition. A legacy
+  graph manifest lacks a verified fitting reference and reports similarity as
+  unavailable. The current review includes live training and checkpoint reloads.
+  [Post-generation review](post-generation-method-review.md)
 
   ```bash
   python scripts/train_ligand_regressor.py train     # fit, and print the held-out error
@@ -778,9 +996,9 @@ optional backends are asserted to raise when absent.
    is installed in its own (see D.2.2.1), so all three are now exercised
    against real output rather than only on the "raises when absent" path —
    ProLIF on a computed-ring-normal stacked pose, DockQ on identity, displaced,
-   trimer and mapping cases. **BayeshERG is still not installed**, so
-   `bayesherg_probability` is the one backend whose real-output path is
-   untested, and it is marked `# pragma: no cover` accordingly.
+   trimer and mapping cases. BayeshERG was unavailable during that first pass.
+   The current adapter, controls and execution status are documented in the
+   [post-generation review](post-generation-method-review.md).
    Worth re-reading: the absence tests for ProLIF and DockQ had to be rewritten
    once the engines arrived, because asserting a raise on a machine that merely
    lacks a tool tests the machine, not the guard — ProLIF's now blocks the
@@ -1380,9 +1598,12 @@ duplicate it.
   have, without DeepSCM's CC BY-NC restriction.
 * **CamSol** -- web service, not open source. Excluded.
 * **Aggrescan3D** -- server and a standalone with its own terms; not read.
-* **Protein-Sol** -- web service; the sequence method is simple enough to
-  reimplement from the paper, but `modality.py` already carries an AGGRESCAN
-  sequence score, so check for duplication first.
+* **Protein-Sol** provides a downloadable sequence predictor. A local run on
+  the deposited 1UBQ and 1TIM proteins verified its four native output fields.
+  The screen reads the report and checks each sample's sequence identity.
+  [Input format](reference/screen-inputs.md#solubility-and-aggregation). The
+  local control receipt was retained outside the repository under
+  `outputs/method-review/protein-sol-live.json`.
 * **TAP (Therapeutic Antibody Profiler)** -- the five metrics are published
   with reference distributions from clinical-stage antibodies, but the
   thresholds are percentile bands against that set, so implementing it means

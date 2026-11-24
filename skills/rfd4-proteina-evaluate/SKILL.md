@@ -8,8 +8,8 @@ description: >
   the per-job CSVs", "cluster designs by diversity", "foldseek clustering", or
   "add a custom metric". It runs `rfd4-evaluate` over a directory
   tree of CIF-like files with a chosen set of `metrics_tags`, writes
-  `per_example_metrics.csv`, then concatenates parallel-job CSVs into
-  `aggregated_metrics.csv` / `per_task_metrics.csv` and (optionally) clusters
+  per-example observations, then combines parallel-job CSVs into
+  `per_example_metrics.csv`, writes dataset and task summaries and optionally clusters
   designs structurally with FoldSeek. Deep metric detail lives here; inline
   metrics during generation are covered by rfd4-proteina-generate.
 license: See the RFD4-Proteina repository (Baker Lab x NVIDIA collaboration)
@@ -54,9 +54,9 @@ rfd4-evaluate \
   `configs/evaluate.yaml`).
 - `out_dir` — required; `evaluate.py` has no run directory to derive one from.
   Results go under `out_dir/evaluation_metrics/`.
-- `task_csv=<csv>` — optional; a CSV with `designed_structure_path` and `task`
-  columns when different structures need different tag/pass-criterion treatment.
-  Otherwise every structure is scored the same way.
+- `task_csv=<csv>` assigns a task label to each `designed_structure_path` for
+  grouping results. Unlisted paths get the label `all`. The selected
+  `metrics_tags` apply to the whole evaluation invocation.
 
 Design tags and refolding tags are **separate namespaces** — pass both families
 if you want both to run. See [references/metrics.md](references/metrics.md) for
@@ -145,9 +145,10 @@ truth is [docs/how-to/evaluate-with-metrics.md](../../docs/how-to/evaluate-with-
 
 | File | Written by | Contents |
 | --- | --- | --- |
-| `per_example_metrics.csv` (or `per_example_metrics_job{N}.csv`) | `evaluate.py` / `generate.py` | One row per design; metric columns prefixed by config key |
-| `aggregated_metrics.csv` | `aggregate_metrics` | All per-example rows concatenated; adds `foldseek_cluster_id` with `--cluster_with_foldseek` |
-| `per_task_metrics.csv` | `aggregate_metrics` | Per-task summary (pass rates, means, cluster counts) |
+| `per_example_metrics.csv` (or `per_example_metrics_job{N}.csv`) | Evaluation, generation and aggregation | Individual observations and their metric columns. The combined table carries `foldseek_cluster_id` when clustering assigns it. |
+| `aggregated_metrics.csv` | `aggregate_metrics` | Dataset-level summary of the observed results |
+| `per_task_metrics.csv` | `aggregate_metrics` | Results grouped by dataset and task when both labels are available |
+| `aggregation_sources.csv` | Metrics publisher | Digests of the current primary and its published companion tables, plus the identity of each input shard |
 | `individual_job_results/` | `aggregate_metrics` | The original per-job CSVs, moved aside |
 
 ## Troubleshooting

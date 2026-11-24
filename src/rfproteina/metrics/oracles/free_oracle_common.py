@@ -29,18 +29,29 @@ limits are surfaced, never worked around with fabricated data.
 
 from __future__ import annotations
 
+import hashlib
 from abc import abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
+from atomworks.io.utils.compression import open_compressed, transfer_with_compression
 from biotite.structure import AtomArray
+from filelock import FileLock
 
+from rfproteina.metrics.oracles.imported_refolds import (
+    read_confidence_json,
+    readable_refold_coordinates,
+    refold_artifacts_present,
+)
 from rfproteina.metrics.oracles.oracle_metric import (
     OracleJobInput,
     OracleMetric,
     extract_confidence_metrics,
 )
 from rfproteina.utils.ddp import RankedLogger
+from rfproteina.utils.metrics_files import file_sha256
+from rfproteina.utils.structure_files import find_structure_file, structure_file_stem
 
 logger = RankedLogger(__name__, rank_zero_only=True)
 
@@ -56,7 +67,7 @@ _THREE_TO_ONE = {
 
 
 class OracleBackendUnavailableError(RuntimeError):
-    """Raised when a free oracle's backend package is not installed."""
+    """Raised when a configured refolding backend cannot run in this environment."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +131,16 @@ class SequenceRefoldOracle(OracleMetric):
         """True iff this oracle's prediction package is importable."""
         raise NotImplementedError
 
+    def _backend_unavailable_reason(self) -> str | None:
+        return None if self._backend_available() else "backend or a required dependency is not installed"
+
+    def already_refolded(self, out_dir: Path, example_id: str, save_id: str | None = None) -> bool:
+        return refold_artifacts_present(
+            self.refolded_cif_path(out_dir, example_id, save_id),
+            self.confidence_path(out_dir, example_id, save_id),
+            verify_legacy_coordinates=True,
+        )
+
     @abstractmethod
     def _predict(self, sequences: dict[str, str], work_dir: Path) -> PredictOutput:
         """Run the backend on ``sequences`` and return its structure + confidences.
@@ -146,11 +167,10 @@ class SequenceRefoldOracle(OracleMetric):
         n_cached = len(jobs) - len(pending)
         if not pending:
             return n_cached
-        if not self._backend_available():
+        reason = self._backend_unavailable_reason()
+        if reason:
             raise OracleBackendUnavailableError(
-                f"{self.oracle_name}: backend package is not installed, so nothing can be folded and "
-                f"{len(pending)} design(s) have no refold on disk. Install the backend (see the oracle's "
-                "module docstring for the package and licence) or import existing refolds. No structure was invented."
+                f"{self.oracle_name}: {reason}. {len(pending)} input(s) have no completed refold."
             )
 
         import shutil
@@ -174,16 +194,7 @@ class SequenceRefoldOracle(OracleMetric):
         return n_cached + n_ok
 
     def _persist(self, job: OracleJobInput, sequences: dict[str, str], output: PredictOutput) -> None:
-        """Copy the predicted structure to the canonical path and save metrics."""
-        import shutil
-
-        cif_path = self.refolded_cif_path(job.out_dir, job.example_id, job.save_id)
-        cif_path.parent.mkdir(parents=True, exist_ok=True)
-        # Keep the predictor's own encoding; the canonical suffix is .cif, and the
-        # backend is expected to write CIF. A PDB output is copied verbatim and the
-        # reader's find_structure_file resolves it.
-        shutil.copyfile(output.cif_path, cif_path)
-
+        """Publish readable coordinates in the requested compression with their metrics."""
         chain_of_interest = job.chain_of_interest
         chains_in_order = list(sequences.keys())
         summary = dict(output.summary_confidences)
@@ -194,14 +205,70 @@ class SequenceRefoldOracle(OracleMetric):
             chains_in_order=summary["chain_ids"],
         )
         metrics["chain_of_interest"] = chain_of_interest
+        metrics["oracle_name"] = self.oracle_name
         # A backend may carry extra named scalars its native scoring produces but
         # that the AF3 confidence schema has no slot for (e.g. a per-residue error
         # estimate). They are merged verbatim under their own keys, never dressed
         # up as an AF3 metric. Non-scalar values are dropped to keep the JSON flat.
         extra = output.summary_confidences.get("_extra")
         if isinstance(extra, dict):
+            reserved = {
+                "imported_refold", "imported_structure_sha256", "refold_structure_sha256", "refold_content_sha256",
+            }
             for key, value in extra.items():
                 if isinstance(value, int | float | str | bool) or value is None:
+                    if str(key) in metrics or key in reserved:
+                        raise ValueError(f"extra field conflicts with a refold metric: {key}")
                     metrics[str(key)] = value
-        self._save_confidence_json(metrics, self.confidence_path(job.out_dir, job.example_id, job.save_id))
+        nominal = self.refolded_cif_path(job.out_dir, job.example_id, job.save_id)
+        confidence = self.confidence_path(job.out_dir, job.example_id, job.save_id)
+        # Preserve PDB vs CIF. Only the compression comes from the run configuration.
+        source = output.cif_path
+        source_suffix = source.name[len(structure_file_stem(source)):]
+        file_format = source_suffix.split(".")[1].lower()
+        codec = nominal.suffix if nominal.suffix.lower() in {".gz", ".gzip", ".zst"} else ""
+        destination = nominal.with_name(f"{structure_file_stem(nominal)}.{file_format}{codec}")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(dir=destination.parent) as staging:
+            coords = Path(staging) / destination.name
+            marker = Path(staging) / confidence.name
+            transfer_with_compression(source, coords)
+            if not readable_refold_coordinates(coords):
+                raise ValueError("the provider returned unreadable refold coordinates")
+            checksum = file_sha256(coords)
+            metrics["refold_structure_sha256"] = checksum
+            with open_compressed(coords, "rb") as content:
+                metrics["refold_content_sha256"] = hashlib.file_digest(content, "sha256").hexdigest()
+            self._save_confidence_json(metrics, marker)
+            if not refold_artifacts_present(coords, marker):
+                raise ValueError("the provider returned invalid refold metrics")
+            with FileLock(str(confidence) + ".lock"):
+                if self.already_refolded(job.out_dir, job.example_id, job.save_id):
+                    return
+                previous = find_structure_file(nominal)
+                if previous and previous != destination:
+                    raise FileExistsError("a different refold structure already occupies this output")
+                if previous and (previous_hash := file_sha256(previous)) != checksum:
+                    # Gzip headers may differ across retries on identical coordinate bytes.
+                    if not readable_refold_coordinates(previous):
+                        raise FileExistsError("an unreadable refold structure already occupies this output")
+                    with open_compressed(previous, "rb") as content:
+                        if hashlib.file_digest(content, "sha256").hexdigest() != metrics["refold_content_sha256"]:
+                            raise FileExistsError("a different refold structure already occupies this output")
+                    metrics["refold_structure_sha256"] = previous_hash
+                    self._save_confidence_json(metrics, marker)
+                if confidence.exists():
+                    old = read_confidence_json(confidence)
+                    if isinstance(old, dict) and old.get("refold_content_sha256") == metrics["refold_content_sha256"]:
+                        old["refold_structure_sha256"] = metrics["refold_structure_sha256"]
+                    if old != metrics:
+                        raise FileExistsError("a different confidence record already occupies this output")
+                if not previous:
+                    coords.replace(destination)
+                try:
+                    marker.replace(confidence)
+                except OSError:
+                    if not previous:
+                        destination.unlink(missing_ok=True)
+                    raise
 

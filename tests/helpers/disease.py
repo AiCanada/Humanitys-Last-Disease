@@ -148,9 +148,23 @@ def structures_json(directory: Path, *rows: dict[str, object]) -> Path:
 
 @pytest.fixture(autouse=True)
 def no_developer_files(monkeypatch) -> None:
-    """Neither table a developer may have configured."""
+    """No developer reference or installed predictor may change a fixture's evidence."""
+    from rfproteina.disease import mhc_tables, tepitope
+
     monkeypatch.delenv("HUMAN_PROTEOME", raising=False)
     monkeypatch.delenv("HUMAN_TRANSCRIPTOME", raising=False)
+    monkeypatch.delenv("MHCFLURRY_PREDICT", raising=False)
+    monkeypatch.delenv("MHCFLURRY_DOWNLOADS_DIR", raising=False)
+    monkeypatch.setattr(
+        mhc_tables,
+        "prepare_class_i_table",
+        lambda *_args, **_kwargs: {"state": "predictor_missing"},
+    )
+    monkeypatch.setattr(
+        tepitope,
+        "prepare_class_ii_table",
+        lambda *_args, **_kwargs: {"state": "matrices_missing"},
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -347,6 +361,34 @@ def asthma_catalog(directory: Path) -> Path:
     path.write_text('[{"name": "Asthma", "disease_id": "EFO_0000270"}]', encoding="utf-8")
     return path
 
+
+#: Two observed protein atoms in the layout of a returned structure file.
+REFOLDED_CIF = """\
+data_refold
+#
+loop_
+_atom_site.group_PDB
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_entity_id
+_atom_site.B_iso_or_equiv
+_atom_site.label_alt_id
+_atom_site.label_seq_id
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.occupancy
+_atom_site.auth_seq_id
+_atom_site.auth_asym_id
+_atom_site.pdbx_PDB_model_num
+_atom_site.pdbx_PDB_ins_code
+ATOM 1 N N  ILE A 1 76.63 . 1 0.0 0.0 0.0 1.0 1 A 1 ?
+ATOM 2 C CA ILE A 1 78.12 . 1 1.4 0.0 0.0 1.0 1 A 1 ?
+#
+"""
 
 #: A deposit naming three accessions across three chains, for the tests that ask
 #: which chain a target is on.

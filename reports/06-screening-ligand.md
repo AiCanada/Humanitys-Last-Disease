@@ -2,13 +2,12 @@
 
 **Program:** `Humanitys-Last-Disease`, the disease-binder design flow built on RFD4-Proteina.
 **Scope:** the ten-protein safety panel and the one measurement taken from the structure.
-**Status:** implemented and tested. Not medically verified. The panel reads a table you
-supply; this program runs no toxicology predictor.
+The panel accepts local measured concentrations, including exact-ligand assay exports.
+Model probabilities are reported separately.
 
 ## Where the code lives
 
-Paths are relative to the repository root of the RFD4-Proteina fork carrying the disease
-flow, which is not in this repository yet.
+The paths below are relative to this checkout.
 
 | Component | Path |
 |---|---|
@@ -35,6 +34,16 @@ Ten proteins, each its own axis:
 
 Each reading is a **concentration in nM**, taken from `toxicology.tsv` or `toxicology.csv`
 in the run's output directory.
+
+Version 5 carries compound identity and reports different methods, data sources,
+assay identifiers and endpoints separately. The panel retains any measured hit
+and records disagreement when another opinion clears the same axis.
+
+The ChEMBL and BindingDB lookup summaries take medians of determinate nM values
+within each group and report how many qualified readings they excluded. BindingDB
+retains the study provenance supplied in the subset. Where a source omits assay
+identifiers, the data support only that coarser grouping. Agreement between
+readings copied from the same underlying study adds no independent evidence.
 
 ## Which way the cut runs
 

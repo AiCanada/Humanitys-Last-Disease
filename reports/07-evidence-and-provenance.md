@@ -6,8 +6,7 @@
 
 ## Where the code lives
 
-Paths are relative to the repository root of the RFD4-Proteina fork carrying the disease
-flow, which is not in this repository yet.
+The paths below are relative to this checkout.
 
 | Component | Path |
 |---|---|

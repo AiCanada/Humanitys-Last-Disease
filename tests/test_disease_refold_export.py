@@ -24,7 +24,7 @@ from rfproteina.disease.refold_export import (
     write_refold_requests,
 )
 from rfproteina.utils.common import design_output_dir
-from tests.helpers.disease import TARGET_CHAIN, UBIQUITIN
+from tests.helpers.disease import REFOLDED_CIF, TARGET_CHAIN, UBIQUITIN
 
 _BINDER = UBIQUITIN
 
@@ -397,7 +397,7 @@ def test_the_round_trip_closes(tmp_path: Path) -> None:
     # The operator folds it somewhere and saves the result under that name.
     returned = tmp_path / "downloads"
     returned.mkdir()
-    (returned / "binder_0_model_1.cif").write_text("data_refold\n#\nloop_\n_atom_site.group_PDB\nATOM\n#\n", "utf-8")
+    (returned / "binder_0_model_1.cif").write_text(REFOLDED_CIF, "utf-8")
 
     # The base is the design's own, not the run. A run nests its designs under
     # inference_samples/, so handing the run to import_refolds writes the pair

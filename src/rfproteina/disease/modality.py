@@ -439,8 +439,9 @@ def _polypeptide(kind: str, sequence: str) -> dict[str, object] | None:
         **_complexity(chain),
     }
     if unusual:
-        # Only the identified residues contribute. The denominator is the complete chain length.
-        record["aliphatic_index_lower_bound"] = _aliphatic_index(chain)
+        if len(unusual) < len(chain):
+            record["aliphatic_index_lower_bound"] = _aliphatic_index(chain)
+            record["aliphatic_index_basis"] = "known_residues_lower_bound"
     else:
         record["aliphatic_index"] = _aliphatic_index(chain)
     mass = _molecular_weight(chain)

@@ -284,7 +284,9 @@ class AF2Oracle(OracleMetric):
             cached_model_name = self._load_confidence_json(confidence_path).get("af2_model_name")
         except (OSError, TypeError, ValueError):
             return False
-        return cached_model_name is not None and (self.model_name is None or cached_model_name == self.model_name)
+        if cached_model_name is None or (self.model_name is not None and cached_model_name != self.model_name):
+            return False
+        return super().already_refolded(out_dir, example_id, save_id)
 
     def fold_batch(self, jobs: list[OracleJobInput]) -> int:
         pending = [job for job in jobs if not self.already_refolded(job.out_dir, job.example_id, job.save_id)]

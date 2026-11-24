@@ -14,10 +14,9 @@ import pytest
 from rfproteina.disease.cli import build_parser, main
 from rfproteina.disease.refold_export import design_bases
 from rfproteina.metrics.oracles.imported_refolds import PathOracle
-from tests.helpers.disease import TARGET_CHAIN, UBIQUITIN
+from tests.helpers.disease import REFOLDED_CIF, TARGET_CHAIN, UBIQUITIN
 
 _BINDER = UBIQUITIN
-_CIF = "data_refold\n#\nloop_\n_atom_site.group_PDB\nATOM\n#\n"
 
 
 def _run_dir(tmp_path: Path, chains: dict[str, str], *, name: str = "binder_0", chain: str | None = "A") -> Path:
@@ -111,7 +110,7 @@ class TestImport:
         # The operator folds it elsewhere; the download unpacks to a folder.
         downloads = tmp_path / "downloads" / "fold_binder_0"
         downloads.mkdir(parents=True)
-        (downloads / "fold_binder_0_model_0.cif").write_text(_CIF, encoding="utf-8")
+        (downloads / "fold_binder_0_model_0.cif").write_text(REFOLDED_CIF, encoding="utf-8")
         (downloads / "fold_binder_0_summary_confidences_0.json").write_text(
             json.dumps({"ptm_coi": 88.0}), encoding="utf-8"
         )

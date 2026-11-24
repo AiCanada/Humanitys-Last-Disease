@@ -140,6 +140,7 @@ from rfproteina.disease.structures import (
     returned_structure_records,
     save_returned_structures,
     select_options,
+    structure_selector,
 )
 from rfproteina.disease.tables import downloaded_proteome, sample_line, stage_for_run
 from rfproteina.disease.target_liability import TargetLimits
@@ -168,6 +169,7 @@ from rfproteina.metrics.oracles.imported_refolds import PathOracle, import_refol
 
 ReadLine = Callable[[str], str]
 Fetch = Callable[[StructureOption], bytes]
+Report = Callable[[str, object], None]
 
 
 class ChoiceRequiredError(Exception):
@@ -246,6 +248,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--pick", help="Comma-separated list numbers, including predicted rows.")
+    parser.add_argument(
+        "--select-structure",
+        action="append",
+        help=(
+            "Opaque selector returned with a listed structure. Repeat to select multiple rows, "
+            "including predicted rows."
+        ),
+    )
     parser.add_argument(
         "--binder-kind",
         default="protein",
@@ -695,6 +705,7 @@ def main(
     read_json: ReadJson | None = None,
     complete: Complete | None = None,
     ask_desktop: AskDesktop | None = None,
+    report: Report | None = None,
 ) -> int:
     # The log opens before the panel, so a failure in the very first page is in it.
     written = start_log(_log_override(argv))
@@ -736,6 +747,7 @@ def main(
                     complete=complete,
                     ask_desktop=ask_desktop,
                     entry_records=entry_records,
+                    report=report,
                 )
             except StepBackError as back:
                 log().info("panel went back to step %s", back.target)
@@ -815,6 +827,7 @@ def _run(
     complete: Complete | None,
     ask_desktop: AskDesktop | None,
     entry_records: dict[str, dict] | None = None,
+    report: Report | None = None,
 ) -> int:
     incoming = list(sys.argv[1:] if argv is None else argv)
     if wants_option_ui(incoming):
@@ -852,13 +865,13 @@ def _run(
         # Reads a finished design and whatever is installed under DATA_PATH.
         # Writes nothing into the checkout and reaches no network, so none of
         # the pipeline below applies.
-        return _dynamics(selected)
+        return _dynamics(selected, report=report)
 
     if selected.human_protocol is not None:
         # Reads finished designs and the proteome already on disk. Nothing in
         # the pipeline below applies: no disease to confirm, nothing to search
         # for, download, plan or dispatch.
-        return _human_protocol(selected)
+        return _human_protocol(selected, report=report)
 
     if selected.screen is not None:
         # Screening reads a finished run and writes its verdict. None of the
@@ -996,6 +1009,26 @@ def _run(
         log().info("custom target %s", kept)
     grouped = group_options(records)
     flat = _print_structures(grouped)
+    if report is not None:
+        report(
+            "structure_options",
+            [
+                {
+                    "number": number,
+                    "selector": structure_selector(row),
+                    "group": row.group,
+                    "accession": row.accession,
+                    "entry_id": row.entry_id,
+                    "chain": row.chain,
+                    "title": row.title,
+                    "predicted": row.predicted,
+                    "methodology_known": row.methodology_known,
+                    "source": row.source,
+                    "campaigns": list(row.campaigns),
+                }
+                for number, row in enumerate(flat, 1)
+            ],
+        )
     # Confirm the program's own search on the structure page. That page also
     # holds the model ticks. Flags that already name rows skip the page.
     collected: dict[str, dict[str, SourceHit]] = {}
@@ -1020,7 +1053,13 @@ def _run(
     # The question box is both the message and the reply history. Each ask appends.
     transcript = panel.posted_question()
     try:
-        program_selected = _choose(grouped, flat, take_all=args.all, picks=args.pick)
+        program_selected = _choose(
+            grouped,
+            flat,
+            take_all=args.all,
+            picks=args.pick,
+            selectors=args.select_structure,
+        )
         # The page stays up after a search or a question. The first search adds
         # structures, the second ranks them, and a question sends the box to the
         # checked models and keeps their replies in that box. Download leaves the
@@ -1131,7 +1170,13 @@ def _run(
                 print(format_structure_ranking(order))
                 log().info("second search ranked %s structure(s)", len(ranking))
                 continue
-            program_selected = _choose(grouped, flat, take_all=take_all, picks=picks)
+            program_selected = _choose(
+                grouped,
+                flat,
+                take_all=take_all,
+                picks=picks,
+                selectors=args.select_structure,
+            )
             if not program_selected and not ranking:
                 # Download with nothing ticked. On the command line that is the
                 # end of the run and the printed line tells the user which flag
@@ -1244,7 +1289,7 @@ def _run(
     elif named and not program_selected and not args.all and not args.pick:
         selected = list(named)
     if not selected:
-        print("Pass --all, or choose structures with --pick before download.")
+        print("Pass --all, --pick, or --select-structure before download.")
         return 0
 
     print(f"Selected {len(selected)} structure(s) for download.")
@@ -1655,22 +1700,32 @@ def _choose(
     *,
     take_all: bool,
     picks: str | None,
+    selectors: list[str] | None = None,
 ) -> list[StructureOption]:
     chosen: list[StructureOption] = []
     if take_all:
         chosen.extend(select_options(grouped, None))
-    if not picks:
-        return chosen
-    for token in picks.split(","):
-        text = token.strip()
-        if not text:
-            continue
-        if not text.isdigit():
-            raise ValueError(f"Structure choice {text!r} is not a number from the list.")
-        index = int(text)
-        if not 1 <= index <= len(flat):
-            raise ValueError(f"Structure choice {index} is outside 1..{len(flat)}.")
-        row = flat[index - 1]
+    if picks:
+        for token in picks.split(","):
+            text = token.strip()
+            if not text:
+                continue
+            if not text.isdigit():
+                raise ValueError(f"Structure choice {text!r} is not a number from the list.")
+            index = int(text)
+            if not 1 <= index <= len(flat):
+                raise ValueError(f"Structure choice {index} is outside 1..{len(flat)}.")
+            row = flat[index - 1]
+            if row not in chosen:
+                chosen.append(row)
+    by_selector = {structure_selector(row): row for row in flat}
+    for supplied in selectors or []:
+        selector = supplied.strip().casefold()
+        if len(selector) != 64 or any(character not in "0123456789abcdef" for character in selector):
+            raise ValueError("A structure selector must be the 64-character value returned in structure_options.")
+        row = by_selector.get(selector)
+        if row is None:
+            raise ValueError("Structure selection is no longer listed; refresh structure_options.")
         if row not in chosen:
             chosen.append(row)
     return chosen
@@ -1941,7 +1996,7 @@ def _benchmark_answer(args: argparse.Namespace) -> int:
     return 0
 
 
-def _human_protocol(args: argparse.Namespace) -> int:
+def _human_protocol(args: argparse.Namespace, *, report: Report | None = None) -> int:
     """Run The H.U.M.A.N  Protocol headless, and print what the tab draws.
 
     The same functions the panel's tab calls, printing the same lines, so a
@@ -1980,6 +2035,8 @@ def _human_protocol(args: argparse.Namespace) -> int:
         if not avoid:
             scan = protocol.scan_designs(designs, proteome, work)
             if not scan.ran:
+                if report is not None:
+                    report("human_protocol", protocol.blocked_record(scan.blocker))
                 print(protocol.sentence(scan.blocker), file=sys.stderr)
                 return 1
             # Resolved first: a reader may have named the target by gene
@@ -1989,6 +2046,18 @@ def _human_protocol(args: argparse.Namespace) -> int:
                 protocol.propose_anti_targets(scan, exclude=(named_target,) if named_target else ()),
                 proteome,
             )
+            if report is not None:
+                report(
+                    "human_protocol",
+                    {
+                        "protocol": protocol.PROTOCOL_LABEL,
+                        "mode": "proposal",
+                        "target": intended,
+                        "anti_targets": [item.as_record() for item in proposed],
+                        "limit": protocol.PROTOCOL_LIMIT,
+                        "code": protocol.code_version(),
+                    },
+                )
             print(f"{protocol.PROTOCOL_LABEL}: what these designs already resemble, strongest first.")
             print(protocol.PROTOCOL_LIMIT)
             for item in proposed:
@@ -2004,12 +2073,14 @@ def _human_protocol(args: argparse.Namespace) -> int:
             work_dir=work,
             limits=limits,
         )
+    if report is not None:
+        report("human_protocol", record)
     for line in protocol.readout_lines(record):
         print(line)
     return 0
 
 
-def _dynamics(args: argparse.Namespace) -> int:
+def _dynamics(args: argparse.Namespace, *, report: Report | None = None) -> int:
     """Run the Conformational Dynamics Analyst headless, printing what the tab draws.
 
     The same functions the tab calls, printing the same lines, so a reader
@@ -2064,6 +2135,8 @@ def _dynamics(args: argparse.Namespace) -> int:
         limits=limits,
         generate=produce,
     )
+    if report is not None:
+        report("dynamics", record)
     for line in analyst.readout_lines(record):
         print(line)
     return 0
@@ -2148,6 +2221,7 @@ def _declare_corpora(args: argparse.Namespace) -> int:
     return 0
 
 
+@installation_batch()
 def _screen_only(
     args: argparse.Namespace,
     incoming: list[str],

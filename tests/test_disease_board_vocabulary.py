@@ -420,6 +420,11 @@ _UNSEEN_BY_THE_SCAN = frozenset(
         "metrics_row_too_short",
         "metrics_too_large",
         "metrics_unreadable",
+        # ``nominated_inputs`` returns its blocker in the third member of a
+        # typed tuple. The scan deliberately inspects only first-member blocker
+        # helpers, because treating every optional string in a tuple as a
+        # blocker also matches scopes and statuses.
+        "ligand_input_missing",
         "no_nine_mer_ligand",
         # The next three are handed back by ``refold_export.design_fasta`` and
         # ``binder_fasta`` as a bare ``return "name"`` from a function named for
@@ -431,6 +436,13 @@ _UNSEEN_BY_THE_SCAN = frozenset(
         "not_requested",
         "oracle_not_configured",
         "over_residue_limit",
+        # ``protein_sol_inputs`` raises these validation codes and its caller
+        # records ``str(error)`` as the blocker. The dynamic hand-off is covered
+        # by the Protein-Sol tests, but no literal reaches a blocker slot for
+        # this static scan to discover.
+        "protein_sol_fasta_invalid",
+        "protein_sol_report_invalid",
+        "protein_sol_report_unreadable",
         "target_accession_ambiguous",
         "too_many_chains",
         "toxicology_not_configured",

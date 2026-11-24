@@ -371,10 +371,14 @@ def test_aliphatic_index_and_mass_stay_off_the_call(tmp_path: Path):
     assert "molecular_weight" not in odd
     assert "aliphatic_index" not in odd
     assert f"{odd['aliphatic_index_lower_bound']:.4f}" == "50.0000"
-    assert "Identified residues contribute 50 to the aliphatic index." in screen_page(
+    assert odd["nonstandard_count"] == 1
+    assert odd["aliphatic_index_basis"] == "known_residues_lower_bound"
+    assert "Aliphatic index lower bound 50, from identified residues." in screen_page(
         {"call": "untested", "modality_screen": odd}
     )
-    assert odd["nonstandard_count"] == 1
+    legacy = {key: value for key, value in odd.items() if key != "aliphatic_index_basis"}
+    assert "Aliphatic index lower bound 50" in screen_page({"call": "untested", "modality_screen": legacy})
+    assert "aliphatic_index" not in modality_record("protein", "XX")
     assert "AX" not in json.dumps(odd)
     record = screened_design_run(tmp_path, _PLAIN)
     modality = record["modality_screen"]

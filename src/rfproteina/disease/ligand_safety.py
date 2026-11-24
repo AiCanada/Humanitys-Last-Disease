@@ -971,11 +971,13 @@ def nearest_measured_neighbours(
 
     total = sum(len(entries) for entries in found.values())
     same_identity = any(entry["same_inchikey_as_query"] for entries in found.values() for entry in entries)
+    different_identity = any(not entry["same_inchikey_as_query"] for entries in found.values() for entry in entries)
     notes = [
-        "A concentration on a DIFFERENT molecule belongs to the named release compound.",
         "nothing here may be written into an *_nm column for this design",
         f"matched by {_MORGAN_METHOD} at or above Tanimoto {min_similarity}",
     ]
+    if different_identity:
+        notes.insert(0, "A concentration on a DIFFERENT molecule belongs to the named release compound.")
     if same_identity:
         notes.append(
             "A release compound shares the query InChIKey. Exact assay attribution uses the exact-match reader."
@@ -1234,14 +1236,17 @@ def offtarget_profile(
         hits.sort(key=lambda hit: float(hit["neighbour_nanomolar"]))
         families[name] = hits[:per_family]
 
+    same_identity = any(item["same_inchikey_as_query"] for item in used)
+    different_identity = any(not item["same_inchikey_as_query"] for item in used)
     notes = [
-        "A concentration on a DIFFERENT molecule belongs to the named release compound.",
         "Approval and withdrawal flags reflect affirmative release annotations.",
         "nothing here may be written into an *_nm column for this design",
         f"matched by {_MORGAN_METHOD} at or above Tanimoto {min_similarity}",
         "GtoPdb is ODbL; share-alike follows any redistributed derivative",
     ]
-    if any(item["same_inchikey_as_query"] for item in used):
+    if different_identity:
+        notes.insert(0, "A concentration on a DIFFERENT molecule belongs to the named release compound.")
+    if same_identity:
         notes.append(
             "A release compound shares the query InChIKey. Concentrations retain their individual assay attribution."
         )

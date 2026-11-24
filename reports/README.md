@@ -10,7 +10,7 @@ prediction. A clear screen is a computational result; it is not experimental val
 
 | # | Report | Subject |
 |---|---|---|
-| 1 | [MCP Integration Layer](01-mcp-integration-layer.md) | The ten tools an assistant drives the program through, which of the eight declared capabilities are live, and the safety properties of the server |
+| 1 | [MCP Integration Layer](01-mcp-integration-layer.md) | The full declared tool surface, its live capabilities, and the protocol and filesystem boundaries of the server |
 | 2 | [AI Interface](02-ai-interface.md) | The five model providers, the desktop-application path, and how credentials are held |
 | 3 | [Computational Backend](03-computational-backend.md) | Generation and evaluation, the plan-then-execute split, and what is not present — including docking and binding affinity |
 
@@ -44,7 +44,4 @@ Ensembl Compara when an identity cut is named, which can clear it from a measure
 
 ## A note on paths
 
-Source paths in these reports are relative to the repository root of the RFD4-Proteina fork
-that carries the disease flow. **That code is not in this repository yet** — this repository
-currently holds the upstream tree. The paths are given so each statement can be checked
-against the source when it is published.
+Source paths in these reports are relative to this checkout. The screening implementation is under `src/rfproteina/disease/`.

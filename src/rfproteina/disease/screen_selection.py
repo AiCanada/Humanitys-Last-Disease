@@ -322,7 +322,7 @@ _CRITERIA = {
 }
 
 
-def _input_reason(directory: Path, method: Method, kind: str, example: str | None) -> str | None:
+def _input_requirement(directory: Path, method: Method, kind: str, example: str | None) -> str | None:
     if method.kinds and kind not in method.kinds:
         return "Requires a " + " or ".join(method.kinds) + " candidate."
     if example is not None and (not example or method.key in _RUN_LEVEL):
@@ -433,7 +433,7 @@ def plan(
                 missing = "No attributable result from this producer is attached to the selected scope."
         else:
             try:
-                missing = _input_reason(directory, method, kind, example)
+                missing = _input_requirement(directory, method, kind, example)
                 if missing is None and method.key == "qupkake":
                     decision = screen_criteria.qupkake_nominations(directory, example, _READ_LIMIT)
                 elif missing is None and method.key == "sygma":

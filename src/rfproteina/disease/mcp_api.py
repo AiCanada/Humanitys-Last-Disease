@@ -454,6 +454,18 @@ SCREEN_FIELDS = frozenset(
 #: ``refold`` they configure nothing at all -- and a client that set one would
 #: read its own call as having asked for something.
 _REFOLD_OPTIONS = frozenset({"refold", "refold_dir", "refold_import", "refold_oracle"})
+_HEADLESS_MODES = frozenset(
+    {"declare_corpora", "benchmark_answer", "dynamics", "human_protocol", "screen", "refold"}
+)
+_MODE_OPTIONS = {
+    "benchmark_answer": frozenset({"benchmark_structure"}),
+    "dynamics": frozenset(
+        {"dynamics_chain", "dynamics_task", "dynamics_frames", "rmsf_max", "mobile_fraction_max", "drift_max"}
+    ),
+    "human_protocol": frozenset({"not_binding", "human_chain", "resemblance_identity_max"}),
+    "declare_corpora": frozenset({"corpora_against"}),
+    "refold": _REFOLD_OPTIONS - {"refold"},
+}
 #: ``refold_oracle`` is a name, not a path, so it does not go through
 #: :func:`_path` -- and it is written into every filename the refold mode files
 #: a fold under (``PathOracle.output_stem`` builds ``<example>_<oracle>`` and
@@ -481,6 +493,7 @@ TOOL_NAMES = (
 #: than when the run ends. Raising from it abandons the run, which is how a
 #: cancelled call stops.
 ProgressLine = Callable[[str], None]
+StructuredResult = Callable[[str, object], None]
 
 
 class _Unanswered(BaseException):
@@ -580,7 +593,10 @@ def list_options() -> dict[str, object]:
         "notes": [
             "Pass these names to run. A false flag is omitted. null omits the option.",
             "screen and the browser panel cannot be used together.",
-            "run accepts a disease pipeline, screen or refold call.",
+            (
+                "run takes one mode per call: the disease pipeline, benchmark answer, dynamics, "
+                "H.U.M.A.N. protocol, screen, refold, or corpus declaration."
+            ),
             (
                 "refold prepares a finished run for folding elsewhere, or files the folds that came back, "
                 "and returns that record as refold. refold_dir, refold_import and refold_oracle need it."
@@ -655,16 +671,8 @@ def run_program(arguments: Mapping[str, object], *, on_line: ProgressLine | None
     """Run the program in one of its modes and return what that mode produced.
 
     The disease pipeline needs a disease and, because this server has nobody to
-    ask, ``accept_only`` or ``choice``. A ``screen`` needs neither and returns
-    the verdicts it wrote. A ``refold`` needs neither either: it reads a
-    finished run, writes the fold requests beside it or files the folds that
-    came back, and prompts for nothing.
-
-    The guards knew only the first two. A refold call names no disease, so it
-    was refused for not naming one, and the mode was reachable only by passing a
-    disease the program would then ignore -- while its whole result, one printed
-    JSON document, came back as fragments among the printed lines. It is
-    returned as ``refold`` now.
+    ask, ``accept_only`` or ``choice``. The CLI's other headless modes prompt for
+    neither. Their option paths are the same ones the ordinary command uses.
     """
     from rfproteina.disease.ui import wants_option_ui
 
@@ -679,6 +687,10 @@ def run_program(arguments: Mapping[str, object], *, on_line: ProgressLine | None
     if _BROWSER_ONLY_OPTIONS.intersection(options):
         raise ValueError("This server does not open the browser panel.")
     _reject_secrets(options)
+    # Encode first so the mode guards use values that have already passed the
+    # published type, choice and path checks. False boolean flags encode to
+    # nothing and therefore do not select a mode.
+    argv = argv_from_options(options)
     _validate_remote_options(options)
     # An option whose value is null is not an option: :func:`argv_from_options`
     # leaves it out. Tested for presence instead, ``screen: null`` read as a
@@ -686,45 +698,67 @@ def run_program(arguments: Mapping[str, object], *, on_line: ProgressLine | None
     # call went down the disease pipeline with no ``accept_only``, which is the
     # one thing the second guard exists to prevent, performed a live disease
     # search, and then met a confirmation prompt this server cannot answer.
-    supplied = {name for name, value in options.items() if value is not None}
-    if "screen" in supplied and "refold" in supplied:
-        # The program's own modes are mutually exclusive, so this reaches the
-        # parser as a usage error and comes back as exit code 2 with argparse's
-        # wording. Said here, it names the two options the caller passed.
-        raise ValueError("Screen a run or refold one. The program takes one mode per call.")
-    stray = sorted((_REFOLD_OPTIONS - {"refold"}) & supplied) if "refold" not in supplied else []
-    if stray:
-        raise ValueError(f"These options need refold, and nothing else reads them: {', '.join(stray)}.")
+    supplied = {name for name, value in options.items() if value is not None and value is not False}
+    selected_modes = sorted(_HEADLESS_MODES & supplied)
+    if len(selected_modes) > 1:
+        raise ValueError(f"Choose one program mode, rather than: {', '.join(selected_modes)}.")
+    mode = _run_mode(supplied)
+    for owner, companions in _MODE_OPTIONS.items():
+        stray = sorted(companions & supplied) if owner not in supplied else []
+        if stray:
+            raise ValueError(f"These options need {owner}, and nothing else reads them: {', '.join(stray)}.")
     oracle = options.get("refold_oracle")
     if isinstance(oracle, str) and _ORACLE_NAME.fullmatch(oracle) is None:
         raise ValueError(
             "refold_oracle is a plain name: a letter or digit, then letters, digits, dot, dash or underscore."
         )
     refold = options.get("refold")
-    if isinstance(refold, str) and refold.strip():
+    if mode == "refold" and isinstance(refold, str) and refold.strip():
         _require_finished_run(_path(refold))
-    # Which mode this is. Only the disease pipeline searches, confirms and can
-    # be asked a question; a screen and a refold each read a finished run.
-    pipeline = not {"screen", "refold"} & supplied
+    # Only the disease pipeline searches, confirms and can ask a question.
+    pipeline = not _HEADLESS_MODES & supplied
     if pipeline and "disease" not in supplied:
-        raise ValueError("Set disease, screen a directory with screen_directory, or refold a finished run.")
+        raise ValueError("Set disease or select one of the headless modes listed by list_options.")
     if pipeline and not options.get("accept_only") and "choice" not in supplied:
         raise ValueError("Pass accept_only or choice. This server does not prompt.")
-    argv = argv_from_options(options)
     if wants_option_ui(argv):
         raise ValueError("This server does not open the browser panel. Set the options here.")
-    code, messages = _call_main(argv, on_line=on_line)
-    payload: dict[str, object] = {"program": PROGRAM, "exit_code": code, "messages": messages}
-    if "screen" in supplied and isinstance(options["screen"], str):
+    structured: dict[str, object] = {}
+
+    def record(name: str, value: object) -> None:
+        if name in {"structure_options", "dynamics", "human_protocol"}:
+            structured[name] = _redact(value)
+
+    code, messages = _call_main(argv, on_line=on_line, on_record=record)
+    payload: dict[str, object] = {"program": PROGRAM, "mode": mode, "exit_code": code, "messages": messages}
+    payload.update(structured)
+    if mode == "screen" and isinstance(options["screen"], str):
         payload["verdict"] = _screens(_path(options["screen"]), include_record=False)
-    if "refold" in supplied:
+    if mode == "refold":
         # The originals, not the redacted lines in the payload: see
         # :func:`_printed_json`. A stand-in for the program carries none, and
         # then no record is claimed.
         report = _printed_json(list(getattr(messages, "raw", ())))
         if report is not None:
             payload["refold"] = report
+    if mode == "benchmark_answer":
+        answers = _printed_json_array(list(getattr(messages, "raw", ())))
+        if answers is not None:
+            payload["benchmark_answers"] = answers
+    if mode == "declare_corpora" and code == 0:
+        from rfproteina.disease.mcp_layers import declare_corpora
+
+        against = options.get("corpora_against")
+        payload["corpora"] = declare_corpora({"against": against} if isinstance(against, str) else {})
     return payload
+
+
+def _run_mode(supplied: set[str]) -> str:
+    """The CLI branch that will consume this validated option set."""
+    for name in ("declare_corpora", "benchmark_answer", "dynamics", "human_protocol", "screen", "refold"):
+        if name in supplied:
+            return name
+    return "disease_pipeline"
 
 
 def _require_finished_run(path: Path) -> None:
@@ -790,6 +824,25 @@ def _printed_json(lines: list[str]) -> dict[str, object] | None:
     except ValueError:
         return None
     return _refold_record(found) if isinstance(found, dict) else None
+
+
+def _printed_json_array(lines: list[str]) -> list[object] | None:
+    """A JSON array printed by a headless mode, with returned prose scrubbed."""
+    try:
+        start = lines.index("[")
+    except ValueError:
+        return None
+    end = max((index for index, line in enumerate(lines) if line == "]"), default=-1)
+    if end <= start:
+        return None
+    try:
+        found = json.loads("".join(lines[start : end + 1]))
+    except ValueError:
+        return None
+    if not isinstance(found, list):
+        return None
+    redacted = _redact(found)
+    return redacted if isinstance(redacted, list) else None
 
 
 #: The keys of the refold record whose value is a path on this computer.
@@ -1425,7 +1478,12 @@ def argv_from_options(options: Mapping[str, object]) -> list[str]:
     return argv
 
 
-def _call_main(argv: list[str], *, on_line: ProgressLine | None = None) -> tuple[int, list[str]]:
+def _call_main(
+    argv: list[str],
+    *,
+    on_line: ProgressLine | None = None,
+    on_record: StructuredResult | None = None,
+) -> tuple[int, list[str]]:
     """Call the program. Its prints stay in the returned lines, not on stdout.
 
     Both streams are captured into one, so the lines keep the order the program
@@ -1439,7 +1497,7 @@ def _call_main(argv: list[str], *, on_line: ProgressLine | None = None) -> tuple
     try:
         with contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
             try:
-                code = main(argv, read_line=_decline)
+                code = main(argv, read_line=_decline, report=on_record)
             except _Unanswered:
                 raise ValueError("That disease was not found. Pass another name.") from None
             except SystemExit as exc:

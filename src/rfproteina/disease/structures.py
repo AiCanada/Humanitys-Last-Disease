@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Callable
 from dataclasses import dataclass, fields
 from datetime import UTC, datetime
@@ -66,6 +67,16 @@ class StructureOption:
     methodology_known: bool = True
     #: Design classes this row can start. Empty means they are read from the group and title.
     campaigns: tuple[str, ...] = ()
+
+
+def structure_selector(row: StructureOption) -> str:
+    """Opaque, order-independent identity for selecting one freshly listed row."""
+    identity = json.dumps(
+        ["structure-selector-v1", row.group, row.entry_id, row.chain],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(identity).hexdigest()
 
 
 def _write_source_record(dest: Path, record: StructureOption, payload: bytes) -> None:
@@ -274,6 +285,7 @@ def returned_structure_records(
         found.append(
             {
                 "number": number,
+                "selector": structure_selector(row),
                 "group": row.group,
                 "accession": row.accession,
                 "entry_id": row.entry_id,

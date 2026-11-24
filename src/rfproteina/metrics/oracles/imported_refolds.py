@@ -31,10 +31,14 @@ import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 
+from filelock import FileLock
+
 from rfproteina.utils.common import design_output_dir
-from rfproteina.utils.structure_files import is_structure_file, structure_file_stem
+from rfproteina.utils.metrics_files import file_sha256
+from rfproteina.utils.structure_files import find_structure_file, is_structure_file, structure_file_stem
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from rfproteina.metrics.oracles.oracle_metric import OracleMetric
@@ -101,7 +105,9 @@ class PathOracle:
         )
 
     def already_refolded(self, out_dir: Path, example_id: str, save_id: str | None = None) -> bool:
-        return self.confidence_path(out_dir, example_id, save_id).exists()
+        return refold_artifacts_present(
+            self.refolded_cif_path(out_dir, example_id, save_id), self.confidence_path(out_dir, example_id, save_id)
+        )
 
 
 @dataclass(frozen=True)
@@ -172,10 +178,8 @@ def place_refold(
     oracle writes ``.cif.zst`` for folds of its own -- converting it here would
     mean re-encoding a file to no purpose.
 
-    Returns a record. A refusal never writes anything, because a half-placed
-    refold is worse than none: the confidence JSON is what marks a design done,
-    so writing it beside a structure that cannot be read would make the design
-    look refolded and measure nothing.
+    Validate both files and the oracle's cache predicate before publishing the
+    pair. A conflicting import preserves the earlier structure and confidence.
     """
     if not structure.is_file():
         return ImportedRefold(example_id, "structure_not_found", save_id=save_id)
@@ -200,20 +204,37 @@ def place_refold(
     nominal = oracle.refolded_cif_path(out_dir, example_id, save_id)
     destination = nominal.parent / f"{structure_file_stem(nominal)}{_suffix(structure)}"
     confidence_destination = oracle.confidence_path(out_dir, example_id, save_id)
+    if destination.parent != directory or confidence_destination.parent != directory:
+        return ImportedRefold(example_id, "invalid_output_name", save_id=save_id)
     try:
         directory.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(structure, destination)
-        # Written last. It is the marker the oracle checks, so until it exists
-        # the design is not yet claimed as refolded.
-        confidence_destination.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        with TemporaryDirectory(dir=directory) as staging:
+            stage_root = Path(staging)
+            staged_dir = design_output_dir(stage_root, example_id)
+            staged_dir.mkdir()
+            coords = staged_dir / destination.name
+            marker = staged_dir / confidence_destination.name
+            shutil.copyfile(structure, coords)
+            if not readable_refold_coordinates(coords):
+                return ImportedRefold(example_id, "structure_unreadable", save_id=save_id)
+            checksum = file_sha256(coords)
+            if payload.get("imported_structure_sha256", checksum) != checksum:
+                return ImportedRefold(example_id, "confidence_structure_mismatch", save_id=save_id)
+            payload["imported_structure_sha256"] = checksum
+            marker.write_text(json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+            try:
+                accepted = oracle.already_refolded(stage_root, example_id, save_id)
+            except ValueError:
+                accepted = False
+            if not accepted:
+                return ImportedRefold(example_id, "oracle_did_not_accept", save_id=save_id)
+            with FileLock(str(confidence_destination) + ".lock"):
+                reason = _publish_import(coords, marker, destination, confidence_destination, payload)
+                if reason:
+                    return ImportedRefold(example_id, reason, save_id=save_id)
     except OSError:
         return ImportedRefold(example_id, "write_failed", save_id=save_id)
 
-    if not oracle.already_refolded(out_dir, example_id, save_id):
-        # The oracle still does not recognise it. AF2, for one, wants its own
-        # model name in the record. Said rather than left to be discovered when
-        # the metrics come back empty.
-        return ImportedRefold(example_id, "oracle_did_not_accept", save_id=save_id)
     return ImportedRefold(
         example_id,
         None,
@@ -221,6 +242,75 @@ def place_refold(
         confidence=confidence_destination,
         save_id=save_id,
     )
+
+
+def readable_refold_coordinates(path: Path) -> bool:
+    """Whether the first model contains observed atoms with finite coordinates."""
+    import numpy as np
+    from atomworks.io.utils.io_utils import get_structure, read_any
+    from biotite import DeserializationError, InvalidFileError
+    from zstandard import ZstdError
+
+    try:
+        xyz = get_structure(read_any(path), model=1, include_bonds=False).coord
+        return bool(len(xyz) and np.isfinite(xyz).all())
+    except (
+        OSError, EOFError, ValueError, KeyError, IndexError, TypeError,
+        DeserializationError, InvalidFileError, ZstdError,
+    ):
+        return False
+
+
+def refold_artifacts_present(nominal: Path, confidence: Path, *, verify_legacy_coordinates: bool = False) -> bool:
+    """Check attested coordinate bytes and optionally parse older unhashed structures."""
+    if not confidence.is_file():
+        return False
+    try:
+        payload = read_confidence_json(confidence)
+        if not isinstance(payload, dict):
+            return False
+        imported = payload.get(IMPORT_MARK) is True
+        claimed = payload.get("imported_structure_sha256" if imported else "refold_structure_sha256")
+        if not imported and claimed is None and not verify_legacy_coordinates:
+            return True
+        if not _valid_overall_plddt(payload):
+            return False
+        coords = find_structure_file(nominal)
+        if coords is None:
+            return False
+        return file_sha256(coords) == claimed if claimed is not None else readable_refold_coordinates(coords)
+    except (OSError, ValueError, RecursionError):
+        return False
+
+
+def _publish_import(coords: Path, marker: Path, destination: Path, confidence: Path, payload: dict) -> str | None:
+    try:
+        previous = find_structure_file(destination)
+    except ValueError:
+        return "existing_refold_conflict"
+    if previous and (previous != destination or file_sha256(previous) != payload["imported_structure_sha256"]):
+        return "existing_refold_conflict"
+    if confidence.exists():
+        try:
+            old = read_confidence_json(confidence)
+        except (ValueError, RecursionError):
+            return "existing_refold_conflict"
+        if not previous or not isinstance(old, dict) or old.get(IMPORT_MARK) is not True:
+            return "existing_refold_conflict"
+        old.setdefault("imported_structure_sha256", payload["imported_structure_sha256"])
+        if old.get("imported_structure_sha256") != payload["imported_structure_sha256"]:
+            return "existing_refold_conflict"
+        if old != payload and old.get("confidence") != NO_CONFIDENCE:
+            return None if payload.get("confidence") == NO_CONFIDENCE else "existing_refold_conflict"
+    if not previous:
+        coords.replace(destination)
+    try:
+        marker.replace(confidence)
+    except OSError:
+        if not previous:
+            destination.unlink(missing_ok=True)
+        raise
+    return None
 
 
 def import_refolds(
@@ -389,6 +479,11 @@ def read_confidence_json(path: Path) -> object:
     return loaded
 
 
+def _valid_overall_plddt(record: dict) -> bool:
+    score = record.get("overall_plddt")
+    return score is None or (type(score) in (int, float) and 0 <= score <= 100)
+
+
 def _confidence_payload(oracle: OracleMetric, confidence: Path | None) -> dict[str, object] | str:
     """The record to write, or a blocker name when the supplied file is unusable."""
     base: dict[str, object] = {IMPORT_MARK: True, "oracle_name": oracle.oracle_name}
@@ -398,13 +493,15 @@ def _confidence_payload(oracle: OracleMetric, confidence: Path | None) -> dict[s
     try:
         if confidence.stat().st_size > CONFIDENCE_BYTE_LIMIT:
             return "confidence_too_large"
-        loaded = json.loads(confidence.read_text(encoding="utf-8"))
+        loaded = read_confidence_json(confidence)
     except (OSError, UnicodeError, ValueError, RecursionError):
         return "confidence_unreadable"
     if not isinstance(loaded, dict):
         return "confidence_not_an_object"
-    # The supplied values win, and the mark stays: a reader can tell which
-    # numbers came from outside even when they are real confidence values.
+    if not _valid_overall_plddt(loaded):
+        return "confidence_plddt_out_of_scale"
+    if not loaded.get("source_oracle_name") and isinstance(loaded.get("oracle_name"), str):
+        base["source_oracle_name"] = loaded["oracle_name"]
     return {**loaded, **base}
 
 

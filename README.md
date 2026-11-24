@@ -45,7 +45,55 @@ Each structure is then ranked by LLM/Bot for Binding
 
 **60 working screens after generation.** The review covers predictions, structural measurements and evidence readers exercised with live controls. [Reviewed methods](docs/post-generation-method-review.md) and [screen inputs](docs/reference/screen-inputs.md).
 
+Post-generation screening options include:
+
+Protein and peptide
+• Immunogenicity, Calis 2013 class I 9-mer
+• Proteome off-target, exact distinct 9-mer
+• MHC class I, from a local predictor table
+• MHC class II, from a local predictor table
+• ADA, Paul et al. 2015 DR-panel breadth
+• Paralog, UniRef50, with a co-evolution note beside it
+• Plasma abundance, Human Protein Atlas
+• Plasma hub, STRING physical score 700
+• Plasma fold, from plasma_fold.tsv plus a named study
+• Sequence developability, GRAVY and instability index
+• Chemical liability: deamidation (NG, NS), isomerization (DG), N-glycosylation (NXS, NXT), methionine, tryptophan, free cysteine, isoelectric point, and net charge at pH 7.4
+• Furin cleavage (RXKR, RXRR)
+• Asp-Pro acid-labile bond
+• N-terminal glutamine
+• Nonstandard residues, by position
+• Longest same-residue run
+• Longest hydrophobic run
+• Aliphatic index
+• Average molecular weight
+
+Peptide, added to the protein list
+• Membrane evidence from the peptide screen or a documented caller-supplied result
+
+Nucleic
+• Off-target hybridization against a configured reference
+• Innate immune motif findings, with a curated justification required for a clear
+• GC fraction
+• CpG count
+• Longest G run
+
+Ligand
+• hERG
+• Nav1.5
+• CYP3A4
+• CYP2D6
+• CYP2C9
+• CYP1A2
+• CYP2C19
+• P-gp
+• BCRP
+• BSEP
+• Formula weight, from the cell or from the chemical formula
+
 **Choosing screens for a finished candidate.** The picker recommends installed methods using the candidate’s inputs, the available model assets and the expected workload. Choose individual methods or select all installed screens. The results give a reason for each skipped method. MCP clients can inspect the same recommendations with `plan_screening` and execute them with `run_selected_screens`. [Screen selection guide](docs/reference/screen-inputs.md#choose-scientific-screens-for-a-finished-candidate).
+
+Version 5 and later screen records distinguish incomplete refolds, interface measurements without calibrated cuts, and ligand readings by assay. The [screening reference](docs/reference/screen-inputs.md) describes the current record. The [local verification notes](docs/screening-implementation-handoff.md) give the tested scope and program sizes.
 
 Structure and binder visual presentation after generation
 
@@ -67,9 +115,11 @@ Program Architecture:
 - Database retrieval.
 - Protein structure retrieval.
 - Sequence processing.
+- Program option and structure-selection discovery.
 - Generative design execution.
 - Screening pipeline execution.
 - Results retrieval.
+- Bounded output-artifact listing and reading.
 - C. Computational Backend
 - Modified RFD4.
 - GPU processing.
