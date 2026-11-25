@@ -4,19 +4,47 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
+from typing import TYPE_CHECKING
 
 from rfproteina.disease import (
+    badapple2,
+    cellprofiler_stain,
+    crest,
+    cypstrate,
+    delphi_inputs,
+    dimorphite,
+    espsim,
+    fastsolv,
+    httk,
+    jazzy,
     ligand_alerts,
+    ligand_ames,
+    ligand_caco2,
+    ligand_dili,
     ligand_inputs,
     ligand_metabolites,
+    ligand_microsomal_clearance,
     ligand_solubility,
+    metfrag,
+    openantigens,
+    p2rank,
+    peptide_rbc,
+    pksim,
+    propka,
     qupkake,
     screen_inventory,
     screen_physical,
+    screening_context,
+    scscore,
+    spyrmsd_pose,
 )
+
+if TYPE_CHECKING:
+    from rfproteina.disease.validation_checks import ValidationCandidate
 
 
 @dataclass(frozen=True)
@@ -24,6 +52,99 @@ class Decision:
     applicable: bool
     recommended: bool
     reason: str
+    resolved: bool = False
+
+
+def _real_example_file(path: Path) -> bool:
+    try:
+        return path.resolve(strict=True) == path and path.is_file()
+    except (OSError, RuntimeError):
+        return False
+
+
+def peptide_rbc_candidate_ids(candidates: Iterable[ValidationCandidate]) -> frozenset[str]:
+    """An absent, aliased, or colliding example cannot identify experimental evidence."""
+    from rfproteina.disease.screen import _sample_id
+
+    identities = []
+    for candidate in candidates:
+        if candidate.files and _real_example_file(path := screen_physical._file(candidate)):
+            identities.append((candidate.example_id, _sample_id(path)))
+    id_counts = Counter(name for name, _ in identities)
+    short_counts = Counter(short for _, short in identities)
+    # The run's root example can still inherit a collision-prone bare name
+    # from the structure inventory. Do not bind a lab result to that name
+    # when it could refer to another actual example with the same short ID.
+    return frozenset(
+        name for name, short in identities
+        if name and id_counts[name] == 1 and (name != short or short_counts[short] == 1)
+    )
+
+
+def peptide_rbc_known_candidates(directory: Path) -> frozenset[str]:
+    """Resolve real generated examples without reading sequences or coordinates."""
+    from rfproteina.disease.validation_checks import _candidates, _inventory
+
+    return peptide_rbc_candidate_ids(_candidates(_inventory(directory)))
+
+
+def peptide_rbc_observations(directory: Path, example: str | None, known: frozenset[str]) -> Decision:
+    """Recommend review of complete human observations, not a safety decision."""
+    rows, blocker = peptide_rbc.read_observations(directory, candidate=example, known_candidates=known)
+    requirement = f"Requires attributable experimental peptide observations in {peptide_rbc.MANIFEST}."
+    if blocker is not None:
+        return Decision(False, False, f"{requirement} The evidence is unavailable ({blocker}).")
+    reported = sum(row.get("status") == "reported" for row in rows)
+    if not reported:
+        attributable = any(row.get("candidate_id") in known for row in rows)
+        if attributable:
+            return Decision(True, False, "No usable observation is available. Select explicitly to review blockers.")
+        return Decision(False, False, f"{requirement} No observation matches this selection.")
+    human = sum(row.get("status") == "reported" and row.get("species") == "human" for row in rows)
+    if human == len(rows):
+        return Decision(True, True, "Review the supplied, QC-accepted human red-cell measurements separately.")
+    return Decision(
+        True, False,
+        f"{reported} of {len(rows)} observations are attributable and QC-accepted, {human} human. Select explicitly.",
+    )
+
+
+def molprobity_geometry_inputs(
+    directory: Path, example: str | None, candidates: Iterable[ValidationCandidate],
+) -> Decision:
+    """Recommend one coordinate model from metadata, without parsing or running CCTBX."""
+    from rfproteina.disease import molprobity_inputs
+
+    models, blocker = molprobity_inputs.resolve_inputs(directory, example, candidates=candidates)
+    if blocker is not None:
+        return Decision(False, False, f"Requires an eligible finished protein coordinate model ({blocker}).")
+    ready = sum(model.blocker is None for model in models)
+    if not ready:
+        reason = next((model.blocker for model in models if model.blocker), None)
+        suffix = f" ({reason})" if reason else ""
+        return Decision(False, False, f"No eligible finished protein coordinate model{suffix}.")
+    if ready == len(models) == 1:
+        return Decision(True, True, "Review geometry of the whole nominated model, including any partner chains.")
+    return Decision(
+        True, False,
+        f"{ready} of {len(models)} models are ready. Select explicitly to review each whole model separately.",
+    )
+
+
+def delphi_antibody_pairs(directory: Path, example: str | None) -> Decision:
+    """Check declared VH/VL nominations cheaply. Inference verifies domain identities."""
+    rows, blocker = delphi_inputs.read_pairs(directory, candidate=example)
+    requirement = f"Requires named VH/VL pairs in {delphi_inputs.MANIFEST}. VHH-only inputs are not supported."
+    if blocker:
+        return Decision(False, False, f"{requirement} The nomination is unusable ({blocker}).")
+    eligible = sum(row.blocker is None for row in rows)
+    if not eligible:
+        return Decision(False, False, f"No usable nomination matches this selection. {requirement}")
+    purpose = "Prioritize experimental PSR testing for explicitly nominated paired antibody variable domains."
+    if eligible == len(rows) == 1:
+        return Decision(True, True, purpose)
+    reason = f"{eligible} of {len(rows)} VH/VL nominations are eligible for domain verification. Select explicitly."
+    return Decision(True, False, f"{purpose} {reason}")
 
 
 def _smiles_decision(
@@ -34,7 +155,13 @@ def _smiles_decision(
         return Decision(False, False, f"The molecular nomination could not be read ({problem}).")
     if example is not None and scope != "candidate_table":
         return Decision(False, False, "A run-level molecule has no individual candidate attribution.")
-    rows = list(ligand_inputs.nominated_rows(records or (), example))
+    return _decide_smiles_rows(list(ligand_inputs.nominated_rows(records or (), example)), classify, purpose)
+
+
+def _decide_smiles_rows(
+    rows: Sequence[Sequence[str]], classify: Callable[[str], Decision], purpose: str, *,
+    validate_id: Callable[[str], bool] = bool,
+) -> Decision:
     if not rows:
         return Decision(False, False, "No molecular nomination matches this selection.")
     counts = Counter(row[0] for row in rows if row)
@@ -42,7 +169,7 @@ def _smiles_decision(
     review: set[str] = set()
     eligible = 0
     for row in rows:
-        if len(row) != 2 or not row[0] or counts[row[0]] != 1:
+        if len(row) != 2 or not validate_id(row[0]) or counts[row[0]] != 1:
             review.add("Requires a unique candidate ID and exactly one SMILES field.")
             continue
         smiles = row[1]
@@ -83,6 +210,20 @@ def rdkit_alerts(directory: Path, example: str | None) -> Decision:
     return decision
 
 
+def bayesherg_nominations(directory: Path, example: str | None) -> Decision:
+    from rfproteina.disease import screen_assays
+
+    plan, molecules = screen_assays.bayesherg_nominations(directory, example)
+    if not molecules:
+        return Decision(False, False, f"No supported cardiac safety nomination ({plan['blocker']}).")
+    eligible = sum("compound_id" in row for row in plan["inputs"])
+    return Decision(
+        True, False, f"{eligible} of {plan['attempted']} nominations are eligible. "
+        f"The CPU model uses 30 dropout samples per distinct molecule ({len(molecules)} total). "
+        "Select it when a hERG patch-clamp assay is under consideration.",
+    )
+
+
 def admet_solubility(directory: Path, example: str | None) -> Decision:
     from rdkit import Chem, rdBase
 
@@ -112,6 +253,84 @@ def admet_solubility(directory: Path, example: str | None) -> Decision:
     if len(compounds) > ligand_solubility.BATCH_SIZE:
         reason = f"{len(compounds)} distinct molecules require multiple CPU batches. Select this ensemble explicitly."
         return Decision(True, False, reason if decision.recommended else f"{decision.reason} {reason}")
+    return decision
+
+
+def admet_ames(directory: Path, example: str | None) -> Decision:
+    return _bounded_admet_decision(
+        directory, example, ligand_ames, ligand_ames.AmesError,
+        label="Ames", purpose="Prioritize bacterial reverse-mutation testing for the nominated compound.",
+    )
+
+
+def admet_microsomal_clearance(directory: Path, example: str | None) -> Decision:
+    return _bounded_admet_decision(
+        directory, example, ligand_microsomal_clearance, ligand_microsomal_clearance.ClearanceError,
+        label="human microsomal clearance",
+        purpose="Estimate human microsomal intrinsic clearance to prioritize a metabolic stability assay.",
+    )
+
+
+def caco2_permeability(directory: Path, example: str | None) -> Decision:
+    purpose = "Select explicitly to plan Caco-2 measurements for an oral small-molecule lead."
+    return _bounded_admet_decision(
+        directory, example, ligand_caco2, ligand_caco2.CacoError,
+        label="Caco-2", purpose=purpose,
+    )
+
+
+def admet_dili(directory: Path, example: str | None) -> Decision:
+    # Molecular identity alone does not establish the intended systemic exposure.
+    purpose = "Select explicitly to prioritize liver-safety follow-up for a systemically exposed small-molecule lead."
+    return _bounded_admet_decision(
+        directory, example, ligand_dili, ligand_dili.DiliError,
+        label="DILI", purpose=purpose,
+    )
+
+
+def _bounded_admet_decision(
+    directory: Path, example: str | None, provider: ModuleType, parse_error: type[ValueError], *,
+    label: str, purpose: str,
+) -> Decision:
+    """Review bounded nominations without loading checkpoints or making predictions."""
+    from rdkit import Chem, rdBase
+
+    _, rows, blocker = provider.screen_inputs(directory, example)
+    if blocker:
+        return Decision(False, False, f"The {label} nominations could not be evaluated ({blocker}).")
+    compounds: set[str] = set()
+
+    def classify(smiles: str) -> Decision:
+        try:
+            with rdBase.BlockLogs():
+                mol, identity = provider.molecular_identity(smiles, Chem)
+        except parse_error:
+            return Decision(False, False, "Requires a supported single connected organic molecular graph.")
+        compounds.add(identity)
+        if any(atom.GetFormalCharge() for atom in mol.GetAtoms()):
+            return Decision(True, False, f"Confirm the nominated charged form before selecting {label} prediction.")
+        return Decision(True, True, "")
+
+    decision = _decide_smiles_rows(rows, classify, purpose, validate_id=provider.valid_candidate_id)
+    if len(compounds) > provider.BATCH_SIZE:
+        reason = f"{len(compounds)} distinct molecules require multiple CPU batches. Select this ensemble explicitly."
+        return Decision(True, False, reason if decision.recommended else f"{decision.reason} {reason}")
+    if decision.recommended and provider in (ligand_caco2, ligand_dili, ligand_microsomal_clearance):
+        facts, issue = screening_context.for_candidates(directory, (row[0] for row in rows))
+        if issue:
+            return Decision(True, False, issue)
+        if any(item.systemic is False for item in facts):
+            return Decision(True, False, f"Non-systemic exposure is declared. Review {label} manually.")
+        if provider is ligand_caco2:
+            if all(item.route == "oral" for item in facts):
+                return Decision(True, True, "Oral administration is declared throughout this selection. "
+                                "Prioritize a Caco-2 permeability and efflux assay.")
+            return Decision(True, False, purpose)
+        if provider is ligand_dili:
+            if all(item.systemic is True for item in facts):
+                return Decision(True, True, "Systemic exposure is declared throughout this selection. "
+                                "Prioritize liver-safety follow-up for the nominated molecules.")
+            return Decision(True, False, purpose)
     return decision
 
 
@@ -232,6 +451,134 @@ def _nomination_coverage(scope: str, rows: list[Sequence[str]], inputs: list[dic
     return reasons
 
 
+def badapple2_nominations(directory: Path, example: str | None) -> Decision:
+    try:
+        _, nominations = badapple2.prepare(directory, example)
+    except badapple2.BadappleError as error:
+        return Decision(False, False, f"The Badapple 2 nominations cannot be used ({error}).")
+    ready = sum(candidate.blocker is None for candidate in nominations)
+    if not ready:
+        return Decision(False, False, "No selected nomination has a supported cyclic small-molecule structure.")
+    return Decision(
+        True, ready == len(nominations),
+        f"Historical scaffold lookup covers {ready} of {len(nominations)} nominations. "
+        "Use the assay history to choose interference counterscreens.",
+    )
+
+
+def p2rank_nomination(directory: Path, example: str | None) -> Decision:
+    try:
+        receptor = p2rank.prepare(directory)
+    except p2rank.P2RankError as error:
+        return Decision(False, False, f"The P2Rank receptor cannot be used ({error}).")
+    detail = f"{len(receptor.residue_ids)} receptor residues with the {receptor.profile} model."
+    return Decision(True, True, f"{detail} All ligands in the run share this receptor pocket map.")
+
+
+def propka_nomination(directory: Path, example: str | None) -> Decision:
+    try:
+        plan = propka.prepare(directory, example)
+    except propka.PropkaError as error:
+        return Decision(False, False, f"The PROPKA structure cannot be used ({error}).")
+    if plan.incomplete_termini:
+        return Decision(
+            True, False, "The structure has incomplete termini. Review missing atoms before using its pKa estimates.",
+        )
+    reason = "Estimate group pKa on the nominated structure to choose titration conditions."
+    if plan.assay_ph is not None:
+        reason += f" The nominated assay pH is {plan.assay_ph:g}."
+    return Decision(True, True, reason)
+
+
+def crest_nomination(directory: Path, example: str | None) -> Decision:
+    try:
+        crest.prepare(directory, example)
+    except crest.CrestError as error:
+        return Decision(False, False, f"The CREST structure cannot be used ({error}).")
+    return Decision(True, True, "Sample gas-phase starting geometries for the nominated ligand's molecular form.")
+
+
+def openantigens_target(directory: Path, example: str | None) -> Decision:
+    from rfproteina.disease.openantigens_snapshot import SnapshotError
+
+    try:
+        _, evidence = openantigens.prepare(directory, example)
+    except (openantigens.OpenAntigensError, SnapshotError) as error:
+        return Decision(False, False, f"The OpenAntigens target cannot be used ({error}).")
+    return Decision(
+        True, True, f"Use the target's {evidence['topology'].lower()} topology to plan how to present it in an assay.",
+    )
+
+
+def metfrag_nominations(directory: Path, example: str | None) -> Decision:
+    try:
+        plan = metfrag.prepare(directory, example)
+    except metfrag.MetfragError as error:
+        return Decision(False, False, f"The MetFrag inputs cannot be used ({error}).")
+    compatible = sum(not item.blocker for item in plan.candidates)
+    if not compatible:
+        return Decision(False, False, "No supported nomination matches the measured MetFrag precursor.")
+    note = (
+        f"{compatible} of {len(plan.candidates)} nominations match the measured precursor. "
+        f"Compare their fragments against {plan.input_peak_count} supplied peaks."
+    )
+    distinct = len(plan.representatives())
+    if distinct == 1:
+        note += " Only one structure is eligible, so its score cannot distinguish alternative identities."
+    else:
+        note += f" These nominations represent {distinct} distinct structures for fragmentation."
+    return Decision(True, True, note)
+
+
+def fastsolv_conditions(directory: Path, example: str | None) -> Decision:
+    try:
+        plan = fastsolv.prepare(directory, example)
+    except fastsolv.FastsolvError as error:
+        return Decision(False, False, f"The fastsolv inputs cannot be used ({error}).")
+    ready = sum(smiles is not None for _, smiles in plan.candidates)
+    if not ready:
+        return Decision(False, False, "No nominated solute is within the supported fastsolv chemistry scope.")
+    return Decision(
+        True, ready == len(plan.candidates),
+        f"Solubility screening covers {ready} of {len(plan.candidates)} nominations. The requested solvent and "
+        f"temperature conditions bring the total number of predictions to {ready * len(plan.conditions)}.",
+    )
+
+
+def jazzy_nominations(directory: Path, example: str | None) -> Decision:
+    try:
+        _, nominations = jazzy.prepare(directory, example)
+    except jazzy.JazzyError as error:
+        return Decision(False, False, f"The Jazzy nomination cannot be used ({error}).")
+    ready = sum(smiles is not None for _, smiles in nominations)
+    if not ready:
+        return Decision(False, False, "No nominated form meets the Jazzy chemistry and stereochemistry requirements.")
+    return Decision(
+        True, ready == len(nominations),
+        f"Hydration estimates cover {ready} of {len(nominations)} nominations in their supplied neutral forms.",
+    )
+
+
+def espsim_pair(directory: Path, example: str | None) -> Decision:
+    try:
+        espsim.prepare(directory, example)
+    except espsim.EspsimError as error:
+        return Decision(False, False, f"The ESP-Sim nomination cannot be used ({error}).")
+    return Decision(True, True, "Compare shape and electrostatics separately in the supplied common coordinate frame.")
+
+
+def dimorphite_nominations(directory: Path, example: str | None) -> Decision:
+    try:
+        plan = dimorphite.prepare(directory, example)
+    except dimorphite.DimorphiteError as error:
+        return Decision(False, False, f"The Dimorphite-DL input cannot be used ({error}).")
+    ready = sum(row.blocker is None for row in plan.nominations)
+    if not ready:
+        return Decision(False, False, "No selected nomination meets the Dimorphite-DL input requirements.")
+    note = f"Declared pH {plan.ph_min:g} to {plan.ph_max:g}. {ready} of {len(plan.nominations)} nominations ready."
+    return Decision(True, True, note)
+
+
 def qupkake_nominations(directory: Path, example: str | None, budget: int) -> Decision:
     from rdkit import Chem, rdBase
 
@@ -327,6 +674,85 @@ def posebusters_nominations(directory: Path, example: str | None, budget: int) -
     return Decision(True, True, "The nominated 3D pose is ready for the ligand-only geometry and energy checks.")
 
 
+def cellprofiler_staining(directory: Path, example: str | None) -> Decision:
+    return Decision(*cellprofiler_stain.readiness(directory, example))
+
+
+def pksim_exposure(directory: Path, example: str | None) -> Decision:
+    return Decision(*pksim.readiness(directory, example))
+
+
+def httk_exposure(directory: Path, example: str | None) -> Decision:
+    """Match nominated ligand structures to the EPA reference before offering the simulation."""
+    try:
+        plan = httk.prepare(directory, example)
+    except (ImportError, OSError, RuntimeError, ValueError):
+        return Decision(False, False, "The EPA httk scenario or molecular nominations could not be inspected.")
+    if plan.blocker:
+        return Decision(False, False, f"No attributable EPA httk scenario ({plan.blocker}).")
+    ready = sum(member.blocker is None for member in plan.members)
+    if not ready:
+        blockers = sorted({member.blocker for member in plan.members if member.blocker in httk.BLOCKERS})
+        reason = ", ".join(blockers) or "httk_candidate_not_nominated"
+        return Decision(False, False, f"No candidate has a verified EPA reference structure ({reason}).")
+    return Decision(
+        True, False,
+        f"{ready} of {len(plan.members)} candidate structures match their EPA reference identifiers. "
+        "Select explicitly to compare modeled human oral steady-state exposure per unit intake.",
+    )
+
+
+def cyp_substrates(directory: Path, example: str | None) -> Decision:
+    try:
+        plan = cypstrate.prepare(directory, example)
+    except cypstrate.CypstrateError as exc:
+        return Decision(False, False, f"Check the CYPstrate metabolism hypotheses ({exc}).")
+    if plan.blocker == "cypstrate_nonsystemic":
+        return Decision(False, False, "The nominated molecules have a declared non-systemic exposure.", resolved=True)
+    if plan.blocker:
+        return Decision(False, False, f"No eligible systemic CYP substrate hypothesis ({plan.blocker}).")
+    ready = sum(m.blocker is None for m in plan.members)
+    if ready < len(plan.members):
+        reasons = ", ".join(sorted({m.blocker for m in plan.members if m.blocker}))
+        return Decision(bool(ready), False, f"{ready} of {len(plan.members)} CYPstrate nominations ready ({reasons}).")
+    return Decision(True, True, "Systemic exposure and specific CYP metabolism hypotheses are declared.")
+
+
+def scscore_comparison(directory: Path, example: str | None) -> Decision:
+    try:
+        comparison = scscore.prepare(directory, example)
+    except scscore.SCScoreError as exc:
+        return Decision(False, False, f"The SCScore comparison could not be read ({exc}).")
+    if comparison.blocker == scscore.RESOLVED:
+        route = comparison.evidence["verified_route_ref"]
+        costs = comparison.evidence["procurement_costs_ref"]
+        return Decision(
+            False, False, f"Verified route {route} and procurement-cost record {costs} resolve this comparison.",
+            resolved=True,
+        )
+    if comparison.blocker:
+        return Decision(False, False, f"No eligible SCScore comparison ({comparison.blocker}).")
+    members = comparison.selected(example)
+    ready = sum(m.blocker is None for m in members)
+    if ready != len(members):
+        reasons = ", ".join(sorted({m.blocker for m in members if m.blocker}))
+        return Decision(bool(ready), False, f"{ready} of {len(members)} selected nominations are eligible ({reasons}).")
+    return Decision(True, True, "The nominated molecules are ready for a synthetic complexity tie-break.")
+
+
+def redocking_controls(directory: Path, example: str | None) -> Decision:
+    """Verify identity and frame in the picker. Only execution enumerates atom mappings."""
+    try:
+        blockers = [blocker for _, _, blocker in spyrmsd_pose.controls(directory, example)]
+    except spyrmsd_pose.ControlError as exc:
+        return Decision(False, False, f"No matched redocking control ({exc}).")
+    ready = blockers.count(None)
+    if ready < len(blockers):
+        reasons = ", ".join(sorted({reason for reason in blockers if reason}))
+        return Decision(bool(ready), False, f"{ready} of {len(blockers)} redocking controls are ready ({reasons}).")
+    return Decision(True, True, "Ligand identities and declared receptor frames match the experimental references.")
+
+
 def recorded_pose_checks(evidence: screen_inventory.Evidence, generated_ids: set[str]) -> Decision:
     from rfproteina.utils.pose_checks import POSEBUSTERS_DOCK_CHECKS
 
@@ -396,15 +822,16 @@ def completed_result(key: str, evidence: screen_inventory.Evidence, budget: int)
     names = entry["results"] if key == "openfe" else [entry[n] for n in ("report", "forward", "reverse")]
     if sum((evidence.directory / n).stat().st_size for n in names) > budget:
         return Decision(True, False, "The completed results exceed the interactive byte budget. Select to verify.")
-    if key == "pmx" and any(find_spec(module) is None for module in ("numpy", "scipy", "pymbar")):
-        return Decision(True, False, "The work files are present. Independent BAR verification requires PyMBAR.")
+    if key == "pmx":
+        if any(find_spec(module) is None for module in ("numpy", "scipy", "pymbar")):
+            return Decision(True, False, "The work files are present. Independent BAR verification requires PyMBAR.")
+        return Decision(True, False, "The report and both work files are present. "
+                        "Select this method to fit BAR and verify the reported transformation and uncertainty.")
     report = screen_assays.safe_measure(evidence.directory, key, evidence.example)
     if report["status"] != "reported":
         return Decision(False, False, "The supplied results could not verify the requested transformation.")
     if evidence.candidate_ids is None:
         return Decision(True, False, "Review the result manifest's candidate identity against the original run.")
-    if key == "pmx":
-        return Decision(True, True, "Both work files confirm the transformation estimate and analytical uncertainty.")
     if report["result"]["uncertainty"] is None:
         return Decision(True, False, "The completed edge lacks independent repeats for a between-repeat uncertainty.")
     return Decision(True, True, "The candidate has verified complex and solvent legs with repeat-based uncertainty.")

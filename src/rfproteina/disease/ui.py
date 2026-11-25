@@ -99,8 +99,9 @@ from rfproteina.disease.results_actions import RETRIEVE_AF2 as RESULTS_AF2
 from rfproteina.disease.results_actions import RETRIEVE_AF2C as RESULTS_AF2C
 from rfproteina.disease.results_actions import RETRIEVE_AF3 as RESULTS_AF3_IMPORT
 from rfproteina.disease.results_actions import RETRIEVE_AF3C as RESULTS_AF3C
-from rfproteina.disease.screen import SCREEN_LISTING_PREFIX, screen_reports_for_directory
+from rfproteina.disease.screen import SCREEN_LISTING_PREFIX, _canonical_kind, screen_reports_for_directory
 from rfproteina.disease.screen_board import render_closing
+from rfproteina.disease.screen_selection import PROTEIN
 from rfproteina.disease.screen_selection import Choice as ScreenChoice
 from rfproteina.disease.shards import GENERATION_MODELS
 from rfproteina.disease.structure_view import (
@@ -119,7 +120,6 @@ from rfproteina.disease.structures import (
     structure_kind,
 )
 from rfproteina.disease.validation_checks import (
-    ValidationCandidate,
     ValidationChoice,
     candidate_validation_plan,
     run_validation_checks,
@@ -149,6 +149,7 @@ VALIDATION_SCOPE_FIELD = "validation_scope"
 VALIDATION_CANDIDATE_FIELD = "validation_candidate"
 SCREENING_ACTION = "results-screen-methods"
 SCREENING_FIELD = "screen_method"
+SCREENING_SCOPE_FIELD = "screening_scope_version"
 #: The sentence above the analyst's buttons. The model takes one polypeptide
 #: chain -- its own stated limitation -- so the thing a reader is most likely
 #: to want from it is the thing it cannot do, and that is said before the run
@@ -1587,7 +1588,7 @@ class OptionPanel:
         from rfproteina.disease import screen_selection
 
         choices = screen_selection.plan(directory, kind)
-        body = _scientific_screen_panel(choices, None, [], submit_button=False)
+        body = _scientific_screen_panel(choices, None, [], kind=kind, submit_button=False)
         page = _page(f"Choose screens for {directory.name}", body, "Continue with selected screens", restart=False)
         fields = self._show(page, len(self._answers))
         return screen_selection.select(choices, "explicit", fields.get(SCREENING_FIELD, ()))
@@ -1888,6 +1889,7 @@ class BrowserSession:
         self._validation_report: dict[str, str] = {}
         self._screen_method_selection: tuple[str, ...] | None = None
         self._screen_method_results: list[dict] = []
+        self._screen_scope_version = 0
         self._shutdown = False
         #: Set when this session opened the panel window, so Close can end that window.
         self._window_port: str | None = None
@@ -2001,8 +2003,7 @@ class BrowserSession:
             self._validation_candidate = None
             self._validation_selection = None
             self._validation_report.clear()
-            self._screen_method_selection = None
-            self._screen_method_results.clear()
+            self._reset_screen_methods()
 
     def sealed(self) -> bool:
         with self._lock:
@@ -2136,8 +2137,15 @@ class BrowserSession:
                 with self._lock:
                     self._results_tab = asked if asked in RESULTS_TABS else "binder"
 
+        scope_prefix = f"{SCREENING_SCOPE_FIELD}="
+        posted_scopes = [entry.removeprefix(scope_prefix) for entry in fields or () if entry.startswith(scope_prefix)]
         if action in {VALIDATION_ACTION, VALIDATION_SCOPE_ACTION, SCREENING_ACTION}:
-            return self._run_validation_action(action, fields or ())
+            return self._run_validation_action(action, fields or (), posted_scopes)
+
+        with self._lock:
+            if posted_scopes == [str(self._screen_scope_version)]:
+                # Other buttons post this same form. Keep even an explicitly cleared selection.
+                self._screen_method_selection = self._posted_screen_methods(fields or ())
 
         from rfproteina.disease.results_actions import perform
 
@@ -2164,10 +2172,24 @@ class BrowserSession:
                     item[f"{which}_detail"] = detail
         return done.sentence
 
-    def _run_validation_action(self, action: str, fields: Sequence[str]) -> str:
+    def _reset_screen_methods(self) -> None:
+        self._screen_scope_version += 1
+        self._screen_method_selection = None
+        self._screen_method_results.clear()
+
+    @staticmethod
+    def _posted_screen_methods(fields: Sequence[str]) -> tuple[str, ...]:
+        prefix = f"{SCREENING_FIELD}="
+        return tuple(entry.removeprefix(prefix) for entry in fields if entry.startswith(prefix))
+
+    def _run_validation_action(self, action: str, fields: Sequence[str], posted_scopes: list[str]) -> str:
+        from rfproteina.disease import screen_panel
+
         scope_field = f"{VALIDATION_SCOPE_FIELD}="
         scopes = [entry.removeprefix(scope_field) for entry in fields if entry.startswith(scope_field)]
         with self._lock:
+            if posted_scopes and posted_scopes != [str(self._screen_scope_version)]:
+                return "The screening scope changed. Review the current selections."
             directories = self._validation_runs
             if not directories:
                 raise ValueError("There is no finished run to validate.")
@@ -2181,12 +2203,14 @@ class BrowserSession:
                 self._validation_candidate = None
                 self._validation_selection = None
                 self._validation_report.clear()
-                self._screen_method_selection = None
-                self._screen_method_results.clear()
+                self._reset_screen_methods()
                 return "Recommendations refreshed for the selected run scope."
             if chosen != "all":
                 directories = (directories[int(chosen)],)
             candidate_key = self._validation_candidate
+            scope_version = self._screen_scope_version
+            if posted_scopes:
+                self._screen_method_selection = self._posted_screen_methods(fields)
 
         candidate_field = f"{VALIDATION_CANDIDATE_FIELD}="
         posted = [entry.removeprefix(candidate_field) for entry in fields if entry.startswith(candidate_field)]
@@ -2196,25 +2220,23 @@ class BrowserSession:
         if posted:
             chosen_candidate = None if posted[0] == "all" else posted[0]
         if chosen_candidate != candidate_key or action == VALIDATION_SCOPE_ACTION:
-            if chosen_candidate is not None:
-                _, choices = candidate_validation_plan(directories, chosen_candidate)
-                if not choices:
-                    raise ValueError("Choose an available candidate from the list.")
+            if chosen_candidate is not None and not any(
+                c.key == chosen_candidate for c in screen_panel.candidates_for(directories[0])
+            ):
+                raise ValueError("Choose an available candidate from the list.")
             with self._lock:
+                if scope_version != self._screen_scope_version:
+                    return "The screening scope changed. Review the current selections."
                 self._validation_candidate = chosen_candidate
                 self._validation_selection = None
                 self._validation_report.clear()
-                self._screen_method_selection = None
-                self._screen_method_results.clear()
+                self._reset_screen_methods()
             return "Recommendations refreshed. Review the selected checks before running them."
 
         if action == SCREENING_ACTION:
-            from rfproteina.disease import screen_panel
-
             if len(directories) != 1:
                 raise ValueError("Choose one finished run for scientific screening.")
-            prefix = f"{SCREENING_FIELD}="
-            methods = tuple(entry.removeprefix(prefix) for entry in fields if entry.startswith(prefix))
+            methods = self._posted_screen_methods(fields)
             completed = 0
 
             def progress(label: str) -> None:
@@ -2223,8 +2245,12 @@ class BrowserSession:
                     completed += 1
                 self.note_progress(completed, len(methods), label, SCREENING_ACTION)
 
-            results = screen_panel.run(directories[0], candidate_key, "explicit", methods, on_line=progress)
+            results = screen_panel.run(
+                directories[0], candidate_key, "explicit", methods, on_line=progress, include_performance=True,
+            )
             with self._lock:
+                if self._screen_scope_version != scope_version:
+                    return "Screening finished for the previous scope. Review the current selections."
                 self._screen_method_selection = methods
                 self._screen_method_results = results
             if not results:
@@ -2235,6 +2261,8 @@ class BrowserSession:
         selected = tuple(entry.removeprefix(field_prefix) for entry in fields if entry.startswith(field_prefix))
         report = run_validation_checks(directories, selected, candidate_key=candidate_key)
         with self._lock:
+            if scope_version != self._screen_scope_version:
+                return "Validation finished for the previous scope. Review the current selections."
             self._validation_selection = selected
             self._validation_report = report
         if not report:
@@ -2250,8 +2278,7 @@ class BrowserSession:
             self._validation_candidate = None
             self._validation_selection = None
             self._validation_report.clear()
-            self._screen_method_selection = None
-            self._screen_method_results.clear()
+            self._reset_screen_methods()
 
     def note_structures(self, trios: Sequence[StructureTrio]) -> None:
         """Register the files behind the three views. A missing file is left out."""
@@ -2362,19 +2389,27 @@ class BrowserSession:
             validation_report = dict(self._validation_report)
             method_selection = self._screen_method_selection
             method_results = list(self._screen_method_results)
+            scope_version = self._screen_scope_version
         structures = render_structure_views(catalog)
         validation = ""
         if directories:
+            from rfproteina.disease import screen_panel
+
             included = directories if scope == "all" else (directories[int(scope)],)
             candidates, choices = candidate_validation_plan(included, candidate_key)
+            candidate_options = []
+            if len(included) == 1:
+                scoped = screen_panel.candidates_for(included[0], structures=candidates)
+                candidate_options = [(candidate.key, candidate.label) for candidate in scoped]
             validation = _validation_panel(
-                choices, selected, validation_report, directories, scope, candidates, candidate_key
+                choices, selected, validation_report, directories, scope, candidate_options, candidate_key
             )
-            if len(included) == 1 and choices:
-                from rfproteina.disease import screen_panel
-
+            if len(included) == 1 and (candidate_key is None or candidate_key in dict(candidate_options)):
                 methods = screen_panel.choices_for(included[0], candidate_key)
-                validation += _scientific_screen_panel(methods, method_selection, method_results)
+                kind, _ = screen_panel.context(included[0], None)
+                validation += _scientific_screen_panel(
+                    methods, method_selection, method_results, kind=kind, scope_version=scope_version,
+                )
         if not lines and not screens and not structures and not validation:
             return _done_page()
         board = render_closing(lines, screens) if lines or screens else ""
@@ -5002,12 +5037,72 @@ def _validation_scope_options(directories: Sequence[Path]) -> list[tuple[str, st
     return options
 
 
+def _immuscope_study_reference() -> str:
+    from rfproteina.disease.immuscope_study import published_study
+
+    study = published_study()
+    metric_names = {
+        "area_under_precision_recall_curve": "PR AUC",
+        "positive_predictive_value": "positive predictive value",
+        "mean_per_triplet_roc_auc": "mean per-triplet ROC AUC",
+        "roc_auc": "ROC AUC",
+        "roc_auc_95_percent_ci": "95% confidence interval",
+    }
+    endpoints = []
+    for record in study["endpoints"].values():
+        metrics = []
+        for key, value in record["metrics"].items():
+            display = " to ".join(str(limit) for limit in value) if isinstance(value, list) else str(value)
+            metrics.append(f'{_esc(metric_names.get(key, key.replace("_", " ")))} {_esc(display)}')
+        endpoints.append(
+            f'<li><strong>{_esc(record["endpoint"])}</strong> · {", ".join(metrics)}. '
+            f'{_esc(record["evaluation"])}</li>'
+        )
+    return (
+        f'<details class="results-tools" data-study-reference><summary>{_esc(study["study"])} '
+        f'study reference</summary><p>Published cohort benchmarks for interpreting '
+        f'immunogenicity evidence.</p><ul>{"".join(endpoints)}</ul>'
+        '<p>PR AUC summarizes precision across recall levels. Positive predictive value is the fraction of '
+        'positive calls supported by the study labels. ROC AUC measures discrimination between positive and '
+        'negative examples. The confidence interval describes uncertainty in that cohort estimate.</p>'
+        f'<p><a href="{_esc(study["source"])}" target="_blank" rel="noopener noreferrer">'
+        'Shen et al. (2025)</a></p></details>'
+    )
+
+
+def _screen_performance_text(performance: Mapping) -> str:
+    basis = performance.get("basis") or "Unspecified in this record."
+    source = performance.get("source")
+    citation = (
+        f' <a href="{_esc(source)}" target="_blank" rel="noopener noreferrer">Validation source</a>'
+        if isinstance(source, str) and source.startswith("https://") else ""
+    )
+    return (
+        f'<strong>Evidence basis</strong> {_esc(basis)}<br><strong>Validation performance</strong> '
+        f'{_esc(performance["summary"])}{citation}<br><strong>What this means</strong> '
+        f'{_esc(performance["interpretation"])}'
+    )
+
+
+def _scientific_result_detail(outcome: dict) -> str:
+    body = (json.dumps(outcome["measurement"], ensure_ascii=False, indent=2)
+            if "measurement" in outcome else outcome["reason"])
+    evidence = outcome.get("performance")
+    if isinstance(evidence, Mapping) and all(isinstance(evidence.get(k), str) for k in ("summary", "interpretation")):
+        at_execution = f'<h4>Validation evidence at execution</h4><p>{_screen_performance_text(evidence)}</p>'
+    else:
+        at_execution = '<p class="hint">Validation evidence for this result is unavailable.</p>'
+    return f'<details><summary>{_esc(outcome["status"])}</summary>{at_execution}<pre>{_esc(body)}</pre></details>'
+
+
 def _scientific_screen_panel(
     choices: Sequence[ScreenChoice], selected: tuple[str, ...] | None, results: list[dict],
-    *, submit_button: bool = True,
+    *, kind: str = "", submit_button: bool = True, scope_version: int | None = None,
 ) -> str:
     outcomes = {row["id"]: row for row in results}
-    groups = {"Calculations": [], "Local result readers": [], "Previously recorded observations": []}
+    groups: dict[str, list[str]] = {
+        "Recommended": [], "Other applicable screens": [], "Installed but inapplicable": [], "Unavailable": [],
+    }
     installed = sum(c.installed for c in choices)
     checked_count = 0
     for choice in choices:
@@ -5016,34 +5111,49 @@ def _scientific_screen_panel(
         checked_count += checked
         attributes = (" data-recommended" if choice.recommended else "") + ("" if choice.installed else " disabled")
         outcome = outcomes.get(key, {})
-        detail = ""
-        if outcome:
-            body = (json.dumps(outcome["measurement"], ensure_ascii=False, indent=2)
-                    if "measurement" in outcome else outcome["reason"])
-            detail = f'<details><summary>{_esc(outcome["status"])}</summary><pre>{_esc(body)}</pre></details>'
-        group = {"recorded_evidence": "Previously recorded observations",
-                 "native_result_reader": "Local result readers"}.get(choice.method.operation, "Calculations")
+        detail = _scientific_result_detail(outcome) if outcome else ""
+        if not choice.installed:
+            group = "Unavailable"
+        elif not choice.applicable:
+            group = "Installed but inapplicable"
+        else:
+            group = "Recommended" if choice.recommended else "Other applicable screens"
+        purpose = choice.method.purpose
+        rationale = choice.reason if purpose in choice.reason else f"{purpose} {choice.reason}"
+        reason_id = f"screen-reason-{_esc(key)}"
+        performance_id = f"screen-performance-{_esc(key)}"
         groups[group].append(
             f'<div><label><input type="checkbox" name="{SCREENING_FIELD}" '
-            f'value="{_esc(key)}"{attributes}{_on(checked)}> '
+            f'value="{_esc(key)}"{attributes}{_on(checked)} aria-describedby="{reason_id} {performance_id}"> '
             f'<strong>{_esc(choice.method.label)}</strong></label> '
-            f'<small>{_esc(choice.method.workload)}</small><p class="hint">{_esc(choice.reason)}</p>{detail}</div>'
+            f'<small>{_esc(choice.method.workload)}</small>'
+            f'<p class="hint" id="{reason_id}">{_esc(rationale)}</p>'
+            f'<p class="hint" id="{performance_id}">{_screen_performance_text(choice.performance)}</p>{detail}</div>'
         )
+    scope_stamp = ""
+    if scope_version is not None:
+        scope_stamp = f'<input type="hidden" name="{SCREENING_SCOPE_FIELD}" value="{scope_version}">'
+    controls_disabled = "" if installed else " disabled"
     return (
         '<section class="results-tools" data-screening-methods><h2>Post-generation screening</h2>'
-        '<p class="hint">Recommendations use the candidate type, supplied inputs and installed software. '
-        'Selected methods run one at a time.</p><p class="results-row">'
-        '<button type="button" class="nav" data-validation-select="all">Select all installed screens</button>'
-        '<button type="button" class="nav" data-validation-select="recommended">Select recommended screens</button>'
-        '<button type="button" class="nav" data-validation-select="none">Clear screen selection</button></p>'
+        f'{scope_stamp}<p class="hint">Recommended screens are preselected. Selected screens run one at a time. '
+        'Screens that do not apply to this scope are skipped.</p><p class="results-row">'
+        f'<button type="button" class="nav" data-validation-select="all"{controls_disabled}>'
+        'Select all installed screens</button>'
+        f'<button type="button" class="nav" data-validation-select="recommended"{controls_disabled}>'
+        'Select recommended screens</button>'
+        f'<button type="button" class="nav" data-validation-select="none"{controls_disabled}>'
+        'Clear screen selection</button></p>'
         f'<p aria-live="polite"><span data-screening-count>{checked_count}</span>'
         f' of {installed} installed screens selected'
         f' · {len(choices)} listed</p>'
-        + "".join(f'<fieldset><legend>{heading}</legend>{"".join(rows)}</fieldset>'
+        + "".join(f'<fieldset><legend>{heading} ({len(rows)})</legend>{"".join(rows)}</fieldset>'
                   for heading, rows in groups.items() if rows)
-        + (f'<button type="submit" class="nav" name="__action" value="{SCREENING_ACTION}" formnovalidate>'
+        + (f'<button type="submit" class="nav" name="__action" value="{SCREENING_ACTION}"'
+           f' formnovalidate{controls_disabled}>'
            'Run selected screens</button>' if submit_button else '')
         + '</section>'
+        + (_immuscope_study_reference() if _canonical_kind(kind) in PROTEIN else "")
     )
 
 
@@ -5053,7 +5163,7 @@ def _validation_panel(
     report: Mapping[str, str],
     directories: Sequence[Path],
     scope: str,
-    candidates: Sequence[ValidationCandidate],
+    candidates: Sequence[tuple[str, str]],
     candidate_key: str | None,
 ) -> str:
     scope_control = ""
@@ -5065,7 +5175,7 @@ def _validation_panel(
         )
     candidate_control = ""
     if candidates or candidate_key is not None:
-        options = [("all", "All candidates"), *((candidate.key, candidate.label) for candidate in candidates)]
+        options = [("all", "All candidates"), *candidates]
         if candidate_key is not None and candidate_key not in dict(options):
             options.append((candidate_key, "Candidate unavailable"))
         candidate_options = _select_options(options, "all" if candidate_key is None else candidate_key)
@@ -5075,7 +5185,11 @@ def _validation_panel(
         )
     guidance = "Recommendations are selected from installed checks with matching files or bench records."
     if candidate_key is not None and not choices:
-        guidance = "The selected candidate is unavailable. Choose another candidate to refresh the checks."
+        guidance = (
+            "Output-file checks require generated files attributable to this candidate."
+            if candidate_key in dict(candidates)
+            else "The selected candidate is unavailable. Choose another candidate to refresh the checks."
+        )
     rows = []
     available = any(choice.installed for choice in choices)
     for choice in choices:

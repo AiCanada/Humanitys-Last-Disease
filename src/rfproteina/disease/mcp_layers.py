@@ -140,6 +140,13 @@ _SCREEN_OMITTED = frozenset(
         "tnp_profile",
         "synthesis",
         "ligand_alerts",
+        "ligand_ames",
+        "ligand_dili",
+        "delphi_psr",
+        "peptide_rbc_evidence",
+        "molprobity_geometry",
+        "ligand_microsomal_clearance",
+        "ligand_caco2",
         "ligand_solubility",
         "qupkake",
         "sygma",
@@ -247,9 +254,10 @@ def declare_corpora(arguments: Mapping[str, object]) -> dict[str, object]:
     Reads nothing from disk and contacts nothing. The answer is the registry in
     :mod:`rfproteina.disease.corpus_provenance` plus, when ``against`` names a
     dataset, the overlap each model has with it -- which is a property of the
-    pair and so cannot be precomputed into the registry.
+    pair and so cannot be precomputed into the registry. Published reference
+    studies keep cohort metrics and their sources separate from model declarations.
     """
-    from rfproteina.disease import corpus_provenance, ddd_benchmark
+    from rfproteina.disease import corpus_provenance, ddd_benchmark, immuscope_study
 
     _reject(arguments, {"against"})
     against = arguments.get("against")
@@ -260,6 +268,7 @@ def declare_corpora(arguments: Mapping[str, object]) -> dict[str, object]:
         "models": [corpus_provenance.declare(model, against=against) for model in models],
         "corpora": corpus_provenance.describe_corpora(),
         "benchmark_coverage": ddd_benchmark.coverage(),
+        "reference_studies": {"immuscope": immuscope_study.published_study()},
     }
 
 

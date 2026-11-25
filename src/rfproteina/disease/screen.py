@@ -43,6 +43,7 @@ import json
 import math
 import os
 import re
+import stat
 import warnings
 import zlib
 from collections import defaultdict
@@ -53,6 +54,7 @@ from pathlib import Path
 
 import yaml
 
+from rfproteina.disease import delphi_inputs, peptide_rbc
 from rfproteina.disease.chemical import chemical_phrase, chemical_record
 from rfproteina.disease.coevolution import coevolution_phrase
 from rfproteina.disease.combinations import (
@@ -194,7 +196,15 @@ _STRAND = "_entity_poly.pdbx_strand_id"
 # Version 9 adds the compound-level ADMET-AI aqueous-solubility regression.
 # Version 10 adds site-resolved aqueous microscopic pKa for nominated compounds.
 # Version 11 adds ranked, per-parent SyGMa metabolite hypotheses.
-SCREEN_VERSION = 12
+# Version 12 records selection and candidate-scoped supplemental measurements.
+# Version 13 adds optional, advisory Ames mutagenicity probabilities.
+# Version 14 adds optional human liver microsomal intrinsic clearance predictions.
+# Version 15 adds optional Caco-2 permeability and efflux model scores.
+# Version 16 adds optional, advisory drug-induced liver injury predictions.
+# Version 17 adds optional DELPHI paired-antibody polyreactivity predictions.
+# Version 18 adds optional measured peptide red-cell compatibility evidence.
+# Version 19 adds optional whole-model MolProbity geometry measurements.
+SCREEN_VERSION = 19
 #: Keys every screen carries, whatever the kind and whatever was supplied.
 SCREEN_REQUIRED_KEYS = frozenset(
     {
@@ -228,16 +238,23 @@ SCREEN_OPTIONAL_KEYS = frozenset(
     {
         "chain_blocker",
         "chemical_liability",
+        "delphi_psr",
         "design_diversity",
         "job_mismatch",
         "metrics_blocker",
+        "molprobity_geometry",
         "modality_screen",
         "nucleic_liability",
+        "peptide_rbc_evidence",
         "replaced",
         "sequence_liability",
         "target_accession",
         "target_liability",
         "ligand_alerts",
+        "ligand_ames",
+        "ligand_caco2",
+        "ligand_dili",
+        "ligand_microsomal_clearance",
         "ligand_solubility",
         "method_selection",
         "qupkake",
@@ -506,18 +523,32 @@ def screen_generation(
         # thirteen declared bars had no way to be selected at all, and a
         # misspelling of one now in reach should not cost a scan first.
         bar_axes(binder_kind, bar)
+    from rfproteina.disease import (
+        delphi_psr,
+        ligand_ames,
+        ligand_caco2,
+        ligand_dili,
+        ligand_microsomal_clearance,
+        molprobity_geometry,
+    )
     from rfproteina.disease import screen_selection as selection
 
     kind = _canonical_kind(binder_kind)
     active = set(selection.NATIVE_IDS)
     selection_record = None
     if screen_selection is not None or screen_methods:
+        from rfproteina.disease import screen_inventory
+
         mode = screen_selection or "explicit"
-        choices, selected = selection.execution_plan(output_dir, kind, mode, screen_methods)
+        selection_evidence = screen_inventory.Evidence(output_dir, None, kind=kind)
+        choices, selected = selection.execution_plan(
+            output_dir, kind, mode, screen_methods, evidence=selection_evidence,
+        )
         active = {c.method.key for c in choices if c.applicable and c.method.key in selected}
         selection_record = {
             "mode": mode,
             "selected": list(selected),
+            "choices": [c.as_record() for c in choices if c.method.key in selected],
             "attempted": [key for key in selected if key in active],
             "skipped": {c.method.key: c.reason for c in choices if c.method.key in selected and not c.applicable},
         }
@@ -713,6 +744,22 @@ def screen_generation(
         ligand_solubility = screen_run(output_dir)
         if ligand_solubility is not None:
             record["ligand_solubility"] = ligand_solubility
+    # New optional screens require the selection workflow. A legacy direct call
+    # must not silently acquire another model workload.
+    if kind == "ligand" and selection_record is not None:
+        for provider in (ligand_ames, ligand_caco2, ligand_dili, ligand_microsomal_clearance):
+            if provider.METHOD_ID in active:
+                record[provider.METHOD_ID] = provider.screen_run(output_dir)
+    if kind == "protein" and selection_record is not None and delphi_psr.METHOD_ID in active:
+        record[delphi_psr.METHOD_ID] = delphi_psr.screen_run(output_dir)
+    if kind in ("protein", "peptide") and selection_record is not None and molprobity_geometry.METHOD_ID in active:
+        record[molprobity_geometry.METHOD_ID] = molprobity_geometry.screen_run(output_dir)
+    if kind == "peptide" and selection_record is not None and peptide_rbc.METHOD_ID in active:
+        from rfproteina.disease.screen_criteria import peptide_rbc_known_candidates
+
+        record[peptide_rbc.METHOD_ID] = peptide_rbc.screen_run(
+            output_dir, known_candidates=peptide_rbc_known_candidates(output_dir),
+        )
     from rfproteina.disease import ligand_metabolites, qupkake
 
     pka = (qupkake.screen_run(output_dir, kind=kind, use_defaults=selection_record is not None)
@@ -741,15 +788,17 @@ def screen_generation(
     if mismatch is not None:
         record["job_mismatch"] = mismatch
     if selection_record is not None:
-        from rfproteina.disease import screen_assays, screen_inventory, screen_physical
+        from rfproteina.disease import openantigens, screen_assays, screen_inventory, screen_physical
 
-        evidence = screen_inventory.Evidence(output_dir, None, record)
         selection_record["recorded_evidence"] = {
-            c.method.key: evidence.coverage(screen_inventory.BY_KEY[c.method.key], include_values=True)
+            c.method.key: selection_evidence.coverage(screen_inventory.BY_KEY[c.method.key], include_values=True)
             for c in choices if c.method.key in active and c.method.operation == "recorded_evidence"
         }
         selection_record["prepared_measurements"] = {
-            c.method.key: screen_assays.safe_measure(output_dir, c.method.key, None)
+            c.method.key: (
+                screen_assays.safe_measure(output_dir, c.method.key, None, expected_target=target_id or None)
+                if c.method.key == openantigens.METHOD_ID else screen_assays.safe_measure(output_dir, c.method.key, None)
+            )
             for c in choices if c.method.key in active and c.method.key in screen_assays.FILES
             and c.method.operation != "recorded_evidence"
         }
@@ -837,9 +886,19 @@ def _supplied_inputs(output_dir: Path) -> list[dict[str, object]]:
     ``replaced`` then said the verdict had moved with nothing on disk moving.
     The link's target is not written down: it is a path outside the run and
     often a personal one, and the digest already says whether the bytes moved.
+    For manifests with bounded readers, the inventory follows the same rules
+    as the screen when it encounters an oversized file or a symlink.
     """
+    from rfproteina.disease import cellprofiler_stain, httk
+
+    bounded = {
+        cellprofiler_stain.MANIFEST: cellprofiler_stain.read_manifest,
+        delphi_inputs.MANIFEST: delphi_inputs.read_manifest,
+        httk.MANIFEST: httk.read_manifest,
+        peptide_rbc.MANIFEST: peptide_rbc.read_manifest,
+    }
     try:
-        found = sorted(path for path in output_dir.iterdir() if path.is_file())
+        found = sorted(path for path in output_dir.iterdir() if path.name.casefold() in bounded or path.is_file())
     except OSError:
         # Withheld whole, for the same reason the limit below withholds: an
         # empty list is the answer "this run supplied nothing", so every table
@@ -859,6 +918,9 @@ def _supplied_inputs(output_dir: Path) -> list[dict[str, object]]:
         return [{"file": _TRUNCATED, "files": len(found)}]
     inputs: list[dict[str, object]] = []
     for path in found:
+        if reader := bounded.get(name := path.name.casefold()):
+            inputs.append(_bounded_input_attestation(output_dir, path, name, reader))
+            continue
         try:
             size = path.stat().st_size
         except OSError:
@@ -872,6 +934,33 @@ def _supplied_inputs(output_dir: Path) -> list[dict[str, object]]:
             item["link"] = True
         inputs.append(item)
     return inputs
+
+
+def _bounded_input_attestation(
+    directory: Path, path: Path, canonical_name: str, reader: Callable[[Path], tuple[bytes | None, str | None]],
+) -> dict[str, object]:
+    if path.name != canonical_name:
+        # A case-only alias must not reach the separate generic digest path.
+        # On case-sensitive filesystems it may be a separate inadmissible file.
+        try:
+            same_input = os.path.samestat(path.lstat(), (directory / canonical_name).lstat())
+        except OSError:
+            same_input = False
+        if not same_input:
+            return {"file": path.name, "digest": "unreadable"}
+    raw, blocker = reader(directory)
+    if raw is not None:
+        return {"file": path.name, "bytes": len(raw), "digest": hashlib.sha256(raw).hexdigest()[:16]}
+    item: dict[str, object] = {"file": path.name, "digest": blocker or "unreadable"}
+    try:
+        info = path.lstat()
+    except OSError:
+        return item
+    if stat.S_ISLNK(info.st_mode):
+        item["link"] = True
+    elif stat.S_ISREG(info.st_mode):
+        item["bytes"] = info.st_size
+    return item
 
 
 def _samples_root(output_dir: Path) -> Path:
@@ -4168,6 +4257,13 @@ def _measured_line(entry_id: str, chain: str, screen: Mapping[str, object]) -> s
     modality_clause = _modality_clause(screen)
     spread_clause = _diversity_clause(screen)
     solubility_clause = _solubility_clause(screen)
+    ames_clause = _ames_clause(screen)
+    caco2_clause = _caco2_clause(screen)
+    delphi_clause = _delphi_clause(screen)
+    dili_clause = _dili_clause(screen)
+    peptide_rbc_clause = _peptide_rbc_clause(screen)
+    molprobity_clause = _molprobity_clause(screen)
+    microsomal_clearance_clause = _microsomal_clearance_clause(screen)
     ligand_solubility = screen.get("ligand_solubility")
     ligand_solubility_clause = None
     if isinstance(ligand_solubility, dict):
@@ -4235,6 +4331,13 @@ def _measured_line(entry_id: str, chain: str, screen: Mapping[str, object]) -> s
         and modality_clause is None
         and spread_clause is None
         and solubility_clause is None
+        and ames_clause is None
+        and caco2_clause is None
+        and delphi_clause is None
+        and dili_clause is None
+        and peptide_rbc_clause is None
+        and molprobity_clause is None
+        and microsomal_clearance_clause is None
         and ligand_solubility_clause is None
         and pka_clause is None
         and metabolite_clause is None
@@ -4273,6 +4376,20 @@ def _measured_line(entry_id: str, chain: str, screen: Mapping[str, object]) -> s
         parts.append(spread_clause)
     if solubility_clause is not None:
         parts.append(solubility_clause)
+    if ames_clause is not None:
+        parts.append(ames_clause)
+    if caco2_clause is not None:
+        parts.append(caco2_clause)
+    if delphi_clause is not None:
+        parts.append(delphi_clause)
+    if dili_clause is not None:
+        parts.append(dili_clause)
+    if peptide_rbc_clause is not None:
+        parts.append(peptide_rbc_clause)
+    if molprobity_clause is not None:
+        parts.append(molprobity_clause)
+    if microsomal_clearance_clause is not None:
+        parts.append(microsomal_clearance_clause)
     if ligand_solubility_clause is not None:
         parts.append(ligand_solubility_clause)
     if pka_clause is not None:
@@ -4349,6 +4466,143 @@ def _liability_clause(screen: Mapping[str, object]) -> str | None:
 def _block_axes(records: Mapping[str, object], declared: Sequence[str]) -> list[str]:
     """The block's declared axes in order, then anything else it carries."""
     return [*[axis for axis in declared if axis in records], *[axis for axis in records if axis not in declared]]
+
+
+def _ames_clause(screen: Mapping[str, object]) -> str | None:
+    record = screen.get("ligand_ames")
+    if not isinstance(record, Mapping):
+        return None
+    if record.get("status") == "untested":
+        return "ADMET-AI Ames mutagenicity untested"
+    predicted = record.get("unique_predicted")
+    total = record.get("unique_compounds")
+    if type(predicted) is int and type(total) is int and 0 < predicted <= total:
+        partial = ", partial input coverage" if record.get("status") == "partial" else ""
+        return f"ADMET-AI Ames scores for {predicted}/{total} distinct compounds{partial} (no assay verdict)"
+    return None
+
+
+def _microsomal_clearance_clause(screen: Mapping[str, object]) -> str | None:
+    record = screen.get("ligand_microsomal_clearance")
+    if not isinstance(record, Mapping):
+        return None
+    from rfproteina.disease.mcp_api import _microsomal_clearance_view
+
+    record = _microsomal_clearance_view(record)
+    label = "ADMET-AI human liver microsomal intrinsic clearance"
+    status = record.get("status")
+    if status == "untested":
+        return f"{label} untested"
+    predicted = record.get("unique_predicted")
+    total = record.get("unique_compounds")
+    if status in ("predicted", "partial") and type(predicted) is int and type(total) is int and 0 < predicted <= total:
+        partial = ", partial input coverage" if status == "partial" else ""
+        return f"{label} predicted for {predicted}/{total} distinct compounds{partial} (no assay verdict)"
+    return None
+
+
+def _caco2_clause(screen: Mapping[str, object]) -> str | None:
+    record = screen.get("ligand_caco2")
+    if not isinstance(record, Mapping):
+        return None
+    from rfproteina.disease.mcp_api import _caco2_view
+
+    view = _caco2_view(record)
+    label = "Caco-2 permeability and efflux"
+    if view.get("status") == "untested":
+        return f"{label} untested"
+    predicted, complete, total = (view.get(k) for k in ("unique_predicted", "unique_complete", "unique_compounds"))
+    if (
+        view.get("status") in ("predicted", "partial")
+        and all(type(number) is int for number in (predicted, complete, total))
+        and 0 <= complete <= predicted <= total
+    ):
+        return f"{label} scores for {predicted}/{total} compounds, both heads for {complete}/{total} (no assay verdict)"
+    return None
+
+
+def _delphi_clause(screen: Mapping[str, object]) -> str | None:
+    record = screen.get("delphi_psr")
+    if not isinstance(record, Mapping):
+        return None
+    from rfproteina.disease.mcp_api import _delphi_view
+
+    view = _delphi_view(record)
+    status = view.get("status")
+    if status == "untested":
+        blocker = view.get("blocker")
+        return f"DELPHI PSR untested ({blocker})" if isinstance(blocker, str) else "DELPHI PSR untested"
+    predicted, attempted = (view.get(key) for key in ("predicted", "attempted"))
+    if (
+        status in ("predicted", "partial")
+        and type(predicted) is int
+        and type(attempted) is int
+        and 0 < predicted <= attempted
+    ):
+        partial = ", partial pair coverage" if status == "partial" else ""
+        return f"DELPHI PSR pass-class scores for {predicted}/{attempted} antibody pairs{partial} (advisory)"
+    return None
+
+
+def _dili_clause(screen: Mapping[str, object]) -> str | None:
+    record = screen.get("ligand_dili")
+    if not isinstance(record, Mapping):
+        return None
+    from rfproteina.disease.mcp_api import _dili_view
+
+    view = _dili_view(record)
+    label = "ADMET-AI drug-induced liver injury"
+    status = view.get("status")
+    if status == "untested":
+        blocker = view.get("blocker")
+        return f"{label} untested ({blocker})" if isinstance(blocker, str) else f"{label} untested"
+    predicted, total = (view.get(k) for k in ("unique_predicted", "unique_compounds"))
+    if status in ("predicted", "partial") and type(predicted) is int and type(total) is int and 0 < predicted <= total:
+        partial = ", partial input coverage" if status == "partial" else ""
+        return f"{label} model scores for {predicted}/{total} distinct compounds{partial} (no clinical risk estimate)"
+    return None
+
+
+def _peptide_rbc_clause(screen: Mapping[str, object]) -> str | None:
+    record = screen.get(peptide_rbc.METHOD_ID)
+    if not isinstance(record, Mapping):
+        return None
+    from rfproteina.disease.mcp_api import _peptide_rbc_view
+
+    view = _peptide_rbc_view(record)
+    label = "Measured peptide red-cell compatibility"
+    status = view.get("status")
+    if status == "untested":
+        blocker = view.get("blocker")
+        return f"{label} untested ({blocker})" if isinstance(blocker, str) else f"{label} untested"
+    reported, attempted, human = (view.get(field) for field in ("reported", "attempted", "human_reported"))
+    if (
+        status in ("reported", "partial") and type(reported) is int and type(attempted) is int
+        and type(human) is int and 0 <= human <= reported <= attempted and reported > 0
+    ):
+        return f"{label} has {reported}/{attempted} observations reported, {human} human (no safety verdict)"
+    return None
+
+
+def _molprobity_clause(screen: Mapping[str, object]) -> str | None:
+    record = screen.get("molprobity_geometry")
+    if not isinstance(record, Mapping):
+        return None
+    from rfproteina.disease.mcp_api import _molprobity_view
+
+    view = _molprobity_view(record)
+    label = "MolProbity whole-model geometry"
+    status = view.get("status")
+    if status == "untested":
+        blocker = view.get("blocker")
+        return f"{label} untested ({blocker})" if isinstance(blocker, str) else f"{label} untested"
+    reported, attempted, complete = (view.get(field) for field in ("reported", "attempted", "complete"))
+    if (
+        status in ("reported", "partial") and type(reported) is int and type(attempted) is int
+        and type(complete) is int and 0 <= complete <= reported <= attempted and reported > 0
+    ):
+        return f"{label} has {reported}/{attempted} models reported, {complete} with all three measurements"
+    return None
 
 
 def _solubility_clause(screen: Mapping[str, object]) -> str | None:

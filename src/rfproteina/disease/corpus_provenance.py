@@ -38,6 +38,9 @@ matching strings:
 ``public_corpus_unaligned``
     A large public corpus with no known per-item overlap with the thing being
     scored.
+``private_corpus_overlap_unknown``
+    Training rows are not public, so independence for a different assay or
+    dataset cannot be verified.
 ``simulated_labels``
     The labels are computed, not measured. Memorising them cannot leak a
     wet-lab answer.
@@ -50,8 +53,13 @@ matching strings:
     contaminates exactly when the benchmark's gold set is drawn from that same
     table, which is a sharper risk than the training-corpus kind, not a milder
     one.
+``user_supplied_measurements``
+    Observations are transcribed from a user-supplied report, not a model or a
+    public reference. The recorded source and assay scope remain authoritative.
 ``corpus_undeclared``
     No entry here. A defect, not a kind.
+``no_training_corpus``
+    A deterministic measurement on the supplied inputs, with no training set.
 
 Every entry records where its claim was read from, with a date, the way
 ``immunogenicity.ClassIIOption.licence_read_on`` and ``tables.Source`` already
@@ -71,12 +79,18 @@ BENCHMARK_LABEL_CORPUS_SIBLING = "benchmark_label_corpus_sibling"
 BENCHMARK_LABEL_CORPUS_UNMODELLED = "benchmark_label_corpus_unmodelled"
 #: A large public corpus with no known per-item overlap with what is scored.
 PUBLIC_CORPUS_UNALIGNED = "public_corpus_unaligned"
+#: A private corpus whose per-item overlap cannot be verified.
+PRIVATE_CORPUS_OVERLAP_UNKNOWN = "private_corpus_overlap_unknown"
 #: Labels are computed rather than measured.
 SIMULATED_LABELS = "simulated_labels"
 #: Fitted in this repository, from a named corpus, under this program's split.
 FITTED_IN_REPO = "fitted_in_repo"
 #: Read from a public table at run time rather than learned.
 RUNTIME_LOOKUP = "runtime_lookup"
+#: Measured observations supplied by the user, without model inference.
+USER_SUPPLIED_MEASUREMENTS = "user_supplied_measurements"
+#: Geometry computed directly from supplied coordinates.
+NO_TRAINING_CORPUS = "no_training_corpus"
 #: No entry in :data:`TRAINED_ON`. A defect, not a kind.
 CORPUS_UNDECLARED = "corpus_undeclared"
 
@@ -87,9 +101,12 @@ OVERLAP_KINDS = frozenset(
         BENCHMARK_LABEL_CORPUS_SIBLING,
         BENCHMARK_LABEL_CORPUS_UNMODELLED,
         PUBLIC_CORPUS_UNALIGNED,
+        PRIVATE_CORPUS_OVERLAP_UNKNOWN,
         SIMULATED_LABELS,
         FITTED_IN_REPO,
         RUNTIME_LOOKUP,
+        USER_SUPPLIED_MEASUREMENTS,
+        NO_TRAINING_CORPUS,
         CORPUS_UNDECLARED,
     }
 )
@@ -207,7 +224,28 @@ _GDPA1_LABELS = (
     "AC-SINS_pH6.0",
 )
 
+CYPSTRATE_ISOFORMS = ("CYP1A2", "CYP2A6", "CYP2B6", "CYP2C8", "CYP2C9", "CYP2C19", "CYP2D6", "CYP2E1", "CYP3A4")
+_CYPSTRATE_LABELS = ("human_cyp_substrate", *(isoform.lower() + "_substrate" for isoform in CYPSTRATE_ISOFORMS))
+
 CORPORA: dict[str, Corpus] = {
+    "CYPstrate-Hunt-Tian": Corpus(
+        name="CYPstrate curated human CYP substrate and non-substrate data",
+        publisher="Holmer et al.",
+        locator="https://doi.org/10.3390/molecules26154678",
+        read_from="The authors curated a core development set from Hunt et al. and Tian et al. "
+                  "Individual isoforms used separate training and holdout subsets.",
+        rows=1831, unit="compound in the core development set", labels=_CYPSTRATE_LABELS,
+    ),
+    "Reaxys-SCScore": Corpus(
+        name="Reaxys reaction examples used to train SCScore",
+        publisher="Elsevier Reaxys",
+        locator="https://doi.org/10.1021/acs.jcim.7b00622",
+        read_from=(
+            "Coley et al. (2018) and the authors' SCScore repository describe approximately 12 million "
+            "reactions. Product-over-reactant ordering supplied the training signal."
+        ),
+        unit="reaction",
+    ),
     "SyGMa-Metabolite-Database": Corpus(
         name="Human biotransformations in the Metabolite Database used by Ridder and Wagener",
         publisher="Ridder and Wagener",
@@ -292,6 +330,47 @@ CORPORA: dict[str, Corpus] = {
         rows=242,
         unit="IgG",
     ),
+    "EPA-httk-human-in-vitro": Corpus(
+        name="EPA httk bundled human hepatocyte clearance and plasma protein binding measurements",
+        publisher="EPA and collaborators",
+        locator="https://cran.r-project.org/web/packages/httk/refman/httk.html#chem.physical_and_invitro.data",
+        read_from=(
+            "The httk 2.7.4 built-in chemical data supply assay-derived human intrinsic clearance and plasma "
+            "unbound fraction for nominated reference substances. No optional prediction tables are loaded."
+        ),
+        labels=("human_hepatocyte_intrinsic_clearance", "human_plasma_unbound_fraction"),
+    ),
+    "EPA-httkpop-NHANES": Corpus(
+        name="EPA HTTK-Pop human physiological resampling data from NHANES",
+        publisher="EPA and the US National Center for Health Statistics",
+        locator="https://cran.r-project.org/web/packages/httk/refman/httk.html#httkpop_generate",
+        read_from=(
+            "EPA httk 2.7.4 HTTK-Pop uses NHANES biometrics to simulate variation. "
+            "This adapter uses direct resampling and limits the modeled cohort to ages 18-79."
+        ),
+    ),
+    "MolProbity-Top8000": Corpus(
+        name="MolProbity quality-filtered protein torsion reference distributions",
+        publisher="Richardson Laboratory and collaborators",
+        locator="https://pmc.ncbi.nlm.nih.gov/articles/PMC5734394/",
+        read_from=(
+            "Williams et al. describe the quality-filtered structures behind the empirical MolProbity "
+            "Ramachandran and side-chain rotamer reference distributions. CCTBX 2025.11 uses the 8000 "
+            "rotamer tables. Probe2 contacts are computed from the submitted atom positions, not this corpus."
+        ),
+        labels=("ramachandran", "rotamers"),
+    ),
+    "IPI-DELPHI-PSR": Corpus(
+        name="Institute for Protein Innovation in-house DELPHI PSR training set",
+        publisher="Institute for Protein Innovation",
+        locator="https://zenodo.org/records/21823887",
+        read_from=(
+            "DELPHI v4 release and provider model registry identify the internal IPI PSR training set. "
+            "Individual identities and overlap with other assay corpora cannot be verified. "
+            "The separately released Chen et al. DS1 is not this model's training set."
+        ),
+        labels=("psr_filter",),
+    ),
     "TDC-ADMET": Corpus(
         name="Therapeutics Data Commons, ADMET suite",
         publisher="Therapeutics Data Commons",
@@ -309,6 +388,51 @@ CORPORA: dict[str, Corpus] = {
         labels=("Solubility_AqSolDB",),
         rows=9980,
         unit="compounds in the provider task metadata",
+    ),
+    "TDC-AMES": Corpus(
+        name="Ames mutagenicity in Therapeutics Data Commons",
+        publisher="Therapeutics Data Commons",
+        locator="https://tdcommons.ai/single_pred_tasks/tox/#ames-mutagenicity",
+        read_from="ADMET-AI v2.0.1 resources/data/admet.csv lists 7,255 compounds for this task. "
+        "Individual training split membership is unverified.",
+        labels=("AMES",),
+        rows=7255,
+        unit="compounds in the provider task metadata",
+    ),
+    "TDC-Clearance-Microsome-AZ": Corpus(
+        name="AstraZeneca human liver microsomal intrinsic clearance in Therapeutics Data Commons",
+        publisher="AstraZeneca, distributed by Therapeutics Data Commons",
+        locator="https://tdcommons.ai/single_pred_tasks/adme/#clearance-astrazeneca",
+        read_from=(
+            "ADMET-AI v2.0.1 resources/data/admet.csv lists 1,102 compounds for this human microsomal task. "
+            "Individual model training split membership is unverified. The source assay is CHEMBL3301370."
+        ),
+        labels=("Clearance_Microsome_AZ",),
+        rows=1102,
+        unit="compounds in the provider task metadata",
+    ),
+    "TDC-DILI": Corpus(
+        name="Xu et al. drug-induced liver injury classification in Therapeutics Data Commons",
+        publisher="Therapeutics Data Commons, from a combined historical set described by Xu et al.",
+        locator="https://tdcommons.ai/single_pred_tasks/tox/#dili-drug-induced-liver-injury",
+        read_from=(
+            "ADMET-AI v2.0.1 resources/data/admet.csv and TDC document 475 drugs for this binary task. "
+            "The historical set incorporates FDA National Center for Toxicological Research evidence. "
+            "Individual training split membership is unverified. This corpus is not FDA DILIrank 2.0."
+        ),
+        labels=("DILI",),
+        rows=475,
+        unit="drugs in the provider task metadata",
+    ),
+    "AstraZeneca-permeability-efflux": Corpus(
+        name="AstraZeneca internal permeability and efflux assays",
+        publisher="AstraZeneca",
+        locator="https://doi.org/10.1021/acsomega.5c04861",
+        read_from=(
+            "Ivers Ohlsson et al., Data Availability: the released checkpoint was retrained using internal data "
+            "collected through May 5, 2024. Training rows are proprietary; exact compound overlap cannot be checked."
+        ),
+        labels=("Caco2ER", "Caco2Papp", "MDCKER", "NIHMDCKER"),
     ),
     "QupKake-ChEMBL-CREST": Corpus(
         name="QupKake ChEMBL structures with CREST site assignments and ChemAxon pKa estimates",
@@ -424,6 +548,58 @@ CORPORA: dict[str, Corpus] = {
         labels=("cyp3a4",),
         licence="CC BY 4.0",
     ),
+    "P2Rank-Chen11-fpocket": Corpus(
+        name="P2Rank Chen11 binding-site training set",
+        publisher="P2Rank authors",
+        locator="https://github.com/rdk/p2rank/blob/2.5.1/distro/models/readme.md",
+        read_from="P2Rank 2.5.1 model notes, chen11-fpocket.ds.",
+        labels=("receptor_ligand_binding_pockets",),
+    ),
+    "Badapple2-PubChem-HTS": Corpus(
+        name="Badapple 2 NIH PubChem high-throughput assay snapshot",
+        publisher="University of New Mexico Badapple team",
+        locator="https://unmtid-dbs.net/download/Badapple2/badapple2.pgdump",
+        read_from="Publisher summary archive created 2025-08-08 and the Badapple 2 database documentation.",
+        labels=("historical_scaffold_promiscuity",),
+    ),
+    "PROPKA3-empirical-pKa": Corpus(
+        name="Published PROPKA3 empirical pKa parameterization",
+        publisher="Olsson, Søndergaard, Rostkowski and Jensen",
+        locator="https://doi.org/10.1021/ct100578z",
+        read_from=(
+            "Experimental protein pKa parameterization and the ligand and coupling extension "
+            "(https://doi.org/10.1021/ct200133y). This declaration does not enumerate individual structures."
+        ),
+        labels=("structure_conditioned_group_pka",),
+    ),
+    "GFN2-xTB-reference": Corpus(
+        name="GFN2-xTB molecular reference properties",
+        publisher="Bannwarth, Ehlert and Grimme",
+        locator="https://doi.org/10.1021/acs.jctc.8b01176",
+        read_from="The GFN2-xTB semiempirical method paper and supporting information.",
+        labels=("relative_conformer_energy",),
+    ),
+    "OpenAntigens-human-2026-11-01": Corpus(
+        name="OpenAntigens human portal index, 2026-11-01",
+        publisher="Institute for Protein Innovation",
+        locator="https://openantigens.org/downloads.html",
+        read_from="The publisher portal index and canonical accession membership table. Source terms vary by field.",
+        labels=("human_surface_target_evidence",),
+    ),
+    "BigSolDB-original-organic": Corpus(
+        name="Original BigSolDB organic-solvent solubility observations",
+        publisher="Krasnov, Mikhaylov, Fedorov and Sosnin",
+        locator="https://doi.org/10.5281/zenodo.6984601",
+        read_from="Attia et al. converted the organic-solvent measurements to log10 mol/L after excluding water.",
+        labels=("organic_solid_solubility_log10_mol_l",),
+    ),
+    "Gerber-Jazzy-hydration": Corpus(
+        name="Gerber experimental hydration free energies used by Jazzy",
+        publisher="P. R. Gerber",
+        locator="https://doi.org/10.1038/s41598-023-30089-x",
+        read_from="Ghiandoni and Caldeweyher (2023) describe the 292 experimental hydration observations used to fit Jazzy.",
+        labels=("gas_to_water_hydration_free_energy_kj_mol",),
+    ),
 }
 
 
@@ -432,6 +608,89 @@ CORPORA: dict[str, Corpus] = {
 #: declaration join on a key that exists on disk rather than on a second name
 #: invented here.
 TRAINED_ON: dict[str, TrainedOn] = {
+    "espsim_gaussian_gasteiger_0_0_1": TrainedOn(
+        model="espsim_gaussian_gasteiger_0_0_1",
+        corpora=(),
+        role="Compares heavy-atom shape and analytic electrostatic overlap for a supplied prealigned ligand pair.",
+        declared_from="Bolcato, Heid and Boström (2022), https://doi.org/10.1021/acs.jcim.1c01535, and ESP-Sim 0.0.1.",
+        unaligned_kind=NO_TRAINING_CORPUS,
+    ),
+    "jazzy_neutral_hydration_0_1_4": TrainedOn(
+        model="jazzy_neutral_hydration_0_1_4",
+        corpora=("Gerber-Jazzy-hydration",),
+        heads=("gas_to_water_hydration_free_energy_kj_mol",),
+        role="Estimates gas-to-water hydration free energy and donor and acceptor strengths for a nominated neutral form.",
+        declared_from="Ghiandoni and Caldeweyher (2023), https://doi.org/10.1038/s41598-023-30089-x, and Jazzy 0.1.4.",
+    ),
+    "fastsolv_bigsol_ensemble_1_0_1": TrainedOn(
+        model="fastsolv_bigsol_ensemble_1_0_1",
+        corpora=("BigSolDB-original-organic",),
+        heads=("organic_solid_solubility_log10_mol_l",),
+        role="Predicts log10 molar solubility for a nominated solid in one pure organic solvent at a declared temperature.",
+        declared_from="Attia et al. (2025), https://doi.org/10.1038/s41467-025-62717-7, and Zenodo ensemble 13943074.",
+        weights_installed=True,
+    ),
+    "metfrag_local_fragmenter_2_6_11": TrainedOn(
+        model="metfrag_local_fragmenter_2_6_11",
+        corpora=(),
+        role="Scores in-silico fragments against one supplied measured tandem mass spectrum.",
+        declared_from="Ruttkies et al. (2016), https://doi.org/10.1186/s13321-016-0115-9, and MetFrag 2.6.11.",
+        unaligned_kind=NO_TRAINING_CORPUS,
+    ),
+    "openantigens_human_target_index": TrainedOn(
+        model="openantigens_human_target_index",
+        corpora=("OpenAntigens-human-2026-11-01",),
+        heads=("human_surface_target_evidence",),
+        role="Exact accession lookup of public target topology and coverage flags.",
+        declared_from=(
+            "The 2026-11-01 portal snapshot reuses UniProt, PDB, AlphaFold and InterPro evidence. "
+            "These sources and the portal share underlying observations."
+        ),
+    ),
+    "crest_gfn2_xtb_imtd_gc_quick": TrainedOn(
+        model="crest_gfn2_xtb_imtd_gc_quick",
+        corpora=("GFN2-xTB-reference",),
+        heads=("relative_conformer_energy",),
+        role="Samples ligand conformers and ranks them by gas-phase GFN2-xTB electronic energy.",
+        declared_from="The published GFN2-xTB parameterization bundled with CREST 3.0.2.",
+    ),
+    "propka_empirical_structure_pka_3_5_1": TrainedOn(
+        model="propka_empirical_structure_pka_3_5_1",
+        corpora=("PROPKA3-empirical-pKa",),
+        heads=("structure_conditioned_group_pka",),
+        role="Uses the published empirical parameters to estimate group pKa from supplied coordinates.",
+        declared_from="PROPKA3 publications and the parameter files bundled in PROPKA 3.5.1.",
+    ),
+    "badapple2_hiers_pubchem_pscore": TrainedOn(
+        model="badapple2_hiers_pubchem_pscore",
+        corpora=("Badapple2-PubChem-HTS",),
+        role="Read the original per-scaffold pScore and historical assay counters on exact HierS lookup keys.",
+        declared_from="Badapple 2.0 paper (10.1021/acs.jcim.5c02297) and pinned scaffold summary dump.",
+        heads=("historical_scaffold_promiscuity",),
+    ),
+    **{
+        f"p2rank_{profile}_2_5_1": TrainedOn(
+            model=f"p2rank_{profile}_2_5_1",
+            corpora=("P2Rank-Chen11-fpocket",),
+            role=role,
+            declared_from="The P2Rank 2.5.1 bundled model notes and profile definitions.",
+            heads=("receptor_ligand_binding_pockets",),
+        )
+        for profile, role in (
+            ("default", "Ranks candidate X-ray receptor pockets using a B-factor feature."),
+            ("alphafold", "Ranks candidate receptor pockets with the B-factor feature excluded."),
+        )
+    },
+    **{
+        method: TrainedOn(
+            model=method, corpora=("CYPstrate-Hunt-Tian",), heads=_CYPSTRATE_LABELS, role=role,
+            declared_from="Holmer et al. (2021), DOI 10.3390/molecules26154678, and CYPstrate v0.0.25.",
+        )
+        for method, role in (
+            ("cypstrate_best_performance", "Per-isoform hard-voting substrate classifiers that can abstain."),
+            ("cypstrate_full_coverage", "One substrate classifier per isoform, fitted on the same development corpus."),
+        )
+    },
     "crossabsense_v0.9": TrainedOn(
         model="crossabsense_v0.9",
         corpora=("GDPa1",),
@@ -488,6 +747,69 @@ TRAINED_ON: dict[str, TrainedOn] = {
         heads=("Solubility_AqSolDB",),
         weights_installed=True,
     ),
+    "epa_httk_human_css_v2": TrainedOn(
+        model="epa_httk_human_css_v2",
+        corpora=("EPA-httk-human-in-vitro", "EPA-httkpop-NHANES"),
+        role="Adult population oral steady-state simulation using measured human clearance and plasma binding.",
+        declared_from="EPA httk 2.7.4 calc_mc_css and HTTK-Pop. Substance identity from the 2025-12-09 DSSTox release.",
+        unaligned_kind=SIMULATED_LABELS,
+    ),
+    "cctbx_molprobity_geometry_v1": TrainedOn(
+        model="cctbx_molprobity_geometry_v1",
+        corpora=("MolProbity-Top8000",),
+        role="Empirical backbone and side-chain torsion references plus separately computed all-atom contacts.",
+        declared_from="CCTBX 2025.11 native Ramalyze, Rotalyze and Reduce2/Probe2.",
+        heads=("ramachandran", "rotamers"),
+        unaligned_kind=RUNTIME_LOOKUP,
+    ),
+    "supplied_peptide_rbc_assay_v1": TrainedOn(
+        model="supplied_peptide_rbc_assay_v1",
+        corpora=(),
+        role="Review of user-supplied therapeutic peptide red-cell assay observations.",
+        declared_from="The supplied peptide red-cell evidence TSV contract. No model is fitted or used.",
+        unaligned_kind=USER_SUPPLIED_MEASUREMENTS,
+    ),
+    "ipi_delphi_onehot_psr_v4": TrainedOn(
+        model="ipi_delphi_onehot_psr_v4",
+        corpora=("IPI-DELPHI-PSR",),
+        role="Paired antibody PSR pass-class prediction for experimental triage.",
+        declared_from="DELPHI Zenodo v4 official paired one-hot IPI PSR checkpoint.",
+        heads=("psr_filter",),
+        unaligned_kind=PRIVATE_CORPUS_OVERLAP_UNKNOWN,
+        weights_installed=True,
+    ),
+    "admet_ai_ames_v2": TrainedOn(
+        model="admet_ai_ames_v2",
+        corpora=("TDC-AMES",),
+        role="Small-molecule bacterial reverse-mutation classification for experimental triage.",
+        declared_from="ADMET-AI v2 classification ensemble and the TDC AMES task.",
+        heads=("AMES",),
+        weights_installed=True,
+    ),
+    "admet_ai_microsomal_clearance_v2": TrainedOn(
+        model="admet_ai_microsomal_clearance_v2",
+        corpora=("TDC-Clearance-Microsome-AZ",),
+        role="Human liver microsomal intrinsic clearance regression for experimental triage, in uL/min/mg.",
+        declared_from="ADMET-AI v2 regression ensemble and the TDC Clearance_Microsome_AZ task.",
+        heads=("Clearance_Microsome_AZ",),
+        weights_installed=True,
+    ),
+    "az_gnn_mtl_caco2_v1": TrainedOn(
+        model="az_gnn_mtl_caco2_v1",
+        corpora=("AstraZeneca-permeability-efflux",),
+        role="Native Caco-2 efflux and permeability model scores for experimental triage.",
+        declared_from="AstraZeneca GNN-MTL descriptor-free checkpoint, Zenodo 16948542 version 1.",
+        heads=("Caco2ER", "Caco2Papp"),
+        weights_installed=True,
+    ),
+    "admet_ai_dili_v2": TrainedOn(
+        model="admet_ai_dili_v2",
+        corpora=("TDC-DILI",),
+        role="Small-molecule DILI label classification for experimental triage, not clinical risk estimation.",
+        declared_from="ADMET-AI v2 classification ensemble and the binary TDC DILI task.",
+        heads=("DILI",),
+        weights_installed=True,
+    ),
     "admet_ai_classification_v1": TrainedOn(
         model="admet_ai_classification_v1",
         corpora=("TDC-ADMET",),
@@ -501,6 +823,34 @@ TRAINED_ON: dict[str, TrainedOn] = {
         role="Clinical reference flags for six computed descriptors on the submitted VHH and its modeled structure.",
         declared_from="Gordon et al. (2026) and TNP 0.1.0, with the NanoBodyBuilder2 structure-model corpus.",
         unaligned_kind=SIMULATED_LABELS,
+    ),
+    "scscore_reaxys_1024bool": TrainedOn(
+        model="scscore_reaxys_1024bool",
+        corpora=("Reaxys-SCScore",),
+        role="Relative synthetic complexity from reaction-derived ordering on a scale of 1 to 5.",
+        declared_from="Coley et al. (2018), DOI 10.1021/acs.jcim.7b00622, and the full-Reaxys Boolean release.",
+        unaligned_kind=SIMULATED_LABELS,
+    ),
+    "cellprofiler": TrainedOn(
+        model="cellprofiler",
+        corpora=(),
+        role="Regional intensity measurements after separating DAB and hematoxylin in supplied brightfield images.",
+        declared_from="CellProfiler UnmixColors, https://cellprofiler-manual.s3.amazonaws.com/CPmanual/UnmixColors.html",
+        unaligned_kind=NO_TRAINING_CORPUS,
+    ),
+    "pksim": TrainedOn(
+        model="pksim",
+        corpora=(),
+        role="Mechanistic human PBPK simulation of concentration over time for a nominated compound and scenario.",
+        declared_from="Open Systems Pharmacology PK-Sim, https://github.com/Open-Systems-Pharmacology/PK-Sim",
+        unaligned_kind=NO_TRAINING_CORPUS,
+    ),
+    "spyrmsd": TrainedOn(
+        model="spyrmsd",
+        corpora=(),
+        role="Symmetry-corrected heavy-atom RMSD against a nominated experimental redocking reference.",
+        declared_from="Meli and Biggin (2020), https://doi.org/10.1186/s13321-020-00455-2",
+        unaligned_kind=NO_TRAINING_CORPUS,
     ),
     "autodock_vina_fixed_pose": TrainedOn(
         model="autodock_vina_fixed_pose",
@@ -714,6 +1064,9 @@ OVERLAP_CAVEAT: dict[str, str] = {
         "but the model has no head for it, so there is no number at risk here."
     ),
     PUBLIC_CORPUS_UNALIGNED: ("A public corpus with no known per-item overlap with the quantity being scored."),
+    PRIVATE_CORPUS_OVERLAP_UNKNOWN: (
+        "The model uses non-public training rows, so per-item overlap and independence cannot be verified."
+    ),
     SIMULATED_LABELS: (
         "The labels were computed rather than measured, so recalling them cannot leak a " "measured answer."
     ),
@@ -728,6 +1081,10 @@ OVERLAP_CAVEAT: dict[str, str] = {
     CORPUS_UNDECLARED: (
         "This model has no entry in corpus_provenance.TRAINED_ON. Treat any number it produces "
         "as of unknown provenance."
+    ),
+    NO_TRAINING_CORPUS: "The method computes its result from the supplied inputs and has no training set.",
+    USER_SUPPLIED_MEASUREMENTS: (
+        "The screen uses only supplied measurements. It does not authenticate the lab report or predict new results."
     ),
 }
 
@@ -769,6 +1126,8 @@ def describe_corpora() -> dict[str, dict[str, object]]:
 def summary_line(model: str, dataset: str) -> str:
     """One line a human can read, for a report or a console summary."""
     kind = overlap_with(model, dataset)
+    if kind == NO_TRAINING_CORPUS:
+        return f"{model} vs {dataset}: {kind} (computed from supplied inputs)"
     names = ", ".join(trained_on(model).corpora) or "nothing recorded"
     return f"{model} vs {dataset}: {kind} (trained on {names})"
 

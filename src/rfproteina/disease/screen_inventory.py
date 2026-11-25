@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import math
 import os
 import shutil
 import stat
+import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import cached_property
@@ -49,7 +51,7 @@ SOURCES = (
     Source("octant", "Octant exact measurement lookup", "octant", "ligand"),
     Source("chembl_panel", "ChEMBL measured safety panel", "web_client", "ligand"),
     Source("bindingdb_exact", "BindingDB exact measurement lookup", "bindingdb", "ligand"),
-    Source("bindingdb_fingerprint", "BindingDB fingerprint lookup", "bindingdb", "ligand"),
+    Source("bindingdb_fingerprint", "BindingDB fingerprint lookup", "bindingdb_fingerprint", "ligand"),
     Source("gtopdb", "GtoPdb secondary pharmacology", "gtopdb", "ligand"),
     Source("bayesherg", "BayeshERG", "bayesherg", "ligand"),
     Source("boltz_affinity", "Boltz-2 supplied affinity result reader", "builtin", "ligand"),
@@ -138,6 +140,21 @@ def _modules(*names: str) -> bool:
     return all(util.find_spec(name) is not None for name in names)
 
 
+def _table_available(path: Path, fields: tuple[str, ...], *, forbidden: tuple[str, ...] = ()) -> bool:
+    """Probe one record using the reader's schema without scanning the corpus or building a fingerprint index."""
+    if not path.is_file():
+        return False
+    with path.open("rb") as handle:
+        header = handle.readline(65537)
+        first_record = handle.readline(65537)
+        if not first_record.strip() or max(len(header), len(first_record)) > 65536:
+            return False
+    reader = csv.reader([header.decode("utf-8-sig"), first_record.decode("utf-8")], delimiter="\t", strict=True)
+    columns, row = reader
+    found = set(columns)
+    return len(row) == len(columns) == len(found) and set(fields) <= found and found.isdisjoint(forbidden)
+
+
 def _configured_file(variable: str, suffix: str = "") -> bool:
     path = os.environ.get(variable)
     return bool(path and _file(Path(path + suffix)))
@@ -154,7 +171,17 @@ def _regressor(backend: str) -> bool:
 
 
 def _provider(name: str) -> bool:
-    from rfproteina.disease import deepsp, deepviscosity, interactions, novelty, octant, offtarget, tables
+    from rfproteina.disease import (
+        deepsp,
+        deepviscosity,
+        interactions,
+        ligand_regressor,
+        ligand_safety,
+        novelty,
+        octant,
+        offtarget,
+        tables,
+    )
 
     if name in {"builtin", "web_client"}:
         return True
@@ -183,7 +210,7 @@ def _provider(name: str) -> bool:
         return bool(
             banks
             and any(
-                _file(prefix) and _file(prefix.with_suffix(".dbtype"))
+                _file(prefix) and _file(Path(str(prefix) + ".dbtype"))
                 for folder in banks.glob("*")
                 if folder.is_dir()
                 for prefix in (folder / folder.name,)
@@ -193,14 +220,23 @@ def _provider(name: str) -> bool:
         return offtarget.mmseqs_available() and (
             _configured_file("HUMAN_PROTEOME") or tables.downloaded_proteome() is not None
         )
-    if name == "bindingdb":
-        data = os.environ.get("DATA_PATH")
-        return bool(data and _modules("rdkit") and _file(Path(data) / "bindingdb" / tables.BINDINGDB_PANEL_SUBSET_FILE))
+    if name in {"bindingdb", "bindingdb_fingerprint"}:
+        try:
+            subset = ligand_regressor.default_subset()
+        except ligand_regressor.RegressorCorpusError:
+            return False
+        required = ligand_safety._BINDINGDB_NEEDED + (("smiles",) if name == "bindingdb_fingerprint" else ())
+        return _modules("rdkit") and _table_available(subset, required)
     if name == "gtopdb":
         data = os.environ.get("DATA_PATH")
-        return bool(data and _modules("rdkit") and _file(Path(data) / "gtopdb" / "gtopdb_offtarget_subset.tsv"))
+        return bool(data and _modules("rdkit") and _table_available(
+            Path(data) / "gtopdb" / "gtopdb_offtarget_subset.tsv", ligand_safety._OFFTARGET_NEEDED
+        ))
     if name == "octant":
-        return _modules("rdkit") and _file(octant.octant_directory() / octant.SUBSET_FILE)
+        subset = octant.installed_subset()
+        return bool(subset and _modules("rdkit") and _table_available(
+            subset, octant.SUBSET_REQUIRED_COLUMNS, forbidden=(octant._PIC50,)
+        ))
     if name in {"chemprop", "forest"}:
         return _regressor(name)
     if name == "gearnet":
@@ -208,18 +244,13 @@ def _provider(name: str) -> bool:
             _configured_file(env) for env in ("GEARNET_CATH_CKPT_PATH", "GEARNET_CATH_LABEL_MAPPING_PATH")
         )
     if name == "cath":
-        return bool(shutil.which(os.environ.get("FOLDSEEK_EXEC", "foldseek"))) and (
-            _configured_file("CATH_FOLDSEEK_DB", ".dbtype") and _configured_file("CATH_DOMAIN_LIST")
+        executable = os.environ.get("FOLDSEEK_EXEC")
+        return bool(executable and shutil.which(executable)) and (
+            _configured_file("CATH_FOLDSEEK_DB") and _configured_file("CATH_FOLDSEEK_DB", ".dbtype")
+            and _configured_file("CATH_DOMAIN_LIST")
         )
     if name == "bayesherg":
-        root = os.environ.get("BAYESHERG_ROOT")
-        runtime = os.environ.get("BAYESHERG_PYTHON")
-        return bool(
-            root
-            and runtime
-            and os.access(runtime, os.X_OK)
-            and all(_file(Path(root) / p) for p in ("main.py", "model/model_weights.pth", "model/BayeshERG_model.py"))
-        )
+        return ligand_safety.bayesherg_installed()
     if name in {"deepsp", "deepviscosity"}:
         root = deepsp.default_models_dir()
         if not root or not _modules("torch", "h5py", "anarcii"):
@@ -246,7 +277,7 @@ def installations(keys: set[str] | None = None) -> dict[str, bool]:
     for provider in dict.fromkeys(s.provider for s in sources):
         try:
             states[provider] = _provider(provider)
-        except (OSError, ValueError, ImportError, RuntimeError):
+        except (OSError, ValueError, ImportError, RuntimeError, csv.Error, subprocess.SubprocessError):
             states[provider] = False
     return {s.key: states[s.provider] for s in sources}
 
@@ -274,10 +305,11 @@ def _numeric(value: object) -> bool:
 class Evidence:
     """Read each published source once. Return coverage without pooling scales or exposing candidate sequences."""
 
-    def __init__(self, directory: Path, example: str | None, record: Mapping | None = None):
+    def __init__(self, directory: Path, example: str | None, record: Mapping | None = None, *, kind: str | None = None):
         from rfproteina.disease.screen import _metrics_path, _metrics_table
 
         self.directory = directory
+        self.kind = kind
         rows = (record if record is not None else _json(directory / "screen.json")).get("samples")
         self.samples = (
             [row for row in rows if isinstance(row, dict) and (example is None or row.get("example_id") == example)]
@@ -295,10 +327,14 @@ class Evidence:
 
     @cached_property
     def candidate_ids(self) -> set[str] | None:
+        from rfproteina.disease.ligand_inputs import named_nominations
         from rfproteina.disease.validation_checks import _candidates, _inventory
 
         candidates = _candidates(_inventory(self.directory))
-        return {c.example_id for c in candidates if c.example_id} if candidates else None
+        ids = {c.example_id for c in candidates if c.example_id}
+        if self.kind == "ligand":
+            ids.update(named_nominations(self.directory))
+        return ids if candidates or ids else None
 
     @staticmethod
     def safe_table(path: Path) -> bool:

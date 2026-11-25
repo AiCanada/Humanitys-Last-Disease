@@ -35,7 +35,18 @@ from rfproteina.disease.liability import (
     _MHC_II_RANK,
     SUPPLIED_METHOD,
 )
-from rfproteina.disease.mcp_api import _AXIS_GROUPS, _CURATED_SOURCE
+from rfproteina.disease.mcp_api import (
+    _AXIS_GROUPS,
+    _CURATED_SOURCE,
+    _ames_view,
+    _caco2_view,
+    _delphi_view,
+    _dili_view,
+    _httk_view,
+    _microsomal_clearance_view,
+    _molprobity_view,
+    _peptide_rbc_view,
+)
 from rfproteina.disease.modality import HALF_LIFE_PHRASES, TRIAGE_MOTIFS, component_label
 from rfproteina.disease.oligo import (
     _CONSENSUS_METHOD,
@@ -105,6 +116,191 @@ _STATES = frozenset({"hit", "clear", "untested"})
 #: the tabs name a state exactly as its own tab does.
 _STATE_WORD = {"clear": "Clear", "hit": "Hit", "untested": "Not decided"}
 _BLOCKERS = {
+    "bayesherg_no_usable_result": "BayesHERG did not produce a usable prediction for any nominated compound.",
+    "bayesherg_unsupported_molecule": "The nominated molecular structure is outside the BayesHERG input scope.",
+    "bayesherg_worker_unavailable": "The local BayesHERG worker could not complete the hERG prediction.",
+    "cellprofiler_record_invalid": "The saved CellProfiler result has inconsistent or unreadable fields.",
+    "cellprofiler_manifest_missing": "This run has no CellProfiler image manifest.",
+    "cellprofiler_invalid_manifest": "CellProfiler could not identify the comparisons in the supplied manifest.",
+    "cellprofiler_candidate_not_nominated": "The selected candidate has no image comparison in the manifest.",
+    "cellprofiler_invalid_pair": "The image comparison is missing required fields or role information.",
+    "cellprofiler_control_mismatch": "The test and control fields have incompatible roles or metadata.",
+    "cellprofiler_image_conflict": "An image has conflicting assignments in the supplied comparisons.",
+    "cellprofiler_duplicate_pair": "More than one record identifies the same image comparison.",
+    "cellprofiler_runtime_unavailable": "The supported CellProfiler runtime is unavailable.",
+    "cellprofiler_measurement_failed": "CellProfiler did not return valid regional stain measurements.",
+    "cellprofiler_budget_exceeded": "The requested comparisons exceed the documented CellProfiler screening limits.",
+    "cellprofiler_invalid_image_path": "An image or mask path does not identify a supported file inside this run.",
+    "cellprofiler_file_unavailable": "An image or mask is missing, unreadable, or changed during inspection.",
+    "cellprofiler_image_budget_exceeded": "An image or mask exceeds the supported file or decoded-pixel limit.",
+    "cellprofiler_image_format": "A field could not be decoded as a supported brightfield color image.",
+    "cellprofiler_mask_format": "A region mask is unreadable, empty or outside the supported binary mask format.",
+    "cellprofiler_grid_mismatch": "The region mask and source image have incompatible grids or orientation.",
+    "cellprofiler_image_reader_unavailable": "The host lacks the supported local image-reading dependencies.",
+    "cellprofiler_execution_timeout": "CellProfiler exceeded the time available for the requested analysis.",
+    "pksim_manifest_missing": "This run has no PK-Sim simulation manifest.",
+    "pksim_invalid_manifest": "The supplied PK-Sim manifest could not identify valid candidate scenarios.",
+    "pksim_candidate_not_nominated": "The selected candidate has no PK-Sim scenario in the manifest.",
+    "pksim_molecule_mismatch": "The nominated molecule and the compound identified for this simulation differ.",
+    "pksim_invalid_model": "The supplied model could not be read as a supported PK-Sim simulation.",
+    "pksim_model_mismatch": "The supplied PK-Sim model does not match the model declared for this candidate.",
+    "pksim_model_unregistered": "The model digest has no verified snapshot in the local PK-Sim registry.",
+    "pksim_compound_mismatch": "The requested compound has no matching identity in the registered PK-Sim model.",
+    "pksim_budget_exceeded": "The submitted case exceeds the supported PK-Sim screening limits.",
+    "pksim_invalid_export": "The simulation output could not be attributed to a valid concentration-time series.",
+    "pksim_output_missing": "The simulation export is missing a requested output path.",
+    "pksim_unsupported_unit": "The simulation output uses an unsupported time or concentration unit.",
+    "pksim_runtime_unavailable": "The supported local PK-Sim simulation runtime is unavailable.",
+    "pksim_execution_failed": "PK-Sim stopped before it returned a usable simulation.",
+    "pksim_execution_timeout": "PK-Sim exceeded the time available for this simulation.",
+    "pksim_unsupported_snapshot": "The supplied PK-Sim snapshot uses an unsupported configuration.",
+    "cypstrate_invalid_manifest": "The CYPstrate manifest could not identify a valid set of molecular hypotheses.",
+    "cypstrate_invalid_mode": "The selected CYPstrate prediction mode is unknown.",
+    "cypstrate_exposure_unspecified": "The nomination does not declare whether systemic exposure is intended.",
+    "cypstrate_invalid_isoforms": "A candidate has repeated or unsupported human CYP isoforms.",
+    "cypstrate_unsupported_input": "The nomination is outside the size or molecular scope of this screen.",
+    "cypstrate_candidate_not_nominated": "This candidate has no nominated CYP metabolism hypothesis.",
+    "cypstrate_nonsystemic": "The nomination declares a non-systemic exposure.",
+    "cypstrate_unattributed_result": "The provider returned no uniquely attributable result for this molecule.",
+    "cypstrate_preprocessing_failed": "The released CYPstrate preprocessing pipeline withheld this molecule.",
+    "cypstrate_invalid_output": "The returned CYPstrate record does not match the released classification format.",
+    "cypstrate_no_consensus": "The hard-voting model withheld a classification for this molecule and isoform.",
+    "cypstrate_no_usable_results": "No requested molecule and isoform pair received a usable model result.",
+    "cypstrate_image_unavailable": "The pinned CYPstrate image is unavailable on the local Docker engine.",
+    "cypstrate_execution_timeout": "The local CYPstrate worker exceeded its time allowance.",
+    "cypstrate_runtime_failed": "The local CYPstrate worker could not complete the calculation.",
+    "candidate_missing_from_table": "The comparison names a candidate that is absent from the molecular table.",
+    "duplicate_candidate_nomination": "The molecular table contains multiple rows for this candidate.",
+    "invalid_molecular_nomination": "The candidate row could not be read as a complete molecule.",
+    "requires_one_supported_organic_molecule": "SCScore requires one connected, closed-shell organic molecule.",
+    "candidate_outside_comparison": "This candidate is outside the declared SCScore comparison.",
+    "named_candidate_table_required": "SCScore requires a table of named candidate molecules.",
+    "two_distinct_compounds_required": "Fewer than two distinct supported molecules remain in the comparison.",
+    "no_eligible_nominations": "The selected candidates have no eligible chemical forms to score.",
+    "no_valid_scscore_results": "SCScore returned no usable scores for this comparison.",
+    "invalid_scscore_result": "The model returned no finite SCScore on its published scale of 1 to 5.",
+    "scscore_fingerprint_unavailable": "RDKit could not generate the SCScore fingerprint for this molecule.",
+    "scscore_provider_unavailable": "The local SCScore model could not run.",
+    "invalid_scscore_layer_shape": "The installed SCScore network has unexpected weight dimensions.",
+    "scscore_weights_digest_mismatch": "The checkpoint differs from the pinned SCScore release.",
+    "duplicate_comparison_field": "A field is repeated in the SCScore comparison manifest.",
+    "invalid_scscore_comparison": "The SCScore comparison manifest could not be parsed or has an unknown field.",
+    "comparison_requires_two_to_256_candidates": "An SCScore comparison requires between 2 and 256 candidates.",
+    "invalid_or_duplicate_comparison_candidate": "The comparison contains an invalid or repeated candidate ID.",
+    "invalid_decision_evidence": "The route and cost declaration has an unsupported field or format.",
+    "invalid_decision_evidence_reference": "A route or cost reference lacks a valid source identifier.",
+    "invalid_resolution_declaration": "The route and cost decision requires a JSON Boolean.",
+    "incomplete_route_and_cost_resolution": "The decision is marked resolved with a route or cost reference missing.",
+    "spyrmsd_calculation_failed": "The symmetry-corrected pose RMSD calculation failed for this control.",
+    "spyrmsd_unavailable": "The sPyRMSD provider could not be loaded.",
+    "ames_input_limit_exceeded": "The Ames screen input exceeds the file or nomination limit.",
+    "ames_resource_limit_exceeded": "The local Ames model exceeds its staging or scratch-space limit.",
+    "unsupported_ames_structure": "The submitted graph is outside the local Ames screen's structure scope.",
+    "dili_structure_unsupported": "The submitted graph is outside the local DILI screen's structure scope.",
+    "dili_inputs_over_limit": "The DILI input exceeds the file or nomination limit.",
+    "dili_resources_unavailable": "The installed DILI model files exceed the staging size limit.",
+    "delphi_candidate_id_duplicate": "The same candidate was nominated more than once for DELPHI PSR.",
+    "delphi_candidate_id_invalid": "A DELPHI nomination does not have a valid candidate identifier.",
+    "delphi_candidate_not_nominated": "This candidate does not have a named DELPHI VH/VL nomination.",
+    "delphi_cdr3_unsupported": "A supported heavy-chain CDR3 could not be identified within the nominated VH.",
+    "delphi_chain_roles_invalid": "Antibody numbering did not identify the submitted VH and VL roles.",
+    "delphi_checkpoint_invalid": "The local DELPHI model file does not match the supported PSR release.",
+    "delphi_checkpoint_missing": "The supported local DELPHI PSR checkpoint was not found.",
+    "delphi_domain_incomplete": "The nominated VH or VL does not cover a complete numbered variable domain.",
+    "delphi_domain_length_out_of_range": "A nominated variable domain is outside the supported DELPHI length range.",
+    "delphi_domain_numbering_failed": "IMGT numbering did not complete for the nominated antibody pair.",
+    "delphi_domain_numbering_unavailable": "The local antibody numbering runtime is unavailable.",
+    "delphi_domain_residues_unsupported": "A nominated variable domain contains unsupported residues.",
+    "delphi_domains_required": "DELPHI needs a complete paired VH and VL for this candidate.",
+    "delphi_inference_failed": "The DELPHI PSR model did not return an attributable prediction.",
+    "delphi_no_predictions": "No eligible DELPHI PSR nomination produced a prediction.",
+    "delphi_pair_header_invalid": "The DELPHI nomination table header is not recognized.",
+    "delphi_pair_width_invalid": "A DELPHI nomination does not contain exactly three columns.",
+    "delphi_pairs_empty": "The DELPHI nomination file contains no pairs.",
+    "delphi_pairs_missing": "The DELPHI nomination file was not supplied.",
+    "delphi_pairs_over_limit": "The DELPHI nomination file exceeded the file or row limit.",
+    "delphi_pairs_unreadable": "The DELPHI nomination file could not be read as a regular UTF-8 table.",
+    "delphi_prediction_record_invalid": "The saved DELPHI result cannot support an attributable PSR prediction.",
+    "delphi_runtime_unavailable": "The local CPU runtime could not run the supported DELPHI PSR model.",
+    "delphi_worker_timeout": "The DELPHI worker did not finish before its time limit.",
+    "httk_ambiguous_ligand": "The nomination does not identify a single ligand and reference pair.",
+    "httk_candidate_not_nominated": "This candidate has no EPA httk reference nomination.",
+    "httk_human_inputs_unavailable": "The package lacks usable measured human binding or hepatocyte clearance data.",
+    "httk_identity_reference_unavailable": "The pinned EPA DSSTox structure reference is missing or unreadable.",
+    "httk_input_over_limit": "The EPA httk nominations or ligand table exceeded the supported limits.",
+    "httk_invalid_draws": "The provider did not produce a complete set of valid population estimates.",
+    "httk_invalid_ligand": "The nominated ligand could not be read as a supported molecular graph.",
+    "httk_invalid_manifest": "The EPA httk manifest has invalid fields or identifiers.",
+    "httk_legacy_identity_unverified": "This older EPA httk result predates independent structure verification.",
+    "httk_manifest_missing": "The EPA httk reference nomination file was not supplied.",
+    "httk_manifest_over_limit": "The EPA httk reference nomination file exceeded the size limit.",
+    "httk_manifest_unreadable": "The EPA httk reference nomination file could not be read safely.",
+    "httk_missing_ligand": "The EPA httk nomination does not match a ligand in this run.",
+    "httk_model_inapplicable": "The pinned steady-state model could not be applied to this reference.",
+    "httk_named_nominations_required": "EPA httk needs explicitly named ligands, not inferred run inputs.",
+    "httk_no_usable_results": "None of the nominated references produced usable estimates.",
+    "httk_rdkit_unavailable": "The local RDKit installation could not check the nominated ligand graph.",
+    "httk_record_invalid": "The saved record does not support an attributed EPA httk estimate.",
+    "httk_reference_identity_unavailable": "The package could not uniquely match the nominated CAS and DTXSID pair.",
+    "httk_runtime_unavailable": "The supported local R environment and pinned httk package are not available.",
+    "httk_scenario_unsupported": "The request does not use the supported adult oral reference scenario.",
+    "httk_simulation_failed": "The population model did not complete for this nominated reference.",
+    "httk_structure_mismatch": "The candidate's structure identity differs from the nominated EPA reference.",
+    "httk_structure_unmapped": "The nominated identifiers have no unique structure in the pinned EPA reference.",
+    "httk_worker_failed": "The local EPA httk process did not return an attributable result.",
+    "httk_worker_timeout": "The local EPA httk process did not finish before its time limit.",
+    "molprobity_candidate_ambiguous": "This MolProbity candidate does not identify a unique generated model.",
+    "molprobity_candidate_not_found": "No finished structure matches this MolProbity candidate.",
+    "molprobity_incomplete_heavy_atoms": "The model lacks heavy atoms required by this MolProbity check.",
+    "molprobity_input_over_limit": "The selected structure exceeds the MolProbity input limit.",
+    "molprobity_metric_failed": "The provider did not return a usable result for this geometry metric.",
+    "molprobity_models_missing": "No finished structures are available for MolProbity geometry review.",
+    "molprobity_no_eligible_contacts": "No eligible atoms were available for the clashscore calculation.",
+    "molprobity_no_eligible_residues": "No eligible residues could be evaluated for this torsion check.",
+    "molprobity_no_measurements": "No reportable MolProbity geometry metrics were produced.",
+    "molprobity_provider_failure": "The local MolProbity geometry provider failed before returning a usable result.",
+    "molprobity_record_invalid": "The saved result does not support an attributed MolProbity measurement.",
+    "molprobity_reference_unavailable": "The installed cctbx geometry reference data could not be used.",
+    "molprobity_runtime_unavailable": "The supported local cctbx CPU runtime is unavailable.",
+    "molprobity_structure_invalid": "The selected structure could not be parsed into a valid geometry input.",
+    "molprobity_structure_unreadable": "The selected structure could not be read safely.",
+    "molprobity_timeout": "The MolProbity worker did not finish within its time limit.",
+    "molprobity_too_many_models": "The selected candidate count exceeds the MolProbity screen limit.",
+    "molprobity_unsupported_model": "The structure is outside the supported whole-model geometry scope.",
+    "molprobity_zstd_unavailable": "The local reader cannot decode this Zstandard-compressed structure.",
+    "peptide_rbc_candidate_not_nominated": "This candidate has no supplied red-cell assay observation.",
+    "peptide_rbc_candidate_unknown": "An assay observation does not match a candidate in this run.",
+    "peptide_rbc_candidates_unavailable": "The finished run has no candidate identities that can be checked.",
+    "peptide_rbc_controls_failed": "The assay report says the required controls did not pass quality review.",
+    "peptide_rbc_controls_invalid": "The assay report uses an unrecognized control status.",
+    "peptide_rbc_controls_unreported": "The assay report does not document a control status.",
+    "peptide_rbc_duplicate_observation": "The same candidate and observation identifiers appear more than once.",
+    "peptide_rbc_empty": "The red-cell evidence file contains no observations.",
+    "peptide_rbc_exposure_invalid": "This observation lacks a finite positive concentration or exposure duration.",
+    "peptide_rbc_header_invalid": "The red-cell evidence table header is not recognized.",
+    "peptide_rbc_identifier_invalid": "The observation has a missing or unsupported evidence identifier.",
+    "peptide_rbc_matrix_unsupported": "The red-cell observation uses an unsupported assay matrix.",
+    "peptide_rbc_missing": "The red-cell evidence file was not supplied.",
+    "peptide_rbc_no_qualified_observations": "None of the submitted red-cell observations could be reviewed.",
+    "peptide_rbc_over_limit": "The red-cell evidence file exceeded the size or row limit.",
+    "peptide_rbc_readout_invalid": "The submitted percent hemolysis is not a finite value from 0 to 100.",
+    "peptide_rbc_record_invalid": "The saved record cannot support an attributed red-cell assay observation.",
+    "peptide_rbc_row_width_invalid": "An observation has the wrong number of fields.",
+    "peptide_rbc_species_unsupported": "The erythrocyte species is missing or outside the supported panel.",
+    "peptide_rbc_unit_unsupported": "The concentration unit is missing or unsupported.",
+    "peptide_rbc_unreadable": "The red-cell evidence file could not be read as a regular UTF-8 table.",
+    "microsomal_clearance_input_limit_exceeded": "The microsomal clearance input exceeds the file or nomination limit.",
+    "microsomal_clearance_resource_limit_exceeded": "The clearance model exceeds its staging or scratch-space limit.",
+    "unsupported_microsomal_clearance_structure": "The submitted graph is outside the clearance screen's scope.",
+    "unsupported_caco2_structure": "The submitted graph is outside the local Caco-2 screen's structure scope.",
+    "caco2_input_limit_exceeded": "The Caco-2 input exceeds the file or nomination limit.",
+    "caco2_checkpoint_missing": "The pinned AstraZeneca Caco-2 checkpoint was not found.",
+    "caco2_checkpoint_invalid": "The local checkpoint is unreadable or does not match the pinned Caco-2 release.",
+    "caco2_runtime_unavailable": "The local Caco-2 prediction runtime could not be loaded.",
+    "caco2_output_contract_mismatch": "The model output does not match the pinned Caco-2 head contract.",
+    "provider_dependency_unavailable": "A required local predictor package could not be loaded.",
+    "missing_provider_row": "The predictor supplied no result for the nominated compound.",
+    "duplicate_provider_row": "More than one result was attributed to the same nominated compound.",
     "duplicate_candidate_id": "Several candidate rows have the same identifier.",
     "foldseek_result_invalid": "A Foldseek result has an invalid identifier or score.",
     "independently_prepared_subsystems": "The separately prepared subsystems have no shared energy reference.",
@@ -112,6 +308,156 @@ _BLOCKERS = {
     "invalid_molecular_structure": "The chemistry reader could not interpret the candidate structure.",
     "invalid_provider_result": "The predictor returned an unusable value for this compound.",
     "invalid_qupkake_manifest": "The QupKake input manifest could not be read or validated.",
+    "dimorphite_manifest_missing": "The declared pH window is missing.",
+    "invalid_candidate_id": "The nomination does not have a valid candidate identifier.",
+    "invalid_candidate_table_header": "The ligand table must have candidate_id and smiles columns in that order.",
+    "expected_one_run_ligand": "The run-level ligand input must contain one molecular record.",
+    "unsupported_extended_smiles": "The run-level ligand input must use plain molecular SMILES.",
+    "ligand_input_exceeds_interactive_size": "The ligand table exceeds the supported input size or row count.",
+    "invalid_dimorphite_manifest": "The Dimorphite-DL pH window could not be validated.",
+    "dimorphite_unsupported_molecule": "This nomination is outside the supported Dimorphite-DL chemistry or size.",
+    "dimorphite_candidates_over_limit": "The selection exceeds the Dimorphite-DL nomination limit.",
+    "dimorphite_runtime_unavailable": "The pinned local Dimorphite-DL runtime is unavailable.",
+    "dimorphite_worker_timeout": "The local Dimorphite-DL worker timed out.",
+    "dimorphite_provider_failure": "Dimorphite-DL could not enumerate a supported state set.",
+    "dimorphite_variant_rejected": "Dimorphite-DL encountered an invalid or incomplete state set.",
+    "dimorphite_invalid_report": "The state set failed identity or report validation.",
+    "dimorphite_no_states": "The selection yielded no reportable Dimorphite-DL states.",
+    "dimorphite_no_candidates": "The selected input has no nominated ligand.",
+    "no_recognized_sites": "The bundled Dimorphite-DL rules recognized no protonation sites in this ligand.",
+    "variant_budget_exceeded": "The ligand exceeds the allowed number of potential state combinations.",
+    "p2rank_manifest_missing": "The P2Rank receptor nomination is missing.",
+    "invalid_p2rank_manifest": "The P2Rank receptor nomination does not use the expected name and source fields.",
+    "p2rank_receptor_unreadable": "P2Rank could not read the nominated regular receptor file within its size limit.",
+    "p2rank_receptor_invalid": "The nominated P2Rank receptor has invalid coordinates or structure data.",
+    "p2rank_receptor_out_of_scope": "The receptor exceeds scope or lacks enough attributable amino acid residues.",
+    "p2rank_structure_source_mismatch": "The declared structure source conflicts with metadata in the receptor file.",
+    "p2rank_xray_b_factors_missing": "The X-ray profile requires usable crystallographic B-factors.",
+    "p2rank_gemmi_unavailable": "Gemmi is needed to validate the nominated receptor.",
+    "p2rank_invalid_output": "The pocket output failed P2Rank format or residue-attribution validation.",
+    "p2rank_runtime_unavailable": "The verified P2Rank release or a compatible Java runtime is unavailable.",
+    "p2rank_runtime_integrity": "The installed P2Rank runtime files differ from the verified release.",
+    "p2rank_timeout": "P2Rank exceeded the time limit for this receptor.",
+    "p2rank_provider_failure": "The local P2Rank process did not complete successfully.",
+    "p2rank_output_unreadable": "The local P2Rank process did not produce a readable predictions table.",
+    "propka_manifest_missing": "The nominated PROPKA structure is missing from the run manifest.",
+    "invalid_propka_manifest": "The PROPKA structure nomination could not be validated.",
+    "propka_candidate_mismatch": "The PROPKA structure was nominated for a different candidate.",
+    "propka_structure_unreadable": "The nominated PDB file could not be read within the PROPKA input limit.",
+    "propka_structure_invalid": "The nominated PROPKA structure contains invalid coordinates or PDB data.",
+    "propka_structure_out_of_scope": "PROPKA requires an unambiguous single-model PDB within the supported size range.",
+    "propka_gemmi_unavailable": "Gemmi is needed to validate the PROPKA structure.",
+    "propka_runtime_unavailable": "The pinned PROPKA runtime and chemistry parameters could not be verified.",
+    "propka_timeout": "The local PROPKA calculation exceeded its time limit.",
+    "propka_provider_failure": "The local PROPKA calculation did not complete successfully.",
+    "propka_invalid_report": "The PROPKA result failed group attribution or report validation.",
+    "propka_no_usable_groups": "PROPKA did not return any usable group pKa estimates.",
+    "crest_manifest_missing": "The CREST ligand nomination is missing.",
+    "invalid_crest_manifest": "The CREST ligand nomination has invalid fields.",
+    "crest_candidate_mismatch": "The selected candidate and CREST structure nomination do not match.",
+    "crest_structure_unreadable": "The nominated CREST structure could not be read within the input limit.",
+    "crest_invalid_structure": "The nominated SDF has invalid or inconsistent 3D coordinates or connectivity.",
+    "crest_unsupported_ligand": "The nominated ligand falls outside the supported CREST chemistry or size range.",
+    "crest_rdkit_unavailable": "RDKit is needed to validate the nominated CREST ligand.",
+    "crest_invalid_ensemble": "The CREST conformer ensemble failed format or energy validation.",
+    "crest_no_valid_conformers": "No reported CREST conformer retained the nominated connectivity and stereochemistry.",
+    "crest_runtime_unavailable": "The supported local CREST executable is unavailable.",
+    "crest_runtime_integrity": "The local CREST executable does not match the verified release.",
+    "crest_timeout": "The CREST search exceeded its time limit.",
+    "crest_scratch_limit": "The CREST search exceeded its temporary storage limit.",
+    "crest_provider_failure": "The CREST search did not finish successfully.",
+    "crest_output_unreadable": "CREST did not produce a readable conformer ensemble.",
+    "openantigens_target_missing": "No canonical human target accession is recorded for OpenAntigens.",
+    "invalid_openantigens_manifest": "The OpenAntigens target nomination is invalid.",
+    "openantigens_invalid_job": "OpenAntigens could not validate the run's target metadata.",
+    "openantigens_target_mismatch": "The requested target conflicts with the target recorded for the run.",
+    "openantigens_target_unresolved": "The run target needs an exact canonical UniProt accession for OpenAntigens.",
+    "openantigens_no_target_evidence": "The target has no matching entry in this OpenAntigens human snapshot.",
+    "openantigens_requires_run_scope": "OpenAntigens reports target evidence for the whole run.",
+    "openantigens_invalid_report": "The saved OpenAntigens evidence failed schema or source validation.",
+    "openantigens_snapshot_unavailable": "The local OpenAntigens human snapshot is unavailable.",
+    "openantigens_snapshot_integrity": "The installed OpenAntigens files differ from the verified snapshot.",
+    "metfrag_manifest_missing": "The measured MetFrag spectrum nomination is missing.",
+    "invalid_metfrag_manifest": "The MetFrag spectrum or instrument settings could not be validated.",
+    "metfrag_peaks_unreadable": "The nominated MetFrag peak table could not be read within its size limit.",
+    "metfrag_invalid_peaks": "The MetFrag peak table contains invalid, duplicate, or out-of-scope product ions.",
+    "metfrag_candidates_unreadable": "The nominated MetFrag candidate table could not be validated.",
+    "metfrag_no_candidates": "The MetFrag selection contains no nominated candidate.",
+    "metfrag_candidates_over_limit": "The MetFrag selection exceeds the local candidate limit.",
+    "metfrag_duplicate_candidate": "Two MetFrag nominations use the same candidate identifier.",
+    "metfrag_candidate_scope_missing": "MetFrag candidate selection requires an exact identifier from the named table.",
+    "metfrag_rdkit_unavailable": "RDKit is needed to validate the MetFrag molecular nominations.",
+    "metfrag_no_precursor_matches": "No supported nomination matches the measured MetFrag precursor mass.",
+    "metfrag_unsupported_candidate": "The nomination falls outside the supported MetFrag chemistry or size range.",
+    "metfrag_precursor_mismatch": "The candidate falls outside the declared precursor mass tolerance.",
+    "metfrag_invalid_report": "The local MetFrag report failed candidate or peak-count validation.",
+    "metfrag_runtime_unavailable": "The compatible offline Java and MetFrag runtime is unavailable.",
+    "metfrag_runtime_integrity": "The installed MetFrag JAR differs from the verified release.",
+    "metfrag_timeout": "The local MetFrag fragmentation exceeded its time limit.",
+    "metfrag_scratch_limit": "The local MetFrag fragmentation exceeded its temporary storage limit.",
+    "metfrag_provider_failure": "The offline MetFrag process could not complete the search.",
+    "metfrag_output_unreadable": "MetFrag did not produce a readable local candidate score table.",
+    "fastsolv_manifest_missing": "The fastsolv organic-solvent conditions are missing.",
+    "invalid_fastsolv_manifest": "The nominated fastsolv solvents or temperatures could not be validated.",
+    "fastsolv_candidates_unreadable": "The fastsolv molecular nomination could not be read or validated.",
+    "fastsolv_no_candidates": "The selection contains no nominated solute for fastsolv.",
+    "fastsolv_candidates_over_limit": "The selection exceeds the fastsolv candidate limit.",
+    "fastsolv_duplicate_candidate": "Two fastsolv nominations use the same candidate identifier.",
+    "fastsolv_candidate_scope_missing": "fastsolv candidate selection requires an exact entry from the named table.",
+    "fastsolv_rdkit_unavailable": "RDKit is needed to validate the fastsolv molecular nominations.",
+    "fastsolv_unsupported_candidate": "The nominated compound is outside the fastsolv chemistry or size scope.",
+    "fastsolv_no_supported_candidates": "The selection contains no supported organic solute.",
+    "fastsolv_invalid_report": "The fastsolv predictions failed scope or numerical validation.",
+    "fastsolv_runtime_unavailable": "The local CPU fastsolv checkpoints or descriptor dependencies are unavailable.",
+    "fastsolv_runtime_integrity": "The installed fastsolv checkpoints differ from the verified release.",
+    "fastsolv_timeout": "The CPU fastsolv prediction exceeded its time limit.",
+    "fastsolv_provider_failure": "The local fastsolv worker could not complete the calculation.",
+    "fastsolv_output_unreadable": "The local fastsolv worker did not return a readable prediction report.",
+    "jazzy_candidates_unreadable": "The Jazzy molecular nominations could not be read or validated.",
+    "jazzy_no_candidates": "This selection has no nominated ligand for Jazzy.",
+    "jazzy_candidates_over_limit": "The selection exceeds the supported Jazzy candidate count.",
+    "jazzy_duplicate_candidate": "Two Jazzy nominations use the same candidate identifier.",
+    "jazzy_candidate_scope_missing": "Jazzy candidate selection requires an exact entry from the named table.",
+    "jazzy_rdkit_unavailable": "RDKit is needed to validate the Jazzy molecular nominations.",
+    "jazzy_invalid_report": "The Jazzy hydration report failed numerical or candidate attribution validation.",
+    "jazzy_no_usable_results": "None of the Jazzy nominations produced supported hydration evidence.",
+    "jazzy_unsupported_candidate": "The nominated form is outside the supported Jazzy chemistry or stereochemistry scope.",
+    "jazzy_geometry_unavailable": "Jazzy could not obtain a converged geometry in the fixed 3D workflow.",
+    "jazzy_calculation_failed": "The local Jazzy hydration calculation could not score this geometry.",
+    "jazzy_runtime_unavailable": "The isolated local Jazzy CPU environment is unavailable.",
+    "jazzy_runtime_integrity": "The local Jazzy environment does not match the pinned installation.",
+    "jazzy_timeout": "The local Jazzy hydration batch exceeded its time limit.",
+    "jazzy_provider_failure": "The local Jazzy CPU worker did not complete successfully.",
+    "jazzy_output_unreadable": "The local Jazzy worker did not return a readable hydration report.",
+    "espsim_manifest_missing": "The nominated ESP-Sim pose pair is missing.",
+    "invalid_espsim_manifest": "The ESP-Sim pair nomination is invalid or does not confirm a shared coordinate frame.",
+    "espsim_candidate_mismatch": "The nominated ESP-Sim candidate does not match the selected candidate or supplied pose.",
+    "espsim_reference_mismatch": "The reference SDF title does not match the nominated reference identifier.",
+    "espsim_structure_unreadable": "A nominated ESP-Sim structure could not be read within its input limit.",
+    "espsim_invalid_structure": "A nominated ESP-Sim structure has inconsistent coordinates, bonding, or stereochemistry.",
+    "espsim_unsupported_structure": "A nominated ligand is outside the supported ESP-Sim chemistry or size range.",
+    "espsim_frame_out_of_scope": "The combined ESP-Sim pose extent exceeds the local comparison limit.",
+    "espsim_rdkit_unavailable": "RDKit is needed to validate the nominated ESP-Sim pose pair.",
+    "espsim_invalid_report": "The ESP-Sim scores failed pair or numerical validation.",
+    "espsim_charge_unavailable": "The electrostatic Carbo score is undefined for the qualified charge calculation.",
+    "espsim_runtime_unavailable": "The verified local ESP-Sim sources or scientific runtime are unavailable.",
+    "espsim_runtime_integrity": "The installed ESP-Sim scoring sources differ from the pinned release.",
+    "espsim_timeout": "The local ESP-Sim comparison exceeded its time limit.",
+    "espsim_provider_failure": "The local ESP-Sim worker could not complete the comparison.",
+    "espsim_output_unreadable": "The local ESP-Sim worker did not return a readable comparison report.",
+    "badapple2_candidates_over_limit": "The Badapple 2 selection exceeds 32 nominations.",
+    "badapple2_unsupported_molecule": "This nomination is outside the supported organic-ligand or size scope.",
+    "badapple2_no_nominations": "The selected input has no nominated ligand for Badapple 2.",
+    "badapple2_no_scaffolds": "No eligible Badapple 2 scaffold was generated for this nomination.",
+    "badapple2_no_scored_scaffolds": "The generated scaffolds have no attributable pScore in this snapshot.",
+    "badapple2_scaffold_engine_unavailable": "The isolated Badapple 2 chemistry environment is unavailable.",
+    "badapple2_scaffold_unsupported": "The Badapple 2 HierS worker could not process this chemical form.",
+    "badapple2_scaffold_limit": "This ligand exceeds the supported Badapple 2 ring-system or scaffold limit.",
+    "badapple2_database_unavailable": "The local Badapple 2 summary snapshot is missing.",
+    "badapple2_database_integrity": "The Badapple 2 summary failed provenance or integrity validation.",
+    "badapple2_timeout": "The local Badapple 2 scaffold worker timed out.",
+    "badapple2_provider_failure": "The local Badapple 2 worker stopped before reporting its scaffold keys.",
+    "badapple2_invalid_report": "The Badapple 2 scaffold evidence failed type or attribution validation.",
     "invalid_sygma_manifest": "The SyGMa input manifest could not be read or validated.",
     "invalid_sygma_scenario": "The requested SyGMa phase counts are outside the supported scenario.",
     "ligand_binder_kind_required": "This screen requires a run whose candidate is a small-molecule ligand.",
@@ -351,6 +697,189 @@ _BLOCKERS = {
 #: docs/reference/screen-inputs.md rather than new prose, so the panel and that
 #: reference cannot drift apart.
 _ACTIONS = {
+    "bayesherg_worker_unavailable": "Check the documented BayesHERG Linux runtime and checkpoint.",
+    "cellprofiler_record_invalid": "Regenerate the image comparison from the original fields and masks.",
+    "cellprofiler_manifest_missing": "Supply cellprofiler.json with candidate and control fields and their masks.",
+    "cellprofiler_invalid_manifest": "Check candidate names and comparison records against the manifest format.",
+    "cellprofiler_candidate_not_nominated": "Select the nominated candidate or add its matched image comparison.",
+    "cellprofiler_invalid_pair": "Identify the candidate, specimen, annotated region and controls for this comparison.",
+    "cellprofiler_control_mismatch": "Check roles, specimens, regions and acquisition conditions for both fields.",
+    "cellprofiler_image_conflict": "Verify each source image's specimen and role in the panel.",
+    "cellprofiler_duplicate_pair": "Supply each comparison once and distinguish separately acquired fields.",
+    "cellprofiler_runtime_unavailable": "Configure the pinned CellProfiler runtime on the screening host.",
+    "cellprofiler_measurement_failed": "Check the supplied fields and masks, then rerun the local stain analysis.",
+    "cellprofiler_budget_exceeded": "Select a smaller set of comparisons within the run limits.",
+    "cellprofiler_invalid_image_path": "Use the documented relative filenames for images and masks stored in the run.",
+    "cellprofiler_file_unavailable": "Restore the named regular file and keep it unchanged while scanning.",
+    "cellprofiler_image_budget_exceeded": "Export a smaller field and its corresponding mask at the same scale.",
+    "cellprofiler_image_format": "Supply a readable RGB field in a supported lossless format.",
+    "cellprofiler_mask_format": "Export a nonempty binary mask for the annotated region.",
+    "cellprofiler_grid_mismatch": "Export the image and its mask on the same pixel grid and orientation.",
+    "cellprofiler_image_reader_unavailable": "Install the documented image reader in the screening environment.",
+    "cellprofiler_execution_timeout": "Check field dimensions and runtime availability before repeating the analysis.",
+    "pksim_manifest_missing": "Supply pksim.json with a prepared human model for the nominated compound.",
+    "pksim_invalid_manifest": "Check the manifest fields and identify each candidate and scenario unambiguously.",
+    "pksim_candidate_not_nominated": "Select a nominated candidate or prepare a PK-Sim scenario for this molecule.",
+    "pksim_molecule_mismatch": "Verify the candidate's molecular nomination against the compound in the model.",
+    "pksim_invalid_model": "Supply a readable model file in the documented PK-Sim input format.",
+    "pksim_model_mismatch": "Check the model's identity and digest against the original export for this candidate.",
+    "pksim_model_unregistered": "Register the intended PK-Sim snapshot locally and verify its digest in the manifest.",
+    "pksim_compound_mismatch": "Verify the registered compound name and full InChIKey for this snapshot.",
+    "pksim_budget_exceeded": "Check the documented input and simulation limits and select a bounded case.",
+    "pksim_invalid_export": "Verify the simulation completed and inspect the exported time points and concentrations.",
+    "pksim_output_missing": "Select the full output path in the simulation and match it exactly in the manifest.",
+    "pksim_unsupported_unit": "Use a supported concentration unit for the output and a supported unit for time.",
+    "pksim_runtime_unavailable": "Configure the documented PK-Sim runtime on the screening host.",
+    "pksim_execution_failed": "Reproduce the nominated case in PK-Sim and inspect its configuration.",
+    "pksim_execution_timeout": "Check the model and its time grid before repeating the calculation.",
+    "pksim_unsupported_snapshot": "Export a supported PK-Sim scenario using the documented snapshot format.",
+    "cypstrate_invalid_manifest": "Check the named candidates and fields in cypstrate.json.",
+    "cypstrate_invalid_mode": "Choose best_performance or full_coverage.",
+    "cypstrate_exposure_unspecified": "Set systemic to true or false for the nominated molecules.",
+    "cypstrate_invalid_isoforms": "List each supported CYP isoform once per candidate.",
+    "cypstrate_unsupported_input": "Supply the intended small-molecule form with at most 256 atoms.",
+    "cypstrate_candidate_not_nominated": "Select a named candidate with an isoform hypothesis in cypstrate.json.",
+    "cypstrate_nonsystemic": "Reserve this screen for a documented systemic metabolism question.",
+    "cypstrate_unattributed_result": "Check the nominations and rerun with the pinned CYPstrate image.",
+    "cypstrate_preprocessing_failed": "Review the intended compound and the authors' preprocessing scope.",
+    "cypstrate_invalid_output": "Verify the pinned image and repeat the affected nomination.",
+    "cypstrate_no_consensus": "Keep the abstention when planning follow-up testing for this isoform.",
+    "cypstrate_no_usable_results": "Review the blocker on each requested isoform.",
+    "cypstrate_image_unavailable": "Start the local Docker engine and pull the digest documented for CYPstrate.",
+    "cypstrate_execution_timeout": "Retry with a smaller set of nominations.",
+    "cypstrate_runtime_failed": "Check local Docker availability and the memory allocated to the engine.",
+    "candidate_missing_from_table": "Add the candidate ID and its intended SMILES to ligand_candidates.tsv.",
+    "duplicate_candidate_nomination": "Keep one unambiguous row per candidate ID.",
+    "invalid_molecular_nomination": "Supply one candidate ID and one valid SMILES on the row.",
+    "requires_one_supported_organic_molecule": "Nominate the intended single molecular form of up to 256 atoms.",
+    "candidate_outside_comparison": "Select a member listed in scscore_comparison.json.",
+    "named_candidate_table_required": "Supply ligand_candidates.tsv with candidate_id and smiles columns.",
+    "two_distinct_compounds_required": "Nominate at least two chemically distinct, otherwise comparable candidates.",
+    "no_eligible_nominations": "Review the blocker recorded for each nominated candidate.",
+    "no_valid_scscore_results": "Check the individual candidate blockers and the installed checkpoint.",
+    "invalid_scscore_result": "Verify the pinned model and rerun the comparison.",
+    "scscore_fingerprint_unavailable": "Check the nominated chemical form and the local RDKit installation.",
+    "scscore_provider_unavailable": "Check the local NumPy, RDKit and pinned SCScore installation.",
+    "invalid_scscore_layer_shape": "Restore the released checkpoint with scripts/install_scscore.py.",
+    "scscore_weights_digest_mismatch": "Restore the released checkpoint with scripts/install_scscore.py.",
+    "duplicate_comparison_field": "Keep a single value for each field in scscore_comparison.json.",
+    "invalid_scscore_comparison": "Use the documented candidates list and optional decision_evidence object.",
+    "comparison_requires_two_to_256_candidates": "List the IDs of the candidates in the comparison being decided.",
+    "invalid_or_duplicate_comparison_candidate": "Give each nominated molecule one distinct candidate ID.",
+    "invalid_decision_evidence": "Use the documented route reference, cost reference and resolution fields.",
+    "invalid_decision_evidence_reference": "Use the identifier of the review record or omit an unavailable reference.",
+    "invalid_resolution_declaration": "Set resolves_comparison to true or false without quotes.",
+    "incomplete_route_and_cost_resolution": "Cite both records or leave the decision open.",
+    "spyrmsd_calculation_failed": "Check that the nominated poses describe the same ligand in the declared frame.",
+    "spyrmsd_unavailable": "Check the sPyRMSD installation and its graph backend.",
+    "ames_input_limit_exceeded": "Use a nomination file within the 1 MiB and 256-row limits.",
+    "ames_resource_limit_exceeded": "Check the released classification files and available scratch space.",
+    "unsupported_ames_structure": "Nominate the intended connected, closed-shell organic species explicitly.",
+    "dili_structure_unsupported": "Nominate the intended connected, closed-shell organic molecule.",
+    "dili_inputs_over_limit": "Use a nomination file within the 1 MiB and 256-row limits.",
+    "dili_resources_unavailable": "Verify the installed classification files match the supported release.",
+    "delphi_candidate_id_duplicate": "Keep one explicit VH/VL nomination for each candidate.",
+    "delphi_candidate_id_invalid": "Use the documented candidate identifier format.",
+    "delphi_candidate_not_nominated": "Supply the selected candidate's exact name and paired variable domains.",
+    "delphi_cdr3_unsupported": "Review the full variable domain and the numbered IMGT CDR3 region.",
+    "delphi_chain_roles_invalid": "Check that the heavy variable domain is in VH and the light domain in VL.",
+    "delphi_checkpoint_invalid": "Verify the file against the published release digest before retrying.",
+    "delphi_checkpoint_missing": "Install the documented IPI DELPHI PSR checkpoint in the local data directory.",
+    "delphi_domain_incomplete": "Nominate complete variable domains without constant regions or linkers.",
+    "delphi_domain_length_out_of_range": "Check that the complete variable domains fit the model's length limits.",
+    "delphi_domain_numbering_failed": "Check the submitted domains and the local numbering runtime.",
+    "delphi_domain_numbering_unavailable": "Verify the local CPU ANARCII installation.",
+    "delphi_domain_residues_unsupported": "Provide the actual variable domains with standard amino acids only.",
+    "delphi_domains_required": "Do not substitute a single-domain VHH or an unpaired chain.",
+    "delphi_inference_failed": "Verify the local model and CPU runtime before retrying.",
+    "delphi_no_predictions": "Review the nomination and model blockers shown here.",
+    "delphi_pair_header_invalid": "Use the exact tab-separated DELPHI nomination header.",
+    "delphi_pair_width_invalid": "Supply the candidate ID and both variable domains on the same row.",
+    "delphi_pairs_empty": "Add at least one named pair.",
+    "delphi_pairs_missing": "Supply the documented DELPHI nomination table beside the finished run.",
+    "delphi_pairs_over_limit": "Split the work into files within the documented size and row limits.",
+    "delphi_pairs_unreadable": "Check the encoding and use a readable regular file beside the run.",
+    "delphi_prediction_record_invalid": "Re-screen the nominated antibody pair with the supported DELPHI release.",
+    "delphi_runtime_unavailable": "Check that the local PyTorch CPU runtime and model are compatible.",
+    "delphi_worker_timeout": "Check the local CPU runtime or submit a smaller nominated batch.",
+    "httk_ambiguous_ligand": "Resolve conflicting candidate, ligand, and reference assignments before retrying.",
+    "httk_candidate_not_nominated": "Supply the selected candidate's exact ID and its reviewed CAS and DTXSID pair.",
+    "httk_human_inputs_unavailable": "Keep the result untested. Do not substitute predicted or animal inputs.",
+    "httk_identity_reference_unavailable": "Install or restore the verified EPA DSSTox reference for this release.",
+    "httk_input_over_limit": "Use files and candidate counts within the documented EPA httk limits.",
+    "httk_invalid_draws": "Do not interpret an incomplete set of simulated estimates.",
+    "httk_invalid_ligand": "Check that the named ligand is the intended connected small molecule.",
+    "httk_invalid_manifest": "Check the documented format and exact CAS and DTXSID pair for each nominated candidate.",
+    "httk_legacy_identity_unverified": "Re-screen the original ligand and nomination with the current EPA httk method.",
+    "httk_manifest_missing": "Supply the documented EPA httk nomination file beside the finished run.",
+    "httk_manifest_over_limit": "Use a nomination file within the documented size limit.",
+    "httk_manifest_unreadable": "Use a readable regular nomination file beside the finished run.",
+    "httk_missing_ligand": "Check the candidate name against the run's explicit ligand nominations.",
+    "httk_model_inapplicable": "Use another method suited to the compound or experimental question.",
+    "httk_named_nominations_required": "Supply the run's named ligand table with the documented nomination manifest.",
+    "httk_no_usable_results": "Review the reference-specific blockers before interpreting the run.",
+    "httk_rdkit_unavailable": "Check the documented RDKit installation.",
+    "httk_record_invalid": "Re-screen the original nominations with the supported EPA httk runtime.",
+    "httk_reference_identity_unavailable": "Check the source identifiers against the pinned package's reference data.",
+    "httk_runtime_unavailable": "Install or select the documented local R and httk runtime.",
+    "httk_scenario_unsupported": "Use only the documented fixed oral reference scenario.",
+    "httk_simulation_failed": "Check the nominated reference and local R runtime before retrying.",
+    "httk_structure_mismatch": "Check the ligand structure and stereochemistry against its EPA identifiers.",
+    "httk_structure_unmapped": "Check the CAS and DTXSID against the pinned EPA DSSTox release.",
+    "httk_worker_failed": "Verify the pinned local R and httk runtime before retrying.",
+    "httk_worker_timeout": "Check the local R runtime or select one eligible candidate.",
+    "molprobity_candidate_ambiguous": "Select a finished candidate that has one clearly attributable structure.",
+    "molprobity_candidate_not_found": "Select an existing finalized candidate and its generated structure.",
+    "molprobity_incomplete_heavy_atoms": "Review the supplied heavy-atom coverage before interpreting geometry.",
+    "molprobity_input_over_limit": "Select a finished structure within the documented input limits.",
+    "molprobity_metric_failed": "Check the relevant structure coverage and cctbx installation before retrying.",
+    "molprobity_models_missing": "Use a finished run with an attributable generated structure.",
+    "molprobity_no_eligible_contacts": "Check whether all-atom contacts are measurable in this structure.",
+    "molprobity_no_eligible_residues": "Check whether this model contains assessable backbone or side-chain torsions.",
+    "molprobity_no_measurements": "Review the model and metric blockers. No result is not a zero outlier rate.",
+    "molprobity_provider_failure": "Verify the local cctbx runtime and review the selected geometry input.",
+    "molprobity_record_invalid": "Re-screen the candidate with the supported runtime and original structure.",
+    "molprobity_reference_unavailable": "Check the matching pinned reference data in the trusted cctbx installation.",
+    "molprobity_runtime_unavailable": "Install or select the documented cctbx CPU runtime.",
+    "molprobity_structure_invalid": "Check the format, atom records, and supported model scope.",
+    "molprobity_structure_unreadable": "Check the file or supply the original regular generated structure.",
+    "molprobity_timeout": "Check the local runtime or run the screen for one eligible candidate.",
+    "molprobity_too_many_models": "Select one named candidate or a small set of finalized models.",
+    "molprobity_unsupported_model": "Review the documented supported composition and model scope.",
+    "molprobity_zstd_unavailable": "Use the documented Zstandard reader or the original uncompressed structure.",
+    "peptide_rbc_candidate_not_nominated": "Supply the selected candidate's exact ID and its matching lab evidence.",
+    "peptide_rbc_candidate_unknown": "Check the observation against the finished run's candidate inventory.",
+    "peptide_rbc_candidates_unavailable": "Use a finished peptide run with an attributable design inventory.",
+    "peptide_rbc_controls_failed": "Keep the failed result separate. Ask the lab for a qualified report.",
+    "peptide_rbc_controls_invalid": "Use the lab's documented status in the supported format.",
+    "peptide_rbc_controls_unreported": "Obtain the lab's documented positive and negative control assessment.",
+    "peptide_rbc_duplicate_observation": "Give each distinct observation its own ID for that candidate.",
+    "peptide_rbc_empty": "Supply at least one lab observation with its conditions and attribution.",
+    "peptide_rbc_exposure_invalid": "Use the concentration and duration recorded by the lab.",
+    "peptide_rbc_header_invalid": "Use the exact tab-separated header from the screen reference.",
+    "peptide_rbc_identifier_invalid": "Use opaque IDs for the candidate, observation, formulation, source and context.",
+    "peptide_rbc_matrix_unsupported": "Keep washed-cell and whole-blood evidence distinct.",
+    "peptide_rbc_missing": "Place the documented evidence table beside the finished run.",
+    "peptide_rbc_no_qualified_observations": "Review the row-specific blockers before drawing any conclusion.",
+    "peptide_rbc_over_limit": "Use a file within the documented size and row limits.",
+    "peptide_rbc_readout_invalid": "Use the reported exact percent. Do not convert an inequality or fill in a blank.",
+    "peptide_rbc_record_invalid": "Review the source and re-screen the supplied lab record.",
+    "peptide_rbc_row_width_invalid": "Supply one field per column without extra tab delimiters.",
+    "peptide_rbc_species_unsupported": "Keep the lab's stated species. Do not relabel animal evidence as human.",
+    "peptide_rbc_unit_unsupported": "Use the documented original unit without inferring a conversion.",
+    "peptide_rbc_unreadable": "Check the encoding and use a readable regular file beside the run.",
+    "microsomal_clearance_input_limit_exceeded": "Use a nomination file within the 1 MiB and 256-row limits.",
+    "microsomal_clearance_resource_limit_exceeded": "Check the released regression files and available scratch space.",
+    "unsupported_microsomal_clearance_structure": "Nominate the intended connected, closed-shell organic molecule.",
+    "unsupported_caco2_structure": "Nominate the intended connected, closed-shell organic molecule.",
+    "caco2_input_limit_exceeded": "Use a nomination file within the 1 MiB and 256-row limits.",
+    "caco2_checkpoint_missing": "Ask the administrator to install the published v1 checkpoint.",
+    "caco2_checkpoint_invalid": "Verify the published checkpoint against the documented SHA-256.",
+    "caco2_runtime_unavailable": "Check the installed ligand-safety environment and checkpoint-read support.",
+    "caco2_output_contract_mismatch": "Check the checkpoint and runtime versions before retrying.",
+    "provider_dependency_unavailable": "Check the installed predictor environment and its required dependencies.",
+    "missing_provider_row": "Review the nomination and rerun the selected prediction if it is in scope.",
+    "duplicate_provider_row": "Check the saved result for inconsistent compound identifiers and rerun the prediction.",
     "duplicate_candidate_id": "Give each candidate row a unique identifier and run the screen again.",
     "foldseek_result_invalid": "Check the alignment table against the requested Foldseek output columns.",
     "independently_prepared_subsystems": "Check the preparation provenance before interpreting energy differences.",
@@ -829,6 +1358,36 @@ def _summary(screen: Mapping[str, object], prefix: str) -> str:
         *_row_blocker_lines(screen.get("samples")),
     ]
     checks.extend(_solubility_lines(_dict(screen.get("solubility"))))
+    checks.extend(_ames_lines(_dict(screen.get("ligand_ames"))))
+    checks.extend(_dili_lines(_dict(screen.get("ligand_dili"))))
+    checks.extend(_microsomal_clearance_lines(_dict(screen.get("ligand_microsomal_clearance"))))
+    checks.extend(_caco2_lines(_dict(screen.get("ligand_caco2"))))
+    prepared = _dict(_dict(screen.get("method_selection")).get("prepared_measurements"))
+    if "epa_httk" in prepared:
+        checks.extend(_httk_lines(prepared["epa_httk"]))
+    if "dimorphite_dl" in prepared:
+        checks.extend(_dimorphite_lines(prepared["dimorphite_dl"]))
+    if "p2rank" in prepared:
+        checks.extend(_p2rank_lines(prepared["p2rank"]))
+    if "propka" in prepared:
+        checks.extend(_propka_lines(prepared["propka"]))
+    if "crest" in prepared:
+        checks.extend(_crest_lines(prepared["crest"]))
+    if "openantigens" in prepared:
+        checks.extend(_openantigens_lines(prepared["openantigens"]))
+    if "metfrag" in prepared:
+        checks.extend(_metfrag_lines(prepared["metfrag"]))
+    if "fastsolv" in prepared:
+        checks.extend(_fastsolv_lines(prepared["fastsolv"]))
+    if "jazzy" in prepared:
+        checks.extend(_jazzy_lines(prepared["jazzy"]))
+    if "espsim" in prepared:
+        checks.extend(_espsim_lines(prepared["espsim"]))
+    if "badapple2" in prepared:
+        checks.extend(_badapple2_lines(prepared["badapple2"]))
+    checks.extend(_delphi_lines(_dict(screen.get("delphi_psr"))))
+    checks.extend(_peptide_rbc_lines(_dict(screen.get("peptide_rbc_evidence"))))
+    checks.extend(_molprobity_lines(_dict(screen.get("molprobity_geometry"))))
     checks.extend(_diversity_lines(_dict(screen.get("design_diversity"))))
     listed = "".join(f"<li>{_esc(row)}</li>" for row in checks if row)
     if listed:
@@ -884,6 +1443,433 @@ def _solubility_lines(record: Mapping[str, object]) -> list[str]:
     if isinstance(dropped, int) and not isinstance(dropped, bool) and dropped:
         found.append(f"{dropped} solubility row(s) named no method or no study and were not read.")
     found.extend(_blocker_lines(record.get("solubility_blocker")))
+    return found
+
+
+def _ames_lines(record: Mapping[str, object]) -> list[str]:
+    """Show coverage, not a mutagenicity verdict or a cut on the predictor."""
+    return _admet_lines(
+        _ames_view(record) if record else {}, label="ADMET-AI Ames",
+        score_key="predicted_ames_probability", score_label="Predicted Ames-positive probability",
+        advisory="A model prediction for assay planning. It does not establish an experimental result or a pass.",
+    )
+
+
+def _dili_lines(record: Mapping[str, object]) -> list[str]:
+    """Show evidence for follow-up, not a prediction of patient risk."""
+    return _admet_lines(
+        _dili_view(record) if record else {}, label="ADMET-AI drug-induced liver injury",
+        score_key="predicted_dili_probability", score_label="Predicted DILI-positive model probability",
+        advisory="An advisory model score for the TDC DILI label. It does not establish patient risk, severity, "
+                 "or safety. No pass cutoff applies.",
+    )
+
+
+def _delphi_lines(raw: Mapping[str, object]) -> list[str]:
+    """Summarize advisory PSR model scores without echoing antibody sequences or introducing a threshold."""
+    if not raw:
+        return []
+    record = _delphi_view(raw)
+    pairs = record.get("pairs", [])
+    top_blocker = record.get("blocker")
+    reasons = dict.fromkeys(row["blocker"] for row in pairs if row.get("blocker") and row["blocker"] != top_blocker)
+    explanations = [line for reason in reasons for line in _blocker_lines(reason)]
+    label = "DELPHI PSR polyreactivity"
+    if record["status"] == "untested":
+        return [f"{label} prediction untested.", *_blocker_lines(top_blocker), *explanations]
+    found = [f"{label} model scores for {record['predicted']} of {record['attempted']} nominated VH/VL pairs."]
+    if record["status"] == "partial":
+        found.extend(["Some nominations could not be scored.", *explanations])
+    if len(pairs) == 1:
+        score = pairs[0].get("predicted_psr_pass_probability")
+        if type(score) in (int, float):
+            found.append(f"Predicted PSR-filter pass probability {score:.6g}.")
+    found.append("Higher model scores indicate lower predicted polyreactivity. No experimental result or pass cutoff "
+                 "is implied.")
+    return found
+
+
+def _peptide_rbc_lines(raw: Mapping[str, object]) -> list[str]:
+    """Display supplied assay observations in their original order, never as a rank or verdict."""
+    if not raw:
+        return []
+    record = _peptide_rbc_view(raw)
+    rows = record.get("observations", [])
+    top_blocker = record.get("blocker")
+    reasons = dict.fromkeys(row["blocker"] for row in rows if row.get("blocker") and row["blocker"] != top_blocker)
+    explanations = [line for reason in reasons for line in _blocker_lines(reason)]
+    if record["status"] == "untested":
+        return ["Peptide red-cell compatibility evidence untested.", *_blocker_lines(top_blocker), *explanations]
+
+    reported, human = record["reported"], record["human_reported"]
+    found = [
+        f"Peptide red-cell compatibility evidence for {reported} of {record['attempted']} supplied observations. "
+        f"Human observations {human}. Non-human observations {reported - human}.",
+    ]
+    matrix_labels = {"washed_rbc": "washed red cells", "whole_blood": "whole blood"}
+    measurements = [row for row in rows if row["status"] == "reported"]
+    for row in measurements[:8]:
+        value, concentration, duration = (
+            str(row[field]).removesuffix(".0") for field in ("hemolysis_percent", "concentration", "exposure_minutes")
+        )
+        found.append(
+            f"{row['candidate_id']} / {row['observation_id']} ({row['species']}, {matrix_labels[row['matrix']]}) "
+            f"reported {value}% hemolysis at {concentration} {row['concentration_unit']} over {duration} minutes. "
+            f"Formulation {row['formulation_id']}, source {row['source_id']}, assay context {row['context_id']}."
+        )
+    if len(measurements) > 8:
+        found.append("Only the first eight reported observations are shown here. The record contains the rest.")
+    if record["status"] == "partial":
+        found.extend(["Some observations could not be reviewed.", *explanations])
+    found.append("Observations stay separate by species and assay conditions. The report does not establish safety.")
+    return found
+
+
+def _molprobity_lines(raw: Mapping[str, object]) -> list[str]:
+    """Show whole-model geometry without pooling its unlike endpoints."""
+    if not raw:
+        return []
+    record = _molprobity_view(raw)
+    rows = record.get("samples", [])
+    top_blocker = record.get("blocker")
+    if record["status"] == "untested":
+        found = ["MolProbity whole-model geometry untested.", *_blocker_lines(top_blocker)]
+    else:
+        found = [
+            f"MolProbity whole-model geometry for {record['reported']} of {record['attempted']} selected models. "
+            f"All three checks were available for {record['complete']}.",
+        ]
+    names = {"ramachandran": "Ramachandran", "rotamers": "Side-chain rotamer", "clashscore": "Clashscore"}
+    for row in rows:
+        candidate = row["candidate_id"] or "Unattributed candidate"
+        metrics = row.get("metrics", {})
+        if not metrics and row.get("blocker"):
+            found.extend([f"{candidate} geometry untested.", *_blocker_lines(row["blocker"])])
+        for key, label in names.items():
+            values = metrics.get(key)
+            if not values:
+                continue
+            if values["status"] == "untested":
+                found.extend([f"{candidate} / {label} untested.", *_blocker_lines(values["blocker"])])
+                continue
+            if key == "clashscore":
+                found.append(
+                    f"{candidate} / Clashscore {values['clashes_per_1000_atoms']:.6g} serious clashes per 1,000 atoms "
+                    f"({values['serious_clashes']} clashes, {values['atoms']} eligible atoms, Reduce2 and Probe2)."
+                )
+            else:
+                found.append(
+                    f"{candidate} / {label} outliers {values['outliers']} of {values['evaluated']} evaluated residues "
+                    f"({values['outlier_percent']:.6g}%)."
+                )
+    found.append("These geometry checks do not establish binding affinity, experimental accuracy, or a verdict.")
+    return found
+
+
+def _microsomal_clearance_lines(record: Mapping[str, object]) -> list[str]:
+    """Show the native microsomal prediction, not a clearance or half-life verdict."""
+    return _admet_lines(
+        _microsomal_clearance_view(record) if record else {}, label="ADMET-AI human liver microsomal clearance",
+        score_key="predicted_clint_ul_min_mg", score_label="Predicted microsomal intrinsic clearance",
+        unit="uL/min/mg microsomal protein",
+        advisory="A model prediction for assay planning. It does not establish systemic clearance or half-life.",
+    )
+
+
+def _badapple2_lines(raw: object) -> list[str]:
+    from rfproteina.disease.badapple2 import report_view
+
+    report = report_view(raw)
+    if not report["molecules"]:
+        return ["Badapple 2 assay evidence untested.", *_blocker_lines(report.get("blocker"))]
+    lines = [f"Badapple 2 historical scaffold assay evidence, snapshot {report['snapshot']}."]
+    for molecule in report["molecules"]:
+        name = molecule["candidate_id"] or "Unattributed candidate"
+        rows = molecule["scaffolds"]
+        scored = [row for row in rows if row["status"] == "reported"]
+        lines.append(f"{name} / {len(scored)} of {len(rows)} generated scaffolds have a published pScore.")
+        for row in scored[:3]:
+            lines.append(f"Scaffold {row['id']} / pScore {row['pscore']:.6g}, {row['nass_tested']} assays tested.")
+        if molecule["status"] == "untested":
+            lines.extend(_blocker_lines(molecule.get("blocker")))
+    return lines
+
+
+def _espsim_lines(raw: object) -> list[str]:
+    from rfproteina.disease.espsim import report_view
+
+    report = report_view(raw)
+    if report["status"] == "untested":
+        return ["ESP-Sim pose similarity untested.", *_blocker_lines(report.get("blocker"))]
+    lines = [f"ESP-Sim shape Tanimoto is {report['shape_tanimoto']:.3g} on the submitted pose pair."]
+    if "electrostatic_carbo" in report:
+        lines.append(f"The signed electrostatic Carbo similarity is {report['electrostatic_carbo']:.3g}.")
+    else:
+        lines.extend(_blocker_lines(report.get("blocker")))
+    return lines
+
+
+def _jazzy_lines(raw: object) -> list[str]:
+    from rfproteina.disease.jazzy import report_view
+
+    report = report_view(raw)
+    if report["status"] == "untested":
+        return ["Jazzy hydration predictions untested.", *_blocker_lines(report.get("blocker"))]
+    rows = [row for row in report["candidates"] if row["status"] == "predicted"]
+    lines = [f"Jazzy estimated hydration free energy for {len(rows)} of {len(report['candidates'])} nominations."]
+    for row in rows[:3]:
+        lines.append(
+            f"{row['candidate_id']} has a predicted hydration free energy of {row['hydration_kj_mol']:.3g} kJ/mol."
+        )
+    return lines
+
+
+def _fastsolv_lines(raw: object) -> list[str]:
+    from rfproteina.disease.fastsolv import report_view
+
+    report = report_view(raw)
+    if report["status"] == "untested":
+        return ["fastsolv organic-solvent predictions untested.", *_blocker_lines(report.get("blocker"))]
+    supported = [row for row in report["candidates"] if row["status"] == "predicted"]
+    count = sum(len(row["predictions"]) for row in supported)
+    lines = [f"fastsolv produced {count} organic-solvent predictions for {len(supported)} candidates."]
+    if report["status"] == "partial":
+        lines.append("Some nominated compounds were outside the supported fastsolv chemistry scope.")
+    for row in supported[:2]:
+        for prediction in row["predictions"][:2]:
+            solvent = prediction["solvent"].replace("_", " ")
+            lines.append(
+                f"For {row['candidate_id']} in {solvent} at {prediction['temperature_k']:g} K, predicted log10 mol/L is "
+                f"{prediction['log_s']:.3g} with four-model SD {prediction['ensemble_sd']:.3g}."
+            )
+    return lines
+
+
+def _metfrag_lines(raw: object) -> list[str]:
+    from rfproteina.disease.metfrag import report_view
+
+    report = report_view(raw)
+    if report["status"] == "untested":
+        return ["MetFrag MS/MS fragment evidence untested.", *_blocker_lines(report.get("blocker"))]
+    rows = report["candidates"]
+    matched = [row for row in rows if row["status"] == "scored"]
+    noun = "candidate" if len(rows) == 1 else "candidates"
+    lines = [f"MetFrag found fragment matches for {len(matched)} of {len(rows)} nominated {noun}."]
+    comparison = report["comparison"]
+    structures = comparison["distinct_structures"]
+    tested = comparison["tested_nominations"]
+    if structures == 1:
+        lines.append("Only one distinct molecular structure was tested.")
+    elif structures < tested:
+        lines.append(f"The {tested} tested nominations represent {structures} distinct molecular structures.")
+    if matched:
+        tied = comparison["top_scoring_structures"]
+        if tied == 1:
+            row = max(matched, key=lambda item: item["fragmenter_score"])
+            lines.append(f"The top raw score explained {row['explained_peaks']} of {row['used_peaks']} product peaks.")
+        else:
+            lines.append(f"{tied} distinct structures share the top raw FragmenterScore.")
+    untested = sum(row["status"] == "untested" for row in rows)
+    if untested == 1:
+        lines.append("One candidate was outside the supported precursor or chemistry scope.")
+    elif untested:
+        lines.append(f"{untested} candidates were outside the supported precursor or chemistry scope.")
+    return lines
+
+
+def _openantigens_lines(raw: object) -> list[str]:
+    from rfproteina.disease.openantigens import report_view
+
+    report = report_view(raw)
+    if report["status"] == "untested":
+        return ["OpenAntigens human target context untested.", *_blocker_lines(report.get("blocker"))]
+    target = report["target"]
+    name = f"{report['target_accession']} ({target['entry_name']})"
+    lines = [f"OpenAntigens classifies {name} as {target['topology']}, in snapshot {report['release']}."]
+    references = [label for key, label in (
+        ("has_pdb", "PDB evidence"), ("has_alphafold_structure", "AlphaFold model"),
+        ("has_interpro", "InterPro annotation"), ("has_family_context", "family context"),
+    ) if target[key]]
+    if references:
+        lines.append(f"The index records {', '.join(references)} for this target.")
+    if target["has_assembly_requirements"]:
+        lines.append("The index flags assembly requirements for experimental review.")
+    return lines
+
+
+def _crest_lines(raw: object) -> list[str]:
+    from rfproteina.disease.crest import report_view
+
+    report = report_view(raw)
+    if report["status"] == "untested":
+        return ["CREST conformer sampling untested.", *_blocker_lines(report.get("blocker"))]
+    rows = report["conformers"]
+    lines = [f"CREST retained {len(rows)} conformers from the gas-phase GFN2-xTB search."]
+    if len(rows) > 1:
+        lines.append(f"Their relative energies span 0 to {rows[-1]['relative_energy_kcal_mol']:.2f} kcal/mol.")
+    if report["rejected_conformers"]:
+        lines.append(f"{report['rejected_conformers']} conformers failed connectivity or stereochemistry validation.")
+    if report["omitted_conformers"]:
+        lines.append(f"The output limit omitted {report['omitted_conformers']} higher-energy conformers.")
+    return lines
+
+
+def _propka_lines(raw: object) -> list[str]:
+    from rfproteina.disease.propka import report_view
+
+    report = report_view(raw)
+    if report["status"] == "untested":
+        return ["PROPKA group pKa untested.", *_blocker_lines(report.get("blocker"))]
+    groups = [row for row in report["groups"] if row["pka"] is not None]
+    lines = [f"PROPKA estimated pKa for {len(groups)} of {len(report['groups'])} reported groups."]
+    if report.get("incomplete_input"):
+        lines.append("The input has incomplete terminal or interaction-atom coverage.")
+    if "assay_ph" in report:
+        lines.append(f"The nominated assay pH is {report['assay_ph']:g}.")
+    for row in groups[:3]:
+        chain = f"chain {row['chain']} " if row["chain"] else ""
+        coupling = " (coupled)" if row["coupled"] else ""
+        lines.append(
+            f"{chain}{row['residue_name']} {row['residue_number']} {row['atom_name']} has an estimated pKa "
+            f"of {row['pka']:.2f} and a model-compound pKa of {row['model_pka']:.2f}{coupling}."
+        )
+    return lines
+
+
+def _p2rank_lines(raw: object) -> list[str]:
+    from rfproteina.disease.p2rank import report_view
+
+    report = report_view(raw)
+    if report["status"] == "untested":
+        return ["P2Rank receptor pocket prediction untested.", *_blocker_lines(report.get("blocker"))]
+    pockets = report["pockets"]
+    lines = [f"P2Rank reported {len(pockets)} receptor pockets with the {report['profile']} profile."]
+    for pocket in pockets[:3]:
+        center = ", ".join(f"{value:.3f}" for value in pocket["center_angstrom"])
+        lines.append(
+            f"Pocket {pocket['rank']} / score {pocket['score']:.3g}, "
+            f"model probability {pocket['probability']:.3g}, center ({center}) Å."
+        )
+    return lines
+
+
+def _dimorphite_lines(raw: object) -> list[str]:
+    from rfproteina.disease.dimorphite import report_view
+
+    report = report_view(raw)
+    if not report["molecules"]:
+        return ["Dimorphite-DL untested.", *_blocker_lines(report.get("blocker"))]
+    rows = [f"Dimorphite-DL ligand protonation review at pH {report['ph_min']:g}–{report['ph_max']:g}."]
+    for molecule in report["molecules"]:
+        name = molecule["candidate_id"] or "Unattributed candidate"
+        if molecule["status"] == "complete":
+            count = len(molecule["states"])
+            charges = sorted({state["formal_charge"] for state in molecule["states"]})
+            labels = ", ".join(f"{charge:+d}" if charge else "0" for charge in charges)
+            rows.append(f"{name} / {count} candidate protonation state(s), formal charges {labels}.")
+        else:
+            rows.extend([f"{name} / Dimorphite-DL untested.", *_blocker_lines(molecule["blocker"])])
+    return rows
+
+
+def _httk_lines(raw: object) -> list[str]:
+    """Display adult-population variability without a threshold or clinical interpretation."""
+    record = _httk_view(raw)
+    if record["status"] == "untested":
+        found = ["EPA httk population exposure untested.", *_blocker_lines(record.get("blocker"))]
+    else:
+        found = [f"EPA httk estimated total plasma steady-state concentration for "
+                 f"{record['reported']} of {record['attempted']} nominated candidates."]
+    for row in record.get("members", []):
+        candidate = row["candidate_id"] or "Unattributed candidate"
+        if row["status"] == "untested":
+            found.extend([f"{candidate} / EPA httk untested.", *_blocker_lines(row["blocker"])])
+        else:
+            found.append(
+                f"{candidate} / 5th percentile {row['p05']:.6g}, median {row['median']:.6g}, "
+                f"95th percentile {row['p95']:.6g} mg/L."
+            )
+            assays = row["human_in_vitro"]
+            found.append(
+                f"Human hepatocyte intrinsic clearance {assays['clint_ul_min_per_million_hepatocytes']:.6g} "
+                f"µL/min/10⁶ cells ({assays['clint_reference']}). Fraction unbound in human plasma "
+                f"{assays['fraction_unbound_plasma']:.6g} ({assays['fraction_unbound_plasma_reference']})."
+            )
+    if record["status"] != "untested":
+        found.append(
+            "These percentiles model adult population variability at a fixed oral reference intake of 1 mg/kg/day. "
+            f"The screen matched each reported ligand structure to its CAS and DTXSID in "
+            f"{record['provider']['identity_source']}. Clinical exposure and safety require separate evidence."
+        )
+    return found
+
+
+def _caco2_lines(raw: Mapping[str, object]) -> list[str]:
+    """Read both Caco-2 heads separately, on their native model scale."""
+    if not raw:
+        return []
+    record = _caco2_view(raw)
+    inputs, compounds = record["inputs"], record["compounds"]
+    top_blocker = record.get("blocker")
+    heads = ("efflux_ratio", "apparent_permeability")
+    compound_heads = [head for compound in compounds for head in compound["heads"].values()]
+    reasons = dict.fromkeys(
+        row["blocker"] for row in [*inputs, *compound_heads]
+        if row.get("blocker") and row["blocker"] != top_blocker
+    )
+    explanations = [line for reason in reasons for line in _blocker_lines(reason)]
+    if record["status"] == "untested":
+        return ["AstraZeneca Caco-2 prediction untested.", *_blocker_lines(top_blocker), *explanations]
+
+    scored, complete, total = (record[key] for key in ("unique_predicted", "unique_complete", "unique_compounds"))
+    found = [f"AstraZeneca Caco-2 GNN-MTL returned at least one native model score for {scored} of {total} "
+             f"distinct nominated compounds. Both scores were available for {complete} of {total}."]
+    if record["status"] == "partial":
+        found.extend(["Some nominations or model heads were not evaluated.", *explanations])
+    if len(compounds) == 1:
+        for name, label in zip(heads, ("Efflux ratio", "Apparent permeability"), strict=True):
+            head = compounds[0]["heads"][name]
+            if head["status"] == "predicted":
+                found.append(f"{label} native model score {head['model_score']:.6g}.")
+    found.append("These scores have no physical units or pass cutoff. They do not establish a transporter or oral "
+                 "bioavailability.")
+    return found
+
+
+def _admet_lines(
+    record: Mapping[str, object], *, label: str, score_key: str, score_label: str, advisory: str, unit: str = "",
+) -> list[str]:
+    """Summarize a projected candidate report without adding a gate or exposing structures."""
+    top_blocker = record.get("blocker")
+    reasons: dict[str, None] = {}
+    for key in ("inputs", "compounds"):
+        rows = record.get(key)
+        if isinstance(rows, list):
+            for row in rows:
+                reason = row.get("blocker")
+                if isinstance(reason, str) and reason != top_blocker:
+                    reasons[reason] = None
+    explanations = [line for reason in reasons for line in _blocker_lines(reason)]
+    status = record.get("status")
+    if status == "untested":
+        return [f"{label} prediction untested.", *_blocker_lines(top_blocker), *explanations]
+    predicted, nominated = record.get("unique_predicted"), record.get("unique_compounds")
+    if not (type(predicted) is int and type(nominated) is int and 0 < predicted <= nominated):
+        return []
+    if status not in ("predicted", "partial"):
+        return []
+    coverage = f"{label} predictions for {predicted} of {nominated} distinct nominated compounds."
+    found = [coverage]
+    if status == "partial":
+        found.append("Some nominations or compounds were not evaluated.")
+        found.extend(explanations)
+    compounds = record.get("compounds")
+    if nominated == 1 and isinstance(compounds, list) and len(compounds) == 1 and isinstance(compounds[0], Mapping):
+        value = compounds[0].get(score_key)
+        if type(value) in {int, float}:
+            suffix = f" {unit}" if unit else ""
+            found.append(f"{score_label} {value:.6g}{suffix}.")
+    found.append(advisory)
     return found
 
 

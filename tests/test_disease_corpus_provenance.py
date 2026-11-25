@@ -31,20 +31,42 @@ def _slugs_the_package_names() -> set[str]:
     declaring its corpus fails this test instead of passing silently.
     """
     from rfproteina.disease import (
+        badapple2,
+        crest,
+        espsim,
+        fastsolv,
+        jazzy,
+        cellprofiler_stain,
         class_ii,
+        cypstrate,
         deepsp,
         deepviscosity,
+        delphi_psr,
         developability,
+        httk,
         humanness,
+        ligand_ames,
+        ligand_caco2,
+        ligand_dili,
         ligand_metabolites,
+        ligand_microsomal_clearance,
         ligand_regressor,
         ligand_safety,
         ligand_solubility,
         mhc_tables,
+        molprobity_geometry,
         octant,
+        p2rank,
+        openantigens,
+        metfrag,
+        propka,
+        peptide_rbc,
+        pksim,
         prodigy,
         qupkake,
+        scscore,
         solubility,
+        spyrmsd_pose,
         stability,
         tnp,
         vina_pose,
@@ -61,10 +83,25 @@ def _slugs_the_package_names() -> set[str]:
     }
 
     return {
+        badapple2.METHOD,
+        crest.METHOD,
+        espsim.METHOD,
+        fastsolv.METHOD,
+        jazzy.METHOD,
+        cellprofiler_stain.METHOD_ID,
         prodigy.METHOD,
+        peptide_rbc.METHOD,
+        pksim.METHOD_ID,
+        *p2rank.MODELS.values(),
+        openantigens.METHOD,
+        metfrag.METHOD,
+        propka.METHOD,
         qupkake.METHOD,
         ligand_metabolites.METHOD,
         vina_pose.METHOD,
+        spyrmsd_pose.METHOD,
+        scscore.METHOD,
+        *cypstrate.MODES.values(),
         tnp.METHOD,
         solubility.PROTEIN_SOL_METHOD,
         ligand_safety.BAYESHERG_METHOD,
@@ -74,13 +111,20 @@ def _slugs_the_package_names() -> set[str]:
         developability.DEEPSP_READER_METHOD,
         developability.NUMBERING_METHOD,
         deepsp.DEEPSP_METHOD,
+        delphi_psr.METHOD,
         deepviscosity.VISCOSITY_METHOD,
         ligand_safety.ADMET_AI_METHOD,
+        ligand_ames.METHOD,
+        ligand_caco2.METHOD,
+        ligand_dili.METHOD,
+        ligand_microsomal_clearance.METHOD,
         ligand_solubility.METHOD,
         ligand_regressor.METHOD_FOREST,
         ligand_regressor.METHOD_CHEMPROP,
         class_ii.CLASS_II_METHOD,
         mhc_tables.METHOD,
+        molprobity_geometry.METHOD,
+        httk.METHOD,
         stability.METHOD,
         octant.OCTANT_METHOD,
         humanness.OASIS_METHOD,
@@ -122,6 +166,13 @@ def test_every_kind_is_in_the_closed_vocabulary():
     assert set(cp.OVERLAP_CAVEAT) == cp.OVERLAP_KINDS
     for found in cp.TRAINED_ON.values():
         assert found.unaligned_kind in cp.OVERLAP_KINDS
+
+
+def test_delphi_psr_names_only_the_private_ipi_training_set():
+    model = "ipi_delphi_onehot_psr_v4"
+    assert cp.trained_on(model).corpora == ("IPI-DELPHI-PSR",)
+    assert cp.overlap_with(model, "psr_filter") == cp.BENCHMARK_LABEL_CORPUS
+    assert cp.overlap_with(model, "PR_CHO") == cp.PRIVATE_CORPUS_OVERLAP_UNKNOWN
 
 
 def test_the_gdpa1_labels_are_read_from_the_vendored_tree_not_asserted_here():

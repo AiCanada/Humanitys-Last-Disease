@@ -117,6 +117,133 @@ def _sygma(args: argparse.Namespace) -> int:
     return 0 if result["status"] == "complete" else 2
 
 
+def _cellprofiler(args: argparse.Namespace) -> int:
+    from rfproteina.disease.cellprofiler_stain import measure
+
+    result = measure(args.directory, args.candidate)
+    _print(result)
+    return 0 if result["status"] == "reported" else 2
+
+
+def _pksim(args: argparse.Namespace) -> int:
+    from rfproteina.disease.pksim import measure
+
+    result = measure(args.directory, args.candidate)
+    _print(result)
+    return 0 if result["status"] == "simulated" else 2
+
+
+def _httk(args: argparse.Namespace) -> int:
+    from rfproteina.disease.httk import measure
+
+    result = measure(args.directory, args.candidate)
+    _print(result)
+    return 0 if result["status"] == "reported" else 2
+
+
+def _immuscope_study(_args: argparse.Namespace) -> int:
+    from rfproteina.disease.immuscope_study import published_study
+
+    return _print(published_study())
+
+
+def _cypstrate(args: argparse.Namespace) -> int:
+    from rfproteina.disease.cypstrate import measure
+
+    result = measure(args.directory, args.candidate)
+    _print(result)
+    complete = result["attempted"] > 0 and result["classified"] + result["abstained"] == result["attempted"]
+    return 0 if complete or result["status"] == "skipped" else 2
+
+
+def _badapple2(args: argparse.Namespace) -> int:
+    from rfproteina.disease.badapple2 import screen_run
+
+    result = screen_run(args.directory, args.candidate)
+    _print(result)
+    return 0 if result["status"] == "complete" else 2
+
+
+def _espsim(args: argparse.Namespace) -> int:
+    from rfproteina.disease.espsim import screen_run
+
+    result = screen_run(args.directory, args.candidate)
+    _print(result)
+    return 0 if result["status"] == "complete" else 2
+
+
+def _jazzy(args: argparse.Namespace) -> int:
+    from rfproteina.disease.jazzy import screen_run
+
+    result = screen_run(args.directory, args.candidate)
+    _print(result)
+    return 0 if result["status"] == "complete" else 2
+
+
+def _fastsolv(args: argparse.Namespace) -> int:
+    from rfproteina.disease.fastsolv import screen_run
+
+    result = screen_run(args.directory, args.candidate)
+    _print(result)
+    return 0 if result["status"] == "complete" else 2
+
+
+def _metfrag(args: argparse.Namespace) -> int:
+    from rfproteina.disease.metfrag import screen_run
+
+    result = screen_run(args.directory, args.candidate)
+    _print(result)
+    return 0 if result["status"] == "complete" else 2
+
+
+def _openantigens(args: argparse.Namespace) -> int:
+    from rfproteina.disease.openantigens import screen_run
+
+    result = screen_run(args.directory)
+    _print(result)
+    return 0 if result["status"] == "reported" else 2
+
+
+def _crest(args: argparse.Namespace) -> int:
+    from rfproteina.disease.crest import screen_run
+
+    result = screen_run(args.directory, args.candidate)
+    _print(result)
+    return 0 if result["status"] == "complete" else 2
+
+
+def _propka(args: argparse.Namespace) -> int:
+    from rfproteina.disease.propka import screen_run
+
+    result = screen_run(args.directory, args.candidate)
+    _print(result)
+    return 0 if result["status"] == "complete" else 2
+
+
+def _p2rank(args: argparse.Namespace) -> int:
+    from rfproteina.disease.p2rank import screen_run
+
+    result = screen_run(args.directory)
+    _print(result)
+    return 0 if result["status"] == "complete" else 2
+
+
+def _dimorphite(args: argparse.Namespace) -> int:
+    from rfproteina.disease.dimorphite import screen_run
+
+    result = screen_run(args.directory, args.candidate)
+    _print(result)
+    return 0 if result["status"] == "complete" else 2
+
+
+def _scscore(args: argparse.Namespace) -> int:
+    from rfproteina.disease.scscore import measure
+
+    result = measure(args.directory, args.candidate)
+    _print(result)
+    return 0 if result["status"] in {"scored", "skipped"} else 2
+
+
 def _mhc_windows(args: argparse.Namespace) -> int:
     widths = tuple(int(value) for value in args.widths.split(",")) if args.widths else mhc_tables.CLASS_I_WIDTHS
     found = mhc_tables.windows(args.sequence, widths)
@@ -158,6 +285,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
+    study = sub.add_parser("immuscope-study", help="show the three published ImmuScope cohort benchmarks")
+    study.set_defaults(run=_immuscope_study)
+
     tnp = sub.add_parser("tnp", help="profile a finished, explicitly identified single-domain VHH with local TNP")
     tnp.add_argument("structure", type=Path, help="finished mmCIF, optionally gzip or zstd compressed")
     tnp.add_argument("--chain", required=True, help="exact mmCIF label_asym_id of the isolated VHH domain")
@@ -183,6 +313,73 @@ def main(argv: list[str] | None = None) -> int:
     two = sub.add_parser("ligand", help="RDKit PAINS, BRENK and NIH alerts plus drug-likeness")
     two.add_argument("smiles")
     two.set_defaults(run=_ligand)
+
+    protonation = sub.add_parser("dimorphite", help="enumerate nominated ligand protonation states at a declared pH")
+    protonation.add_argument("directory", type=Path, help="run directory with dimorphite.json and ligand input")
+    protonation.add_argument("--candidate", help="report only this named nomination in ligand_candidates.tsv")
+    protonation.set_defaults(run=_dimorphite)
+
+    pockets = sub.add_parser("p2rank", help="rank binding pockets on an explicitly nominated protein receptor")
+    pockets.add_argument("directory", type=Path, help="run directory with p2rank.json and the nominated receptor")
+    pockets.set_defaults(run=_p2rank)
+    pka = sub.add_parser("propka", help="estimate ionizable group pKa on a nominated structure")
+    pka.add_argument("directory", type=Path, help="run directory with propka.json and the nominated PDB")
+    pka.add_argument("--candidate", help="require the manifest to name this candidate")
+    pka.set_defaults(run=_propka)
+    conformers = sub.add_parser("crest", help="sample conformers of a nominated 3D ligand")
+    conformers.add_argument("directory", type=Path, help="run directory with crest.json and the nominated SDF")
+    conformers.add_argument("--candidate", help="require the manifest to name this candidate")
+    conformers.set_defaults(run=_crest)
+    antigens = sub.add_parser("openantigens", help="review public evidence for a known human run target")
+    antigens.add_argument("directory", type=Path, help="run directory containing a target or openantigens.json")
+    antigens.set_defaults(run=_openantigens)
+    spectra = sub.add_parser("metfrag", help="score nominated ligands against a measured MS/MS spectrum")
+    spectra.add_argument("directory", type=Path, help="run directory with metfrag.json, measured peaks and candidates")
+    spectra.add_argument("--candidate", help="evaluate only this named candidate from ligand_candidates.tsv")
+    spectra.set_defaults(run=_metfrag)
+    organic = sub.add_parser("fastsolv", help="estimate solubility in nominated pure organic solvents")
+    organic.add_argument("directory", type=Path, help="run directory with fastsolv.json and nominated solutes")
+    organic.add_argument("--candidate", help="evaluate only this named candidate from ligand_candidates.tsv")
+    organic.set_defaults(run=_fastsolv)
+    hydration = sub.add_parser("jazzy", help="estimate hydration free energy for a nominated neutral molecule")
+    hydration.add_argument("directory", type=Path, help="run directory with nominated ligands")
+    hydration.add_argument("--candidate", help="evaluate only this named candidate from ligand_candidates.tsv")
+    hydration.set_defaults(run=_jazzy)
+    overlap = sub.add_parser("espsim", help="compare the shape and ESP of a prealigned ligand pair")
+    overlap.add_argument("directory", type=Path, help="run directory with espsim.json and the nominated SDF pair")
+    overlap.add_argument("--candidate", help="require the manifest to name this candidate")
+    overlap.set_defaults(run=_espsim)
+    assay_history = sub.add_parser("badapple2", help="read historical assay evidence for nominated ligand scaffolds")
+    assay_history.add_argument("directory", type=Path, help="run directory with ligand_candidates.tsv or ligand_smiles.txt")
+    assay_history.add_argument("--candidate", help="report only this named nomination in ligand_candidates.tsv")
+    assay_history.set_defaults(run=_badapple2)
+
+    complexity = sub.add_parser("scscore", help="compare nominated small molecules by predicted synthetic complexity")
+    complexity.add_argument(
+        "directory", type=Path, help="directory containing scscore_comparison.json and ligand_candidates.tsv"
+    )
+    complexity.add_argument("--candidate", help="report only this member of the nominated comparison")
+    complexity.set_defaults(run=_scscore)
+
+    stains = sub.add_parser("cellprofiler", help="compare regional DAB staining in candidate and control images")
+    stains.add_argument("directory", type=Path, help="run directory containing cellprofiler.json and the image inputs")
+    stains.add_argument("--candidate", help="report only the named candidate's comparisons")
+    stains.set_defaults(run=_cellprofiler)
+
+    pbpk = sub.add_parser("pksim", help="simulate exposure from a prepared human small-molecule PK-Sim model")
+    pbpk.add_argument("directory", type=Path, help="run directory with the PK-Sim manifest and molecular nominations")
+    pbpk.add_argument("--candidate", help="simulate only this named candidate")
+    pbpk.set_defaults(run=_pksim)
+
+    httk = sub.add_parser("httk", aliases=["epa_httk"], help="estimate adult human steady-state plasma exposure")
+    httk.add_argument("directory", type=Path, help="run directory containing httk.json and ligand_candidates.tsv")
+    httk.add_argument("--candidate", help="report only this nominated small molecule")
+    httk.set_defaults(run=_httk)
+
+    cyp = sub.add_parser("cypstrate", help="classify substrate status for nominated human CYP isoforms")
+    cyp.add_argument("directory", type=Path, help="directory containing cypstrate.json and the molecular nominations")
+    cyp.add_argument("--candidate", help="report the hypotheses for this named candidate")
+    cyp.set_defaults(run=_cypstrate)
 
     solubility = sub.add_parser("admet-solubility", help="predict aqueous log10 molar solubility with local ADMET-AI")
     solubility.add_argument("smiles", nargs="+", help="one quoted SMILES per candidate")

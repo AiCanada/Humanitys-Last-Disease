@@ -13,13 +13,37 @@ axis with no input stays `untested`, and a bar with an untested axis never clear
 
 - [Where the files go](#where-the-files-go)
 - [PRODIGY protein-pair affinity](#prodigy-protein-pair-affinity)
+- [OpenAntigens human target evidence](#openantigens-human-target-evidence)
+- [P2Rank receptor pockets](#p2rank-receptor-pockets)
 - [AutoDock Vina fixed-pose score](#autodock-vina-fixed-pose-score)
+- [sPyRMSD redocking controls](#spyrmsd-redocking-controls)
+- [ESP-Sim prealigned ligand comparison](#esp-sim-prealigned-ligand-comparison)
+- [Badapple 2 historical scaffold assay evidence](#badapple-2-historical-scaffold-assay-evidence)
+- [SCScore synthetic complexity](#scscore-synthetic-complexity)
+- [CYPstrate substrate profiling](#cypstrate-substrate-profiling)
+- [EPA httk steady-state exposure screen](#epa-httk-steady-state-exposure-screen)
+- [PK-Sim human organ exposure](#pk-sim-human-organ-exposure)
+- [CellProfiler chromogenic tissue and chip imaging](#cellprofiler-chromogenic-tissue-and-chip-imaging)
 - [Small-molecule aqueous solubility](#small-molecule-aqueous-solubility)
+- [fastsolv organic-solvent solubility](#fastsolv-organic-solvent-solubility)
+- [Jazzy hydration and hydrogen-bond descriptors](#jazzy-hydration-and-hydrogen-bond-descriptors)
+- [Small-molecule Ames mutagenicity prediction](#small-molecule-ames-mutagenicity-prediction)
+- [Human liver microsomal clearance](#human-liver-microsomal-clearance)
+- [Small-molecule Caco-2 permeability and efflux](#small-molecule-caco-2-permeability-and-efflux)
+- [Small-molecule drug-induced liver injury](#small-molecule-drug-induced-liver-injury)
+- [DELPHI paired-antibody polyreactivity](#delphi-paired-antibody-polyreactivity)
+- [Therapeutic peptide red-cell assay evidence](#therapeutic-peptide-red-cell-assay-evidence)
+- [MolProbity whole-model geometry](#molprobity-whole-model-geometry)
+- [Dimorphite-DL ligand protonation states](#dimorphite-dl-ligand-protonation-states)
+- [CREST ligand conformer sampling](#crest-ligand-conformer-sampling)
+- [PROPKA structure-dependent pKa](#propka-structure-dependent-pka)
 - [QupKake microscopic pKa](#qupkake-microscopic-pka)
 - [SyGMa human metabolite predictions](#sygma-human-metabolite-predictions)
+- [MetFrag measured spectrum comparison](#metfrag-measured-spectrum-comparison)
 - [Therapeutic Nanobody Profiler](#therapeutic-nanobody-profiler)
 - [How a verdict is reached](#how-a-verdict-is-reached)
 - [Class I and class II predictor tables](#class-i-and-class-ii-predictor-tables)
+- [ImmuScope study benchmarks](#immuscope-study-benchmarks)
 - [Reference tables](#reference-tables)
 - [The proteome](#the-proteome)
 - [Plasma fold change](#plasma-fold-change)
@@ -66,12 +90,35 @@ object must start the file.
 | `plasma_fold.tsv` | `plasma_fold` |
 | `toxicology.tsv` | the ligand safety panel (`herg`, `nav1_5`, `cyp3a4`, `cyp2d6`, `cyp2c9`, `cyp1a2`, `cyp2c19`, `pgp`, `bcrp`, `bsep`) |
 | `ligand_candidates.tsv` or `ligand_smiles.txt` | ADMET-AI aqueous solubility for the nominated small molecules in a ligand run |
+| `fastsolv.json` and nominated ligands | optional fastsolv solubility predictions at declared pure organic solvent and temperature conditions |
+| `ligand_candidates.tsv` or `ligand_smiles.txt` | optional Jazzy hydration free energy and hydrogen-bond strengths for nominated neutral ligands |
+| `dimorphite.json` and either `ligand_candidates.tsv` or `ligand_smiles.txt` | Dimorphite-DL ligand protonation states for a specified pH window |
+| `crest.json` and a nominated three-dimensional ligand SDF | optional conformer ensemble for one explicitly prepared molecular state |
+| `propka.json` and a nominated PDB | optional structure-dependent pKa estimates for ionizable protein residues and recognized ligand groups |
 | `qupkake.json` and a nominated ligand input | QupKake microscopic pKa for individual proton transfers in a ligand run |
 | `sygma.json` and a nominated ligand input | SyGMa ranked human metabolite structures and their predicted formation pathways |
+| `metfrag.json`, a product-ion TSV and a nominated ligand input | optional MetFrag comparison of candidate structures with one measured MS/MS spectrum |
+| `ligand_candidates.tsv` or `ligand_smiles.txt` | optional ADMET-AI Ames probability for a nominated small-molecule lead |
+| `ligand_candidates.tsv` or `ligand_smiles.txt` | optional ADMET-AI human liver microsomal intrinsic clearance prediction for nominated small molecules |
+| `ligand_candidates.tsv` or `ligand_smiles.txt` | optional AstraZeneca Caco-2 permeability and efflux model scores for nominated small molecules |
+| `ligand_candidates.tsv` or `ligand_smiles.txt` | optional ADMET-AI drug-induced liver injury classifier scores for nominated small molecules |
+| `delphi_pairs.tsv` | optional DELPHI PSR three-column nominations of paired antibody variable domains |
+| `peptide_rbc_evidence.tsv` | optional previously measured red-cell assay observations for identified peptide candidates and formulations |
+| generated `*_generated.cif`, `.cif.gz`, or `.cif.zst` | optional local MolProbity backbone, rotamer, and all-atom geometry for a finished protein or peptide model |
 | `solubility.tsv` | supplied solubility and aggregation scores, reported and not judged |
 | `seq_prediction.txt` | native Protein-Sol report for the matching sample sequences |
 | `prodigy_partners.json` | optional protein-pair affinity estimates for each generated structure |
+| regular job record or `openantigens.json` | optional human target topology and public evidence availability for the canonical UniProt accession |
+| `p2rank.json` and a nominated receptor PDB or mmCIF | optional small-molecule pocket predictions for a supplied protein receptor |
 | `vina_poses.json` | optional empirical score of an explicitly selected small-molecule pose in each finished structure |
+| `spyrmsd_controls.json` | symmetry-corrected ligand pose RMSD for nominated redocking controls |
+| `espsim.json` and two prealigned ligand SDFs | optional shape and electrostatic comparison of a nominated candidate and reference pose |
+| `ligand_candidates.tsv` or `ligand_smiles.txt` | optional Badapple 2 historical assay evidence for nominated ligand scaffolds |
+| `scscore_comparison.json` and `ligand_candidates.tsv` | synthetic-complexity tie-break for an explicitly comparable set of small molecules |
+| `cypstrate.json` and molecular nominations | human CYP substrate classifications for the isoforms named for each systemic small molecule |
+| `httk.json` and `ligand_candidates.tsv` | adult human plasma steady-state estimates at a fixed reference intake for substances covered by EPA httk |
+| `pksim.json` and molecular nominations | individual human concentration–time profiles from a registered PK-Sim project |
+| `cellprofiler.json`, RGB fields and region masks | regional DAB intensity in candidate-stained tissue or chip images and matched reagent controls |
 | `paralog_coevolution.tsv` | a co-evolution note stored on `paralog` |
 | `axis_evidence.json` | any axis, as a curated judgement |
 
@@ -116,6 +163,634 @@ with the same canonicalizer. The service exposes
 the IDs, predictions and coverage. Invalid molecules, repeated candidate IDs and
 unavailable predictions remain visible. `partial` means some nominations or compounds
 lack results. The standalone command exits with status 2 for partial or untested output.
+
+## fastsolv organic-solvent solubility
+
+Use fastsolv to choose which pure organic solvent and temperature conditions
+to test for the saturation solubility of a neutral small-molecule solid. Use
+conditions relevant to the planned experiment and verify the solubility in
+that solvent and solid form. Aqueous samples, pH effects, solvent mixtures,
+and formulated products require measurements under their own conditions.
+[fastsolv study](https://doi.org/10.1038/s41467-025-62717-7)
+
+In a finished ligand run, nominate structures in `ligand_candidates.tsv` with
+`candidate_id` and `smiles` columns, or put one SMILES in `ligand_smiles.txt`.
+A screen accepts up to 16 selected solutes. Use a single connected, neutral
+molecule containing carbon and 4–50 heavy atoms. Supported elements are H, C,
+N, O, F, P, S, Cl, Br and I. Isotopes and radicals are outside the input scope.
+
+Place `fastsolv.json` in the same directory. Specify 1–8 distinct solvent and
+temperature pairs using `temperature_k` from 295 to 323 K inclusive. The
+permitted solvent IDs are `acetone`, `acetonitrile`, `dimethyl_sulfoxide`,
+`dimethylformamide`, `ethanol`, `ethyl_acetate`, `isopropanol`, `methanol`,
+`tetrahydrofuran`, and `toluene`. This range is the workflow's input limit.
+
+```json
+{"version": 1, "conditions": [{"solvent": "ethanol", "temperature_k": 312}]}
+```
+
+Use the project's Linux CPU Python environment with Torch 2.6 or newer and
+the `fastsolv` extra for descriptors. The four verified checkpoints total
+about 0.90 GB. Add `--checkpoints DIRECTORY` to use local copies. Predictions
+run offline with the installed checkpoints.
+[Official fastsolv checkpoints](https://doi.org/10.5281/zenodo.13943074)
+
+```sh
+uv pip install ".[fastsolv]"
+python scripts/install_fastsolv.py
+human --screen finished-run --binder-kind ligand --screen-method fastsolv
+python scripts/screen_extras.py fastsolv finished-run
+```
+
+For one candidate, add `--candidate ID` to the standalone command and use an
+exact ID from `ligand_candidates.tsv`. The panel saves results in `screen.json`
+under `method_selection.prepared_measurements.fastsolv`. Each predicted
+candidate and condition has `log_s` and `ensemble_sd`, both in `log10(mol/L)`.
+These report the four-member mean and population standard deviation.
+In the published solute-held-out tests, the authors evaluated FASTPROP before
+forming the four-member ensemble. Its RMSE was 0.83 log units on SolProp and
+0.95 on Leeds. Respectively, 78.1% and 73.8% of predictions were within a
+factor of ten of the measurement. The spread between the four members has no
+calibrated interval coverage. Measure saturation solubility in the intended
+solid form when choosing between solvents with similar estimates.
+[Benchmark and model methods](https://doi.org/10.1038/s41467-025-62717-7)
+
+The published training used organic-solvent observations from BigSolDB after
+excluding water. Its source records express solubility as a mole fraction,
+which the authors converted to molar solubility before training. The aqueous
+ADMET-AI model uses AqSolDB and addresses aqueous solubility.
+[BigSolDB training source](https://doi.org/10.5281/zenodo.6984601) ·
+[fastsolv training preparation](https://github.com/JacksonBurns/fastsolv/blob/main/paper/data/krasnov.py)
+
+## Jazzy hydration and hydrogen-bond descriptors
+
+Use Jazzy to compare how related neutral ligands interact with water and to
+interpret changes in hydrogen-bond donor and acceptor strength. The hydration
+free energy describes transfer of the nominated molecular state from gas to
+water. Saturation solubility also depends on the solid form and experimental
+conditions. Measurements at a chosen pH and temperature are needed for
+decisions specific to those conditions.
+[Jazzy study](https://doi.org/10.1038/s41598-023-30089-x)
+
+In a finished ligand run, put candidates in `ligand_candidates.tsv` with
+`candidate_id` and `smiles` columns, or put one SMILES in `ligand_smiles.txt`.
+Up to 32 selected candidates can be screened. Use one connected molecule
+containing carbon, with 2–40 heavy atoms and with all atomic formal charges
+zero. Supported elements are H, C, N, O, F, P, S, Cl, Br and I. Specify stable
+stereochemistry in the nominated microstate. Salts, isotopes and radicals
+are outside the supported input scope.
+
+Install Jazzy 0.1.4 from the active Linux x86-64 project environment. The
+installer builds an isolated Python 3.12 CPU environment with RDKit 2024.3.1
+and Kallisto 1.0.10. The screen generates a single 3D conformer using ETDG
+with seed 11 and at most 64 embedding attempts, then requires MMFF94 minimization to
+converge within 200 iterations.
+[Jazzy release](https://pypi.org/project/jazzy/0.1.4/)
+
+```sh
+python scripts/install_jazzy.py
+human --screen finished-run --binder-kind ligand --screen-method jazzy
+python scripts/screen_extras.py jazzy finished-run
+```
+
+Add `--candidate ID` to the standalone command for one exact ID from
+`ligand_candidates.tsv`. The panel saves the result in `screen.json` under
+`method_selection.prepared_measurements.jazzy`.
+
+The total hydration free energy and its apolar, polar and interaction terms
+use kJ/mol. Molecular strengths for C–H donors, X–H donors with X other than
+carbon, and acceptors are dimensionless sums. The model was fitted to Gerber's experimental
+hydration data. Its external test on 3,313 Guthrie compounds reported 9.19
+kJ/mol RMSE and 5.89 kJ/mol MAE, with larger errors for some flexible,
+internally hydrogen-bonded or aggregation-prone compounds. Use the results
+as descriptors when reviewing comparable molecules.
+[Jazzy benchmark](https://doi.org/10.1038/s41598-023-30089-x) ·
+[Jazzy descriptor definitions](https://jazzy.readthedocs.io/en/latest/cookbook.html)
+
+## Small-molecule Ames mutagenicity prediction
+
+Use the optional Ames screen to prioritize bacterial reverse-mutation testing for
+a nominated small-molecule lead. It can help select compounds for an experimental
+panel. It does not represent a measured Ames result, establish a mutation rate, or
+rule out genotoxicity at a low score. Skip it for biologics and for unsupported
+forms such as mixtures, disconnected salts, or molecules with unresolved atoms
+or radicals. The screen neither removes fragments nor changes protonation or
+stereochemistry for a nomination. [OECD Test Guideline 471](https://doi.org/10.1787/9789264071247-en)
+
+In a finished ligand run, supply `ligand_candidates.tsv` with the exact
+`candidate_id<TAB>smiles` header or one molecule in `ligand_smiles.txt` for the
+whole run. The TSV takes precedence, including when invalid. Use a regular
+UTF-8 file no larger than 1 MiB and no more than 256 candidate rows. Use unique,
+non-secret candidate identifiers of up to 128 characters, starting with an
+ASCII letter or digit and containing only letters, digits, periods, underscores,
+and hyphens. Keep structures in the SMILES field, not in the identifier. A
+run-level molecule cannot stand in for a specifically selected candidate.
+Each SMILES is limited to 4,096 characters and each parsed graph to 256 atoms.
+
+```bash
+human --screen finished-run --binder-kind ligand --screen-method ligand_ames
+```
+
+The browser's screening picker and MCP `plan_screening` can recommend it for
+eligible ligand inputs when the required local assets verify. Use
+`run_selected_screens` with `methods: ["ligand_ames"]` for a supplemental result
+without changing the stored verdict. A normal run without a screen selection does
+not start this prediction automatically.
+
+The isolated CPU worker reuses the installed ADMET-AI v2 classification ensemble
+from the `ligand-safety` extra. It verifies the endpoint and all five checkpoint
+hashes against the installed distribution before loading and does not download
+weights, reference data, or a new runtime. The worker uses no GPU VRAM. Apply the
+project's resource checks for the less-than-25 GB disk and at-most-96 GB VRAM
+limits to the environment and scratch space you run it in.
+[ADMET-AI v2.0.1 endpoint definitions](https://github.com/swansonk14/admet_ai/blob/v_2.0.1/admet_ai/resources/data/admet.csv)
+
+`screen.json.ligand_ames` reports `predicted_ames_probability` on a 0–1 scale,
+with the method `admet_ai_ames_v2`, endpoint `AMES`, release identity and training
+corpus declaration. Equivalent canonical isomeric graphs share one prediction.
+`inputs` maps nominations to hashed compound IDs or named blockers, and
+`compounds` gives the score or blocker for each ID. No raw graphs are stored in
+this report or returned in its MCP view. `partial` means a nomination or compound
+could not be scored. `untested` means no attributable prediction was produced.
+No cutoff or change to the existing verdict is applied.
+
+## Human liver microsomal clearance
+
+Use this optional screen to prioritize human liver microsomal stability assays
+for nominated small-molecule leads, or to compare leads on the same predicted
+intrinsic clearance scale. Higher predicted values mean faster intrinsic
+clearance in that assay. The regression uses the human AstraZeneca microsomal
+endpoint `Clearance_Microsome_AZ` and reports its native linear value in
+`uL/min/mg` of microsomal protein. It does not convert the value to a log scale
+or use the separate hepatocyte endpoint. Do not use it for biologics, to
+identify metabolites, or to infer whole-body clearance, dose, or half-life.
+Measured microsomal results take precedence over predictions.
+[ADMET-AI v2.0.1 endpoint definitions](https://github.com/swansonk14/admet_ai/blob/v_2.0.1/admet_ai/resources/data/admet.csv)
+· [AstraZeneca dataset](https://tdcommons.ai/single_pred_tasks/adme/#clearance-astrazeneca)
+
+Nominate molecules in `ligand_candidates.tsv` with the exact
+`candidate_id<TAB>smiles` header, or nominate one molecule for the whole run in
+`ligand_smiles.txt`. A present TSV always wins, even when invalid. Supply a
+regular UTF-8 file no larger than 1 MiB with at most 256 nominations. Use unique
+non-secret IDs of up to 128 characters, starting with an ASCII letter or digit
+and otherwise containing only letters, digits, periods, underscores, or hyphens.
+Each SMILES is limited to 4,096 characters and each parsed graph to 256 atoms.
+Use connected, closed-shell organic graphs. No mixture, disconnected salt,
+unresolved atom, or radical is accepted. The nominated charge and stereochemistry
+are retained. A run-level molecule cannot stand in for a selected candidate.
+
+```bash
+human --screen finished-run --binder-kind ligand --screen-method ligand_microsomal_clearance
+```
+
+The browser screening picker and MCP `plan_screening` list the method and check
+its assets and input prerequisites. Confirm charged nominations and select large
+batches explicitly. MCP `run_selected_screens` accepts
+`methods: ["ligand_microsomal_clearance"]`. Ordinary runs without a screen
+selection do not start it automatically.
+
+The isolated CPU worker reuses the five installed ADMET-AI v2 regression model
+files from the `ligand-safety` extra. It verifies endpoint metadata and the
+installed distribution's hashes, and does not download model or reference data.
+Apply the project's less-than-25 GB disk and at-most-96 GB VRAM resource checks
+to the installed environment and scratch space. This screen uses no GPU VRAM.
+
+`screen.json.ligand_microsomal_clearance` records the method
+`admet_ai_microsomal_clearance_v2`, endpoint, unit, provider and corpus
+provenance, candidate coverage and `predicted_clint_ul_min_mg` for each unique
+compound. Equivalent canonical isomeric graphs share one prediction and an
+opaque compound ID. Raw graphs are not copied into this report or its MCP view.
+Zero remains a real numeric prediction. A negative, nonfinite or unattributed
+value does not become a measurement. `partial` means some nominations or
+compounds lack predictions. `untested` means none can be reported. No threshold
+or change to the existing verdict is applied.
+
+## Small-molecule Caco-2 permeability and efflux
+
+Select **AstraZeneca Caco-2 permeability and efflux** for a small-molecule
+candidate when planning an experimental Caco-2 study, particularly when
+intestinal permeability or efflux matters to the intended route. With a declared
+oral route, the picker recommends this screen for a small eligible batch.
+An unknown route or explicitly local exposure leaves the choice manual. Do not use this screen for proteins, other
+biologics, or leads for which these assays are not relevant.
+
+Nominate molecules in `ligand_candidates.tsv` with the exact
+`candidate_id<TAB>smiles` header, or one run-level ligand in
+`ligand_smiles.txt`. A present TSV always takes precedence. A run-level
+ligand cannot stand in for an individual candidate. Use the same nominations
+as for [human liver microsomal clearance](#human-liver-microsomal-clearance):
+unique IDs, a regular UTF-8 input no larger than 1 MiB, at most 256
+nominations, at most 4,096 characters per SMILES, and at most 256 atoms
+per graph. Use connected, closed-shell organic molecules. The nominated
+charge and stereochemistry are retained. Mixtures and disconnected salts
+are not accepted.
+
+```bash
+human --screen finished-run --binder-kind ligand --screen-method ligand_caco2
+```
+
+MCP `plan_screening` checks the same prerequisites, and
+`run_selected_screens` accepts `methods: ["ligand_caco2"]`. The isolated
+worker uses the installed `ligand-safety` environment on CPU, with no GPU
+VRAM or downloads during screening. An administrator can place the
+`az_gnn_mtl_v1.pt` file from the [AstraZeneca v1 release](https://zenodo.org/records/16948542)
+at `DATA_PATH/caco2/az_gnn_mtl_v1.pt` or set `RFD4_CACO2_CHECKPOINT` to its
+path. The expected size is 1,283,341 bytes. The pinned SHA-256 is
+`c979bd0dab17a324e2c0c52c3da0bbe25d93415b7c6b49d62f0e01f6f2a487de`.
+
+`screen.json.ligand_caco2` records `az_gnn_mtl_caco2_v1`, the provider and
+corpus provenance, and the per-compound `efflux_ratio` (`Caco2ER`) and
+`apparent_permeability` (`Caco2Papp`) heads. The
+[model paper](https://doi.org/10.1021/acsomega.5c04861) describes
+log-transformed assay labels. The release does not establish a physical-unit
+conversion for the checkpoint's outputs, so the record reports signed
+`model_score` values only, with scale `native_model_score`. Zero is a valid
+score. The heads are two outputs of the same model, not independent opinions.
+Do not combine them, compare them to a laboratory threshold, or use them to
+assign a transporter, estimate human oral bioavailability, or replace an assay.
+The MDCK outputs from the same checkpoint are not reported here.
+
+Equivalent canonical isomeric graphs share one prediction and an opaque
+compound ID. The report and MCP view do not include raw graphs.
+`unique_predicted` counts distinct compounds with at least one attributable
+finite score and `unique_complete` counts those with both. A missing or
+unusable head is `untested` with a blocker. A report with scores but incomplete
+coverage is `partial`. No threshold or change to the existing verdict applies.
+
+## Small-molecule drug-induced liver injury
+
+Use **ADMET-AI drug-induced liver injury** to prioritize follow-up on nominated
+small-molecule therapeutic leads when liver exposure is relevant. For a series
+of related leads it can flag compounds to review first, on the same model scale.
+It is not useful for biologics, when liver exposure is not part of the question,
+or as a substitute for hepatotoxicity studies. It does not assess dose, route,
+metabolites, individual susceptibility, BSEP inhibition, or clearance. A low
+score, an unsupported compound, and an untested compound do not establish safety.
+
+The verified [ADMET-AI v2 classifier](https://github.com/swansonk14/admet_ai/blob/v_2.0.1/admet_ai/resources/data/admet.csv)
+exposes the human `DILI` head. It scores the positive class of the
+[binary TDC DILI task](https://tdcommons.ai/single_pred_tasks/tox/#dili-drug-induced-liver-injury),
+which documents 475 drugs. It is not a calibrated clinical probability or an
+injury severity scale. For an already known drug, consult
+[FDA DILIrank 2.0](https://www.fda.gov/science-research/liver-toxicity-knowledge-base-ltkb/drug-induced-liver-injury-rank-dilirank-20-dataset)
+separately after confirming the drug's identity. That reference reports
+label-based categories, not model scores. This screen does not query it, infer
+safety from an absent match, or assume it is independent of the training corpus.
+
+Use the same bounded, named small-molecule nominations as for
+[human liver microsomal clearance](#human-liver-microsomal-clearance).
+`ligand_candidates.tsv` takes precedence over `ligand_smiles.txt`, even when
+the TSV cannot be read. The former is required when selecting one named
+candidate. The picker and MCP recommend a small eligible batch with declared
+systemic exposure. A bare molecular nomination leaves this screen available for manual selection.
+
+```bash
+human --screen finished-run --binder-kind ligand --screen-method ligand_dili
+```
+
+MCP `plan_screening` checks the same prerequisites. `run_selected_screens`
+accepts `methods: ["ligand_dili"]`. This screen reuses the installed five-model
+ADMET-AI v2 classification ensemble from the `ligand-safety` extra. The worker
+checks the endpoint and installed wheel hashes before loading the weights, runs
+on CPU, and downloads no data. The installed distribution is a trusted local
+dependency. A matching wheel manifest checks installation consistency, not
+publisher identity. Ordinary screening does not run this optional prediction.
+
+`screen.json.ligand_dili` records `admet_ai_dili_v2`, `DILI`, provider and
+training-corpus provenance, and per-compound `predicted_dili_probability` from
+0 to 1. Equivalent canonical isomeric graphs share a prediction and an opaque
+compound ID. Raw graphs are not in the report or its MCP view. An incomplete
+report is `partial` when some scores exist and `untested` when none exist.
+There is no cutoff, pass/fail classification, or change to the existing verdict.
+
+## DELPHI paired-antibody polyreactivity
+
+Use **DELPHI antibody polyreactivity (PSR)** to prioritize experimental PSR
+measurements for conventional antibodies with a confirmed VH/VL pair. As a
+secondary use, compare related paired leads on the same PSR model scale, or
+review it beside a separate CHO-lysate polyreactivity result. Keep the two
+readouts separate. The PSR training sequences are private, so overlap with
+the GDPa1 corpus behind CrossAbSense cannot be verified. Do not use DELPHI for
+VHHs, unpaired or swapped chains, or to infer target specificity, serum
+behavior, clinical safety, or monomer purity. Measured evidence for the
+assay has priority. SEC is a separate readout and is not run by this screen.
+
+In a finished protein run, put the intended **complete variable domains only**
+in a UTF-8 `delphi_pairs.tsv` with the exact tab-separated header
+`candidate_id<TAB>vh<TAB>vl`. Use the run's example ID for each nomination.
+A nomination is the user's statement of pairing, not a pair inferred from the
+structure or row order. Nominate the original VH and VL together, without Fc,
+constant domains, linkers, tags, gaps, or ambiguous amino acids. The file is
+limited to 64 rows and 1 MiB. Each domain fits a nontruncating 135-residue
+window. Local ANARCII numbering must recover a complete heavy domain and
+kappa or lambda light domain, and the HCDR3 at IMGT 105–117 including
+insertions must fit 1–25 residues. The leading framework Cys is not part of
+this input. A Cys at the first CDR3 position is declined rather than passing
+it through the upstream pipeline's ambiguous leading-Cys shortcut.
+
+```bash
+human --screen finished-run --binder-kind protein --screen-method delphi_psr
+```
+
+The browser and MCP `plan_screening` check for the pinned local model and a
+nomination in scope. `run_selected_screens` accepts `methods: ["delphi_psr"]`.
+The picker can preselect an eligible single nomination. Review larger or
+incomplete inputs before selecting them. Legacy screening without an explicit
+selection does not start this tool.
+
+Install only `FINAL_psr_filter_onehot_transformer_onehot_ipi_psr_trainset.pt`
+from the [IPI DELPHI v4 release](https://zenodo.org/records/21823887), not the
+full archive. It is 7,204,447 bytes with SHA-256
+`5bcd6accfd832c88f582b8206a27b5930f3cbf3a442eba0c59695ebb6f6d8b81`.
+Run `python scripts/install_delphi_psr.py path/to/the_downloaded_checkpoint.pt`
+from the installed project environment. The default destination is
+`DATA_PATH/delphi/FINAL_psr_filter_onehot_transformer_onehot_ipi_psr_trainset.pt`.
+An administrator may also set `RFD4_DELPHI_PSR_CHECKPOINT` to a local copy of
+the same checkpoint. The worker rechecks the digest and loads weights only
+on CPU. It does not download models or use a protein language model.
+
+`screen.json.delphi_psr` reports per-pair `predicted_psr_pass_probability`,
+the model's 0–1 score for its PSR pass class. Higher means lower predicted
+polyreactivity for the IPI PSR label. It is not a pass decision, measured
+assay value, or calibrated probability outside that assay population.
+It carries the method, release, coverage, corpus provenance, and the digest
+of the exact nomination file read without outputting protein sequences.
+Failed pairs keep a named blocker. No
+threshold is applied and the run's verdict stays unchanged.
+
+## Therapeutic peptide red-cell assay evidence
+
+Use **Peptide red-cell assay evidence** when a finished peptide candidate has
+measured hemolysis results and you need to establish which formulation, species,
+and assay conditions the results actually cover. Use human observations for
+human red-cell context and animal observations as separate supporting evidence.
+Do not substitute animal results for human data, transfer a result to a different
+formulation, or treat even a qualified in-vitro result as a clinical safety
+determination. Species and test conditions can affect measurements. See this
+[experimental comparison of hemolysis assays](https://pmc.ncbi.nlm.nih.gov/articles/PMC9917735/).
+
+Place a regular UTF-8 `peptide_rbc_evidence.tsv` beside the finished peptide
+run. Use this exact header with tab separators:
+
+```text
+candidate_id	observation_id	formulation_id	source_id	species	matrix	context_id	concentration	concentration_unit	exposure_minutes	hemolysis_percent	controls_qc
+```
+
+- `candidate_id` is the exact example ID of an unambiguous finished candidate,
+  not the opaque MCP selection key. `observation_id` must be unique within that
+  candidate. The two together identify a row. Replicate observations require
+  separate IDs and are not averaged.
+- `formulation_id`, `source_id`, and `context_id` refer to the exact tested
+  formulation or lot, originating report, and documented assay context. Use
+  opaque identifiers up to 96 characters, starting with an ASCII letter or
+  digit and otherwise containing only letters, digits, periods, underscores,
+  or hyphens. Do not put patient or donor identifiers, sequences, or file paths
+  into these fields. Candidate matching does not independently verify the
+  chemical identity or authenticate the report.
+- `species` is one of `human`, `mouse`, `rat`, `rabbit`, `dog`, `pig`, `sheep`,
+  `cow`, or `cynomolgus`. `matrix` is `washed_rbc` or `whole_blood`.
+- `concentration` and `exposure_minutes` are the positive, finite values stated
+  by the source, with the latter expressed in minutes. The allowed concentration
+  units are `uM`, `ug/mL`, and `mg/mL`. The screen does not convert units or
+  combine different contexts.
+- `hemolysis_percent` is a finite, exact reported percentage on the 0–100
+  scale, without a `%` symbol. Numeric values must round-trip without a change
+  to their stated value. A reported zero stays zero. An inequality,
+  censored result, concentration-at-effect endpoint, or ambiguous range is not
+  treated as an exact percentage. Keep it in the source report for manual review.
+- `controls_qc` is `accepted` only when the originating assay documents
+  acceptable positive and negative controls. `failed`, `not_reported`, or a
+  blank value keeps the observation untested. There is no built-in assay QC
+  rule or safety cutoff.
+
+The file is limited to 256 rows and 256 KiB, including for candidate-scoped
+review. The browser and MCP `plan_screening` can recommend a complete set of
+qualified human observations. Animal or mixed records are for manual selection.
+MCP `run_selected_screens` accepts `methods: ["peptide_rbc_evidence"]`.
+
+```bash
+human --screen finished-run --binder-kind peptide --screen-method peptide_rbc_evidence
+```
+
+`screen.json.peptide_rbc_evidence` keeps each observation and its provenance
+separate. `reported` means the supplied rows met the input contract, not that
+the candidate passed an assay. `partial` means only some submitted rows are
+reportable. `untested` retains a named blocker and does not imply zero
+hemolysis. The digest identifies the exact input bytes consumed. This screen
+does not infer results from sequences, estimate potency, rank variants, set
+a cutoff, or change the verdict. It needs no weights, downloads, or GPU.
+
+## MolProbity whole-model geometry
+
+Use **MolProbity geometry** to check the coordinates of a protein or peptide
+finalist before spending effort on experimental validation. It can also
+compare geometry across alternative models of the same construct, provided
+you compare the same readout and inspect its denominator. Do not use a model
+with good local geometry as evidence of binding, correct folding, or safety.
+The screen evaluates the **whole submitted model**, including any target
+chains. Its numbers are not attributed to the designed chain alone.
+
+This screen runs CCTBX Ramalyze and Rotalyze on the original coordinates.
+They report favored, allowed, and outlier counts on their own eligible
+denominators. Short, discontinuous, or incomplete models may have fewer
+eligible torsions, and their counts are not interchangeable. The independent
+clashscore counts Probe2 serious clashes per 1,000 evaluated atoms. Reduce2
+rebuilds hydrogens in temporary scratch with side-chain flips disabled. It does
+not modify the source file or replace the native distance-only clash screen.
+There is no combined MolProbity score, cutoff, or change to the verdict.
+[MolProbity reference distributions](https://pmc.ncbi.nlm.nih.gov/articles/PMC5734394/)
+· [CCTBX v2025.11 native validators](https://github.com/cctbx/cctbx_project/tree/v2025.11/mmtbx/validation)
+
+Choose the existing finished candidate model. The screen reads the canonical
+generated mmCIF file, including gzip or Zstandard variants, without
+reconverting it to PDB first. It accepts single coordinate models containing
+the standard amino acids and optional waters. It does not remove ligands or
+other unsupported residue types to produce a deceptively clean score. The
+clash component also needs complete, occupied heavy atoms and identifiers
+compatible with the pinned contact implementation. Backbone-only structures
+may still have useful backbone torsions, but they cannot report all-atom
+clashscore. An empty denominator is `untested`, never zero outliers.
+
+Each model is limited to 8 MiB encoded, 16 MiB expanded, 16,000 input atoms,
+and a 1,000 Å extent along any axis. A run-wide selection may include up to
+eight models. For larger runs, choose a single finalist in the browser or
+through the candidate-scoped MCP tool. The picker recommends one eligible
+finished model when the pinned runtime is installed, and leaves multi-model
+selections manual. MCP `run_selected_screens` accepts
+`methods: ["molprobity_geometry"]`. The optional `screen.json.molprobity_geometry`
+record keeps metric-specific blockers and a SHA-256 digest of the exact expanded
+coordinates measured. A `partial` result means at least one metric or model
+could not be reported.
+
+```bash
+human --screen finished-run --binder-kind protein --screen-method molprobity_geometry
+```
+
+Install `cctbx-base==2025.11` with `numpy==1.26.4` in a separate CPU Python
+3.12 environment. The default discovery location is
+`DATA_PATH/molprobity/venv/bin/python` on Linux or WSL. A trusted administrator
+can set `RFD4_MOLPROBITY_PYTHON` to another compatible interpreter. Keep the
+main RFD4 environment unchanged. Use the pinned
+[CCTBX chemistry archive](https://github.com/cctbx/cctbx_project/releases/tag/v2025.11)
+and install only its protein validation references with the project's normal
+Python environment:
+
+```bash
+python scripts/install_molprobity_data.py chem_data-2025.11-pyhe0d8492_0.conda \
+  --python "$DATA_PATH/molprobity/venv/bin/python"
+```
+
+The installer verifies the publisher's SHA-256, leaves any existing chemistry
+library intact, and builds the reference caches offline. With only the CCTBX
+wheel installed, unavailable components remain `untested`; the wheel alone
+does not contain the full chemistry references. Screening is entirely local
+and makes no web submission.
+
+## Dimorphite-DL ligand protonation states
+
+Use Dimorphite-DL to prepare plausible protonation states for a small molecule
+when the pH window for an assay or docking protocol is known. For a secondary
+comparison, run the same ligand in separate run folders with the pH window
+chosen for each condition. The method applies empirical substructure rules.
+Use QupKake for microscopic pKa estimates and dedicated workflows for tautomer
+search and docking. Measuring populations or validating a candidate requires
+separate evidence.
+[Method](https://doi.org/10.1186/s13321-019-0336-9) ·
+[Dimorphite-DL 2.1.0](https://pypi.org/project/dimorphite-dl/2.1.0/)
+
+In a finished ligand run, supply `dimorphite.json` with all three fields. The
+example window of pH 6.8–7.4 suits a near-neutral protocol when it matches the
+planned conditions.
+
+```json
+{"version": 1, "ph_min": 6.8, "ph_max": 7.4}
+```
+
+Choose finite values with `0 ≤ ph_min ≤ ph_max ≤ 14`. Equal limits request a
+single pH. The screen has no default window and uses the release's precision
+factor of 1.0. Name candidates in `ligand_candidates.tsv` with the header
+`candidate_id<TAB>smiles`, or supply one SMILES in `ligand_smiles.txt`. The table
+takes precedence. Supply single-component, closed-shell organic molecules as
+plain SMILES up to 512 characters and 80 heavy atoms. Include the intended formal
+charge and known stereochemistry. Supported elements are H, B, C, N, O, F, Si,
+P, S, Cl, Br and I. Isotopically labeled molecules, radicals and mixtures leave
+the candidate `untested`. Select up to 32 entries per run. A molecule with more
+than 32 possible states under the rules stays `untested` with
+`variant_budget_exceeded`.
+
+Install the optional `dimorphite` extra in the project environment and select
+the method for the finished run.
+
+```bash
+uv pip install ".[dimorphite]"
+human --screen finished-run --binder-kind ligand --screen-method dimorphite_dl
+```
+
+To run the stand-alone wrapper, use
+`python scripts/screen_extras.py dimorphite finished-run`. Add `--candidate ID`
+to evaluate one named entry from the TSV. The wrapper prints JSON and exits
+with code 2 for `partial` or `untested` results. The finished-run screen saves
+results in `screen.json` under `method_selection.prepared_measurements.dimorphite_dl`.
+Each candidate's state set contains canonical SMILES and total formal charge.
+The record includes the verified release's SMARTS-table checksum. MCP output
+marks structure fields withheld when the existing sequence redaction applies.
+The returned structures preserve connectivity and defined stereochemistry while
+allowing protonation and charge to vary. A molecule with no recognized ionizable
+sites is `untested` with `no_recognized_sites`. Treat the state set as preparation
+for the next experiment or calculation.
+
+## CREST ligand conformer sampling
+
+Use CREST to prepare several low-energy geometries of one ligand state for
+geometry review or downstream calculations. Choose the protonation, tautomer
+and stereochemical state before running this screen. It uses the reduced
+`--quick` iMTD-GC search at the gas-phase GFN2-xTB level on the CPU.
+[CREST sampling study](https://doi.org/10.1039/C9CP06869D) ·
+[CREST 3.0 methods](https://doi.org/10.1063/5.0197592)
+
+Place `crest.json` and the prepared SDF in the finished ligand run directory.
+Use a local ASCII filename and give all three manifest fields.
+
+```json
+{"version": 1, "candidate_id": "lead_A", "structure": "lead_A.sdf"}
+```
+
+The SDF must contain one 3D record with the exact candidate ID as its title.
+Use one neutral, closed-shell organic molecule with explicit hydrogens and
+fully specified stable stereochemistry. The screen retains the input atom
+order and checks the chemical identity against a matching `ligand_candidates.tsv`
+row when one is available. The SDF limit is 256 KiB, with 4–32 heavy atoms and at most 96 total
+atoms. Supported elements are H, C, N, O, F, P, S, Cl, Br and I. Salts, mixtures,
+isotopes and unresolved stereochemistry are outside this workflow's scope.
+
+Install the pinned CREST 3.0.2 release from the active Linux x86-64 project
+environment. Add `--archive PATH` to use a local copy of the official archive.
+Each search uses two CPU threads and has a 240-second time limit.
+
+```sh
+uv pip install ".[crest]"
+python scripts/install_crest.py
+human --screen finished-run --binder-kind ligand --screen-method crest
+python scripts/screen_extras.py crest finished-run --candidate lead_A
+```
+
+The standalone command also accepts the run directory alone. The panel saves
+the local coordinate ensemble in `screen.json` under
+`method_selection.prepared_measurements.crest`. It reports native total
+electronic energy in Hartree and relative energy in kcal/mol from the lowest
+validated conformer in that run. The output contains up to 32 validated
+conformers and flags truncation. Compare the reported energies only within
+that ensemble. Solution populations, the bound pose and experimental potency
+require their own evidence.
+[CREST 3.0.2 release](https://github.com/crest-lab/crest/releases/tag/v3.0.2) ·
+[CREST ensemble format](https://crest-lab.github.io/crest-docs/page/documentation/coords.html)
+
+## PROPKA structure-dependent pKa
+
+Use PROPKA to identify ionizable groups whose predicted pKa in a prepared protein
+or protein–ligand structure could affect an assay at its planned pH. For an apo
+and bound comparison, prepare each structure separately and match the reported
+groups by identity. Treat differences as hypotheses for experimental follow-up.
+[PROPKA protein method](https://doi.org/10.1021/ct100578z) ·
+[PROPKA ligand and coupling method](https://doi.org/10.1021/ct200133y)
+
+Place `propka.json` and the prepared PDB in the finished run directory. The
+manifest requires these two fields.
+
+```json
+{"version": 1, "structure": "candidate.pdb"}
+```
+
+The optional `assay_ph` field accepts a finite number from 0 to 14 and records
+the pH for interpretation. Add `candidate_id` with the exact candidate ID when
+selecting a named candidate. The manifest links this PDB to the candidate.
+Supply one explicitly prepared PDB model with no
+alternate locations or insertion codes, at least 10 distinct amino-acid
+residues, at most 40,000 atoms, and at most 8 MiB. Use distinct chain IDs and
+explicit PDB `TER` records between protein chains. Heavy-atom occupancy must
+be greater than zero and at most one. Missing terminal atoms make the result
+partial. The screen reads the supplied coordinates without
+rewriting them. A sequence, SMILES string, or isolated ligand does not supply
+the required protein environment.
+
+Install the optional `propka` extra for PROPKA 3.5.1 and Gemmi in the project
+environment. Select `propka` in the picker or use the corresponding CLI command.
+
+```sh
+uv pip install ".[propka]"
+human --screen finished-run --binder-kind protein --screen-method propka
+python scripts/screen_extras.py propka finished-run
+```
+
+Add `--candidate ID` to the standalone command when the manifest names that
+candidate. The panel saves results in `screen.json` under
+`method_selection.prepared_measurements.propka`.
+Each group retains its structural identity. The folded pKa estimate and the
+native reference model pKa are distinct values. Review any incomplete-input or
+coupling flags alongside the estimate. A disulfide group is reported as unscored.
+Reported ligand groups describe the nominated complex. A free-ligand pKa or
+an assay decision requires evidence for that experiment.
+[PROPKA 3.5.1 release](https://pypi.org/project/propka/3.5.1/)
 
 ## QupKake microscopic pKa
 
@@ -247,6 +922,170 @@ named blocker. Limits include 256 parent heavy atoms, 120 seconds per parent,
 and 25,000 cumulative reaction matches per parent. Incomplete parents receive
 no ranking. Failed nominations remain in the reported input count.
 
+## MetFrag measured spectrum comparison
+
+Use MetFrag to compare nominated small molecules against one measured tandem
+mass spectrum, for example to prioritize tentative metabolite assignments for
+reference-standard follow-up. Supply a centroided product-ion list for a single
+measured precursor in positive ion mode with the `[M+H]+` adduct. Confirming
+identity requires evidence from an authentic standard under comparable
+experimental conditions.
+[MetFrag method](https://doi.org/10.1186/s13321-016-0115-9) ·
+[Identification confidence](https://doi.org/10.1021/es5002105)
+
+Place `metfrag.json` and the nominated TSV in the finished ligand run directory.
+Use a local TSV filename and include all seven fields.
+
+```json
+{
+  "version": 1,
+  "peaks": "product_ions.tsv",
+  "adduct": "[M+H]+",
+  "precursor_mz": 195.08879,
+  "precursor_ppm": 10,
+  "fragment_ppm": 10,
+  "fragment_da": 0.001
+}
+```
+
+Use the instrument's monoisotopic precursor ion m/z, from 20 to 1,500. The
+precursor window is 0.5–50 ppm around the measured ion m/z. Candidate neutral
+exact masses are converted to `[M+H]+` before this comparison. Product-ion
+matching adds the configured 0–0.05 Da and 0–100 ppm tolerances. At least one
+product tolerance must be positive. Choose tolerances that match the acquisition.
+[MetFrag CLI parameters](https://ipb-halle.github.io/MetFrag/projects/metfragcl/)
+
+Use the exact tab-separated `mz` and `intensity` header. Supply 3–500 distinct
+centroid product ions with m/z at least 1 and below the measured precursor,
+and finite positive intensities up to 10¹⁵. The TSV limit is 64 KiB. These three
+rows illustrate the format using an excerpt from a measured caffeine spectrum.
+[MassBank caffeine record MSBNK-mFam-MC23_000485](https://massbank.eu/MassBank/RecordDisplay?id=MSBNK-mFam-MC23_000485&raw=)
+
+```tsv
+mz	intensity
+83.0601	226
+108.0511	342
+138.0649	776
+```
+
+Nominate candidates in `ligand_candidates.tsv` with `candidate_id` and `smiles`
+columns, or put one SMILES in `ligand_smiles.txt`. A screen accepts up to 32
+selected candidates. Use neutral, connected organic molecules with 4–40 heavy
+atoms and elements H, C, N, O, F, P, S, Cl, Br and I. Isotopes, radicals and
+atom-mapped SMILES are outside this workflow's scope.
+
+Install the verified MetFrag 2.6.11 jar in the active Linux or WSL project
+environment. The offline calculation uses an existing Java 21 runtime in an
+isolated network namespace. Add `--jar PATH` to the installer to use a local
+copy of the official jar. [MetFrag 2.6.11 release](https://github.com/ipb-halle/MetFragRelaunched/releases/tag/v2.6.11)
+
+```sh
+python scripts/install_metfrag.py
+human --screen finished-run --binder-kind ligand --screen-method metfrag
+python scripts/screen_extras.py metfrag finished-run
+```
+
+For one candidate, add `--candidate ID` to the standalone command and use a
+unique exact ID from `ligand_candidates.tsv`. The panel saves results under
+`method_selection.prepared_measurements.metfrag` in `screen.json`. Read the
+raw `FragmenterScore` with the explained and used peak counts. Compare scores
+for candidates tested against the same spectrum with the same settings.
+Each distinct eligible structure is fragmented once. Multiple candidate IDs can
+refer to the same canonical isomeric SMILES and each ID keeps its result.
+Stereoisomers and distinct tautomeric graphs are evaluated separately. The
+`comparison` field counts tested nominations, distinct tested structures and
+distinct structures sharing the highest positive raw score. If every tested
+structure explains zero peaks, the count of top-scoring structures is zero.
+The board derives these counts from the candidate rows when opening older results.
+A candidate outside the precursor mass window is
+`untested`. When no product ion matches a candidate, the result records
+`no_matches`.
+
+## OpenAntigens human target evidence
+
+Use OpenAntigens when planning experimental validation for a binder against a
+human cell-surface or secreted protein. The lookup records the target's
+secreted, GPI-anchored, single-pass or multipass classification and whether the
+release has AlphaFold, PDB, InterPro, family or assembly context. A PDB flag
+calls for checking the deposited structure. An unset flag indicates a gap
+in that source's coverage for this snapshot. The result describes the run
+target. Binding, expression and cross-reactivity require evidence for the
+individual candidate and assay.
+[OpenAntigens methods](https://openantigens.org/methods.html)
+
+Install the pinned compact human index and accession mapping in the project
+environment. The lookup then runs offline against the 2026-11-01 snapshot.
+The OpenAntigens paper describes the earlier 2026-07-23 release.
+[November release metadata](https://openantigens.org/portal_metadata.json) ·
+[OpenAntigens paper](https://doi.org/10.1093/nar/gkag1051) ·
+[Data terms](https://openantigens.org/terms.html)
+
+The finished-run lookup reads the exact canonical UniProt accession from
+the archived generation record or a regular job record. For a standalone
+directory or a run without a recorded target, supply `openantigens.json`
+with these two fields. The nomination and any recorded targets must agree.
+
+```json
+{"version": 1, "target_accession": "P00533"}
+```
+
+```sh
+python scripts/install_openantigens.py
+human --screen finished-run --binder-kind protein --screen-method openantigens
+python scripts/screen_extras.py openantigens finished-run
+```
+
+The panel saves the lookup in `screen.json` under
+`method_selection.prepared_measurements.openantigens`.
+
+## P2Rank receptor pockets
+
+Use P2Rank to nominate small-molecule binding sites when the site on a protein
+receptor is uncertain. For a secondary comparison, review whether a predicted
+pocket overlaps a known site in the supplied receptor's coordinate frame. The
+screen ranks pockets on one receptor for the run. Use its centers and residue
+identifiers to choose sites for structural review or a subsequent docking study.
+Ligand ranking, binding evidence and candidate validation require separate methods.
+[P2Rank method](https://doi.org/10.1186/s13321-018-0285-8)
+
+In the finished ligand run directory, place a regular PDB, CIF or mmCIF receptor
+file beside `p2rank.json` and give all three manifest fields.
+
+```json
+{"version": 1, "receptor": "receptor.pdb", "structure_source": "xray"}
+```
+
+Use a single model with at least 20 amino-acid residues, at most 40,000 atoms,
+and identifiable chain and residue IDs. The receptor file limit is 8 MiB. Declare
+the structure source that matches the recorded method when the file contains
+method metadata. Use `xray` for the default P2Rank model, which uses B-factors.
+At least one amino-acid heavy atom must have a positive B-factor for this profile.
+Use `alphafold`, `predicted`, `cryoem`, or `nmr` for the `alphafold` profile,
+which omits B-factors.
+
+Use Java 17–24 and Gemmi in the screening environment. The screen looks for
+Java under `share/p2rank/java` in the current Python environment, then under
+`JAVA_HOME` and on `PATH`. Prediction uses one CPU thread, a 2 GiB Java heap
+limit and a two-minute timeout. Install the verified P2Rank 2.5.1 release,
+then select the screen for the run.
+
+```bash
+python scripts/install_p2rank.py
+human --screen finished-run --binder-kind ligand --screen-method p2rank
+```
+
+For an offline installation pass `--archive FILE` to the installer with the
+pinned release archive. The installer checks the archive checksum and records
+the installed file hashes in the project environment. Run the standalone screen
+with `python scripts/screen_extras.py p2rank finished-run`.
+[P2Rank 2.5.1 release](https://github.com/rdk/p2rank/releases/tag/2.5.1)
+
+Results are saved in `screen.json` under
+`method_selection.prepared_measurements.p2rank`. Each pocket has a native score,
+a probability specific to the selected model, a center in Ångströms in the
+receptor frame, and residue IDs from the supplied structure. An accepted
+header-only report records `complete` with an empty pocket list.
+
 ## AutoDock Vina fixed-pose score
 
 For a finished ligand run, put `vina_poses.json` beside `inference_samples/`. Give each
@@ -311,6 +1150,563 @@ structure counts once, including unreadable files and designs missing settings.
 `unmatched_manifest_ids` lists manifest entries with no corresponding structure.
 Rows with a blocker carry `status: untested`. These descriptive scores have no
 pass/fail threshold and do not enter the screening verdict.
+
+## CellProfiler chromogenic tissue and chip imaging
+
+Use `cellprofiler` to quantify hematoxylin-counterstained, DAB-developed brightfield
+images from a human frozen tissue panel or a human chip. A reviewer outlines the
+anatomical region in each field. CellProfiler 4.2.8 separates the two stains with
+its built-in hematoxylin and DAB presets and measures the DAB channel inside
+each mask. This preserves signal from small annotated regions that a whole-slide
+mean could obscure. The source images, tissue identity, reagent assignments and
+control performance still need review by the study pathologist.
+[UnmixColors](https://cellprofiler-manual.s3.amazonaws.com/CPmanual/UnmixColors.html)
+and [MeasureImageIntensity](https://cellprofiler-manual.s3.amazonaws.com/CPmanual/MeasureImageIntensity.html).
+
+Install the host image reader and pull the pinned, CPU-only CellProfiler release
+into the local Docker engine once. The container uses the released code and
+requires no model weights. The unpacked container filesystem measured 3.27 GB.
+The native worker reached 702 MB peak resident memory while processing four
+2,048 × 2,048-pixel fields in one batch. The worker container has a 3 GiB memory limit.
+
+```bash
+uv pip install ".[cellprofiler]"
+docker pull --platform linux/amd64 cellprofiler/cellprofiler@sha256:fec440caa2b44edf80f9bd440a3d8c6b214d72437332ad2586a32d79e2eae2a4
+```
+
+Place `cellprofiler.json` in the finished run. This example compares renal
+cortex on candidate and isotype-control sections from the same coded specimen.
+Use the run's candidate ID and record reagent lots, staining batches and
+acquisition settings under stable lab identifiers. The manifest links those
+identifiers to the images. Keep the specimen key and acquisition log in the lab.
+
+```json
+{
+  "stains": "hematoxylin_dab",
+  "fields": {
+    "cortex_test": {
+      "role": "candidate", "candidate_id": "antibody_A", "reagent_id": "test_lot_17",
+      "material": "human_frozen_tissue", "specimen_id": "specimen_01",
+      "tissue": "Kidney", "region": "Cortex", "assay_batch": "batch_01",
+      "acquisition_id": "scan_profile_01",
+      "image": "fields/test.png", "mask": "fields/test_cortex.png"
+    },
+    "cortex_isotype": {
+      "role": "isotype_control", "reagent_id": "isotype_lot_03",
+      "material": "human_frozen_tissue", "specimen_id": "specimen_01",
+      "tissue": "Kidney", "region": "Cortex", "assay_batch": "batch_01",
+      "acquisition_id": "scan_profile_01",
+      "image": "fields/isotype.tif", "mask": "fields/isotype_cortex.png"
+    }
+  },
+  "comparisons": [
+    {"comparison_id": "kidney_cortex_01", "candidate_id": "antibody_A",
+     "test": "cortex_test", "negative": "cortex_isotype"}
+  ]
+}
+```
+
+Use an independently acquired `isotype_control` or `no_primary_control` appropriate
+to the experiment. The test and negative fields must declare the same material,
+specimen, tissue, region, staining batch and acquisition settings. A separate
+known-positive field can be attached using `"positive": "field_id"` and
+`"role": "positive_control"`. It can come from another specimen or from an
+`assay_control` such as a cell pellet. Its staining batch and acquisition settings
+must match the test field. The report states whether a positive control was
+measured. The reviewer determines whether it stained as expected.
+
+Each image is one lossless 8-bit RGB field in PNG or classic TIFF format. Supply a
+separate, nonempty binary mask on that image's own pixel grid, using 1-bit pixels
+or 8-bit grayscale with values 0/1 or 0/255. Use top-left orientation and
+run-relative file paths. A mask may enclose different numbers of pixels on the two
+sections. The person preparing each mask verifies that it overlays its original
+field. Measurements use each region's mean and median. Export one field per
+specimen from whole-slide scans or tissue microarrays before
+running the screen. Each file is limited to 20 MiB and each field to 4,194,304 pixels.
+The manifest supports 1,024 field definitions and 512 comparisons. Across eligible
+fields, a request can process up to 4 GiB of encoded image and mask data and
+1,073,741,824 image pixels. A field used in several comparisons counts once.
+
+```bash
+python scripts/screen_extras.py cellprofiler finished-run --candidate antibody_A
+human --screen finished-run --binder-kind protein --screen-method cellprofiler
+```
+
+The picker and candidate MCP expose the same method. Finished-run results are in
+`screen.json → method_selection → prepared_measurements → cellprofiler → comparisons`.
+Use the field ID, image hash and mask hash to locate the exact region for review.
+The signed `test_minus_negative_mean_dab` is the difference between two regional
+means on CellProfiler's normalized intensity scale. Retain negative differences
+and report each donor and anatomical region separately. Reuse a field by its ID
+when it legitimately serves several comparisons. A candidate-specific execution
+checks for contradictory use of the same pixels in other eligible fields, and
+returns measurements only for the selected candidate.
+
+Use `human_chip` for identically stained chip images. A reagent-control contrast
+measures staining background. Establishing a treatment effect requires biological
+comparators. These image measurements alone cannot establish antibody specificity,
+tissue injury, or absence of cross-reactivity in an unexamined tissue.
+
+## PK-Sim human organ exposure
+
+Use `pksim` when a small molecule has a parameterized human PBPK model and a
+dosing regimen relevant to the exposure question. The screen runs the native
+PK-Sim 12.3.173 solver on CPU. One nomination selects one individual simulation
+and one dosed compound. Outputs can include a separately modelled, undosed
+analyte when it is present in that scenario. In a linked-chip study, compare
+each prediction with measurements for the same compound, compartment, regimen
+and time window. Concentration alone cannot establish organ injury.
+[PK-Sim simulations](https://docs.open-systems-pharmacology.org/working-with-pk-sim/pk-sim-documentation/pk-sim-simulations)
+
+Install the project extra and the pinned portable Windows release. WSL uses
+Windows executable interop and a cache on a Windows-accessible drive.
+The portable release is 109 MB to download and occupies 237 MB extracted.
+The cimetidine control below used CPU only. Recording four concentration curves
+for that scenario gave an observed peak solver working set of 541 MB on Windows. Memory
+use depends on the model and the number of requested outputs.
+Model registration is a local operator action. Review the PK-Sim project
+snapshot and verify its compound identity before registering it. The registry
+binds the exact snapshot bytes, compound name and full standard InChIKey.
+PK-Sim compound names are modeler-defined. The screen independently derives
+the candidate's InChIKey from its submitted SMILES.
+
+```bash
+uv pip install ".[pksim]"
+python scripts/install_pksim.py
+python scripts/install_pksim.py --model Cimetidine-Model.json --compound Cimetidine --inchikey AQIXAKUUQRKLND-UHFFFAOYSA-N
+```
+
+This example uses the original OSP cimetidine project and its individual IV
+simulation. The registered digest printed by the installer must match the
+digest in the manifest. Re-exporting a project can change its digest.
+[Exact reference snapshot](https://github.com/Open-Systems-Pharmacology/Cimetidine-Model/blob/ee1d8f6e933298a79f8a0dd7be47fffa6e02cd7c/Cimetidine-Model.json)
+
+```json
+{
+  "samples": {
+    "cimetidine_control": {
+      "model_sha256": "314c835349119455bc5c60c16febbf301b55de97eb0f3e4279313949b4b6f8aa",
+      "simulation": "iv 100 mg (5 min), Grahnen 1979, n=3",
+      "compound": "Cimetidine",
+      "outputs": ["Organism|PeripheralVenousBlood|Cimetidine|Plasma (Peripheral Venous Blood)"]
+    }
+  }
+}
+```
+
+Save this as `pksim.json`. Put the matching `candidate_id` and `smiles` in
+`ligand_candidates.tsv`. For this control the two tab-separated columns are
+shown below. [Cimetidine identity](https://pubchem.ncbi.nlm.nih.gov/compound/2756)
+
+```tsv
+candidate_id	smiles
+cimetidine_control	CC1=C(N=CN1)CSCCNC(=NC)NC#N
+```
+
+A run containing only `ligand_smiles.txt` can use
+`run_ligand` for a run-level request. For gut, hepatic or renal exposure, select
+the exact concentration observers in the model, export and register the updated
+project, and name those paths in `outputs`.
+
+```bash
+python scripts/screen_extras.py pksim finished-run --candidate cimetidine_control
+human --screen finished-run --binder-kind ligand --screen-method pksim
+```
+
+The picker and MCP use the same method. The finished-run report stores each
+case in `screen.json → method_selection → prepared_measurements → pksim → samples`.
+Each curve retains its native concentration and time units, exact output path,
+time points, and simulated values. `grid_cmax` is the highest sampled
+concentration and `grid_tmax` is the first sampled time attaining it.
+`auc_trapezoidal` integrates between `auc_start` and `auc_end` on the native
+grid. Blood, whole tissue, interstitial fluid and lumen are distinct quantities.
+The native export and project each have a SHA-256 digest. The screen reports
+unusable scenarios individually and leaves the safety verdict to its existing
+assays.
+
+A run accepts up to eight candidate scenarios, eight concentration paths per
+scenario and 8,192 concentration values per scenario. Population simulations,
+scenario-local building-block overrides, coadministration, amounts, fractions
+and excretion rates are outside the supported individual concentration endpoint. Each model execution has a
+180-second timeout. [PK-Sim release](https://github.com/Open-Systems-Pharmacology/PK-Sim/releases/tag/v12.3.173)
+
+## EPA httk steady-state exposure screen
+
+Choose **EPA httk steady-state exposure** for batch prioritization of small
+molecules that already have usable human hepatocyte clearance and plasma
+protein binding measurements in the package. It shows how modeled plasma
+concentrations vary across an adult population under the same reference
+scenario. As a secondary use, compare the estimate with more detailed PK
+work for the *same substance* and a compatible exposure scenario. Do not
+pool these values with concentration–time curves, clearance, bioactivity, or
+hazard scores. [EPA httk overview](https://www.epa.gov/comptox-tools/high-throughput-toxicokinetics-httk-r-package)
+
+Supply up to 32 named small molecules per batch. In this example,
+`ligand_candidates.tsv` contains two tab-separated columns.
+
+```tsv
+candidate_id	smiles
+caffeine	Cn1c(=O)c2c(ncn2C)n(C)c1=O
+acetaminophen	CC(=O)Nc1ccc(O)cc1
+```
+
+Save the matching nominations in `httk.json`.
+
+```json
+{
+  "scenario": "human_oral_unit_intake",
+  "candidates": {
+    "caffeine": {"cas": "58-08-2", "dtxsid": "DTXSID0020232"},
+    "acetaminophen": {"cas": "103-90-2", "dtxsid": "DTXSID2020006"}
+  }
+}
+```
+
+RDKit derives the full standard InChIKey from each submitted structure. Its
+CAS number, EPA substance ID and InChIKey must match one record in the pinned
+DSSTox release. EPA httk must independently resolve both identifiers to one
+curated row. A mismatch, ambiguous association, or missing reference leaves
+the candidate untested. The compact index covers 14,980 CAS/DTXSID pairs
+with an unambiguous standard InChIKey in the intersection of the two releases.
+Further assay and model requirements determine which of these can be simulated.
+[EPA DSSTox release](https://doi.org/10.23645/epacomptox.5588566.v8).
+
+The fixed model is EPA httk 2.7.4 `calc_mc_css` with `3compartmentss`, a
+standardized oral intake of **1 mg/kg/day**, and the `mg/L` total-plasma
+readout. It uses 1,000 seeded direct HTTK-Pop resamples of human adults ages
+18–79, holding the in-vitro measurements fixed. The 5th percentile, median,
+and 95th percentile summarize simulated variation across adults under this
+reference intake. The model retains EPA's oral-absorption and other physiological
+assumptions. Each reported member also records the unadjusted assay central values
+for human intrinsic clearance (µL/min per million hepatocytes) and plasma fraction
+unbound (unitless), with the package's source reference for each measurement.
+[EPA httk model documentation](https://cran.r-project.org/web/packages/httk/refman/httk.html#calc_mc_css)
+
+Skip the screen for novel structures without a matching reference,
+non-oral scenarios, or candidates for which the reference input is missing,
+unusable, or outside the model's applicability checks. It does not substitute
+ADMET-AI microsomal clearance in `uL/min/mg` for hepatocyte clearance or
+construct binding data from a predicted score. It adds no cutoff and does not
+change the screening verdict.
+
+Install the pinned EPA R package and its dependencies into a trusted R library.
+The CRAN 2.7.4 source archive is 4,160,963 bytes with SHA-256
+`e186171a90d97fe456e7836ec3096719feb49354afd71860df2d2a5c8c4c51b2`.
+[CRAN httk](https://cran.r-project.org/web/packages/httk/index.html).
+
+```r
+install.packages("remotes", repos = "https://cloud.r-project.org")
+remotes::install_version("httk", version = "2.7.4", repos = "https://cloud.r-project.org", upgrade = "never")
+```
+
+Configure
+`RFD4_HTTK_RSCRIPT` with that runtime's `Rscript` executable, use
+`DATA_PATH/httk/bin/Rscript` on Linux, or place the trusted `Rscript` on `PATH`.
+Install the project extra and build the local identity index once. The setup
+command streams the 290 MB EPA ZIP archive, verifies its SHA-256, and installs a
+792,035-byte index under `DATA_PATH/.cache/httk/2.7.4` (the default is the checkout's
+`data` directory). For an existing downloaded archive use
+`--from-file DSSTox_CCD_dump_12092025_CSVs.zip`. Screening runs offline on CPU.
+The tested R 4.5.3 environment occupied 1.55 GB. A batch of 32 distinct medicines
+finished in 21.45 seconds with a sampled peak of 543 MB resident memory across
+Python and R. It returned 26 estimates and recorded six candidates with unusable
+human assay inputs. The package uses no GPU or model weights.
+
+```bash
+uv pip install ".[httk]"
+python scripts/install_httk_identity.py
+python scripts/screen_extras.py httk finished-run --candidate caffeine
+human --screen finished-run --binder-kind ligand --screen-method epa_httk
+```
+
+The browser and MCP offer the screen for explicit selection. MCP `run_selected_screens` accepts
+`methods: ["epa_httk"]`. In a CLI screening record the results are stored under
+`method_selection.prepared_measurements.epa_httk` with per-candidate coverage
+and no raw structures.
+
+## CYPstrate substrate profiling
+
+Use this screen when metabolism by a particular human CYP is relevant to a systemic
+small molecule. Declare the exposure and name each candidate's isoforms in
+`cypstrate.json`. Candidate IDs refer to the `candidate_id` and `smiles` columns in
+`ligand_candidates.tsv`. A run with only `ligand_smiles.txt` can use the single
+manifest ID `run_ligand` for a run-level request.
+
+```json
+{
+  "systemic": true,
+  "prediction_mode": "best_performance",
+  "candidates": {
+    "binder_0": ["CYP1A2", "CYP3A4"],
+    "binder_1": ["CYP2D6"]
+  }
+}
+```
+
+Supported isoforms are CYP1A2, CYP2A6, CYP2B6, CYP2C8, CYP2C9, CYP2C19,
+CYP2D6, CYP2E1 and CYP3A4. The default `best_performance` mode uses the authors'
+hard-voting classifiers. Each requested pair can receive a substrate classification,
+a non-substrate classification or an abstention. Select `full_coverage` explicitly
+to use the single classifier for each isoform. Both modes share the development
+corpus of 1,831 compounds curated from Hunt and Tian. [CYPstrate study](https://doi.org/10.3390/molecules26154678)
+
+Install the released Linux/AMD64 image once on the local Docker engine. The
+project's CYPstrate extra supplies RDKit for reading nominations. The image
+contains the authors' Python, preprocessing code and fitted models in about
+425 MB of compressed layers. Inference runs on CPU with networking disabled.
+
+```bash
+uv pip install ".[cypstrate]"
+docker pull --platform linux/amd64 ghcr.io/molinfo-vienna/cypstrate@sha256:587227598961627192f5c007757df46369d2a2960e004b726a95eb1bf3774d5b
+python scripts/screen_extras.py cypstrate finished-run
+human --screen finished-run --binder-kind ligand --screen-method cypstrate
+```
+
+The picker and MCP accept `cypstrate`. The standalone command also accepts
+`--candidate binder_0` to return that candidate's nominated isoforms. Finished-run results appear under
+`screen.json → method_selection → prepared_measurements → cypstrate`.
+Each row retains its method, isoform and model status. `nearest_training_maccs_tanimoto`
+is molecular similarity to the nearest training example for that isoform. The
+submitted and standardized molecular forms have separate identity digests because
+the upstream preprocessing can change salts, tautomers and stereochemistry.
+The screen accepts up to 256 nominated candidates, a 64 KiB manifest, a 1 MiB
+molecular table and 256 atoms per submitted form.
+
+Substrate status identifies a metabolism hypothesis for assay planning. The CYP
+inhibition panel reports its own observations. Clearance rates and clinical
+interaction risk require separate evidence. [Authors' model and output definitions](https://github.com/molinfo-vienna/cypstrate/tree/c153960de7fba9b9b07047b7f20e55277a88fb41)
+
+## Badapple 2 historical scaffold assay evidence
+
+Use Badapple 2 when deciding which assay-interference controls or orthogonal
+assays to include for a cyclic small-molecule lead. For a secondary review,
+compare the scaffold records for a short analogue series using the same snapshot.
+The local HierS workflow looks up each scaffold in the publisher's historical
+PubChem assay summary. The dump snapshot is `2025-08-08`. The publisher lists
+`2024-11-26` as the data cutoff. Treat each pScore as scaffold-level historical
+evidence. Establish candidate activity, selectivity and safety with the relevant
+experiments. [Badapple 2 study](https://doi.org/10.1021/acs.jcim.5c02297) ·
+[Publisher data description](https://chiltepin.health.unm.edu/badapple2/about.html)
+
+Supply `ligand_candidates.tsv` with the header `candidate_id<TAB>smiles`, or
+one plain SMILES in `ligand_smiles.txt`. The table takes precedence. Each screen
+accepts up to 32 selected entries. Use a single-component cyclic organic
+molecule with up to 80 heavy atoms and a SMILES up to 512 characters. The
+worker caps enumeration at five ring systems and 128 scaffold keys per molecule.
+
+### Local CPU setup
+
+In the project environment, install the pinned data with the PostgreSQL client
+tool `pg_restore` available on `PATH`. The installer verifies the publisher's
+slim archive, streams its scaffold table into SQLite, and records the snapshot
+and file digest. This uses the client to read the dump offline. Candidate
+screening reads the local SQLite database and uses the isolated HierS worker.
+Run these commands once from the project root to set up the worker on Linux or WSL.
+
+```bash
+badapple_worker="$(python -c 'import sys; from pathlib import Path; print(Path(sys.prefix) / "share" / "badapple2" / "chem-env")')"
+uv venv --python 3.12 "$badapple_worker"
+uv pip install --python "$badapple_worker/bin/python" rdkit==2024.3.3 scaffoldgraph==1.1.1 numpy==1.26.4
+python scripts/install_badapple2.py
+```
+
+Use `--dump FILE` for a local copy of the slim archive and `--pg-restore PATH`
+for a PostgreSQL client outside `PATH`. The installed snapshot lives at
+`share/badapple2/2025-08-08/scaffolds.sqlite` under the Python environment.
+[Publisher archive instructions](https://github.com/unmtransinfo/Badapple2#easy-setup)
+
+```bash
+human --screen finished-run --binder-kind ligand --screen-method badapple2
+python scripts/screen_extras.py badapple2 finished-run --candidate lead_A
+```
+
+The stand-alone `--candidate` option selects a named TSV entry. The finished-run
+screen saves evidence in `screen.json` under
+`method_selection.prepared_measurements.badapple2`. Read each pScore alongside
+the scaffold's active and tested assays, compounds, substances and samples.
+`in_drug` records whether the scaffold appears in the publisher's drug set.
+A numeric zero is a reported score. A matched scaffold with a null pScore is
+`unscored`. Missing matches are `not_in_corpus` and multiple matches are
+`ambiguous`. When no scaffold has a reported score, the candidate remains
+`untested`.
+
+## SCScore synthetic complexity
+
+Use SCScore before chemistry review when other lead-selection criteria leave two or
+more small molecules otherwise comparable. Declare that set in `scscore_comparison.json`.
+The names refer to the `candidate_id` and `smiles` columns in the run's
+`ligand_candidates.tsv`.
+
+```json
+{"candidates": ["binder_0", "binder_1"]}
+```
+
+If a verified route and procurement costs settle this comparison, record the decision
+and its two source identifiers in the same manifest.
+
+```json
+{
+  "candidates": ["binder_0", "binder_1"],
+  "decision_evidence": {
+    "verified_route_ref": "ELN-418",
+    "procurement_costs_ref": "QUOTES-27",
+    "resolves_comparison": true
+  }
+}
+```
+
+The reviewer attests that those records resolve the named comparison. The screen
+then records a skip even when the checkpoint is absent. An individual reference,
+or two references with the decision still open, leaves the comparison eligible.
+A claim of resolution missing either source returns a blocker.
+
+```bash
+uv pip install ".[scscore]"
+python scripts/install_scscore.py
+human --screen finished-run --binder-kind ligand --screen-method scscore
+```
+
+The installer verifies the authors' 6,178,760-byte compressed JSON checkpoint for
+the 1024-bit Boolean model. An offline install accepts `--from-file FILE`. Screening
+uses local RDKit chiral Morgan fingerprints and NumPy on CPU. The model learned
+relative complexity from about 12 million Reaxys reactions. Its dimensionless
+scores range from 1 to 5. Higher values indicate greater predicted synthetic
+complexity. Establishing route feasibility requires chemistry review. The RDKit
+synthetic-accessibility score has its own method and scale.
+[Authors' implementation and training description](https://github.com/connorcoley/scscore/tree/37090a6aa8220408f572de20224c33c221312d16)
+
+Results appear under `screen.json → method_selection → prepared_measurements → scscore`.
+Each scored member has its candidate ID, molecular identity digest and unrounded
+score. A complete comparison receives ranks from lowest complexity upward, with
+equal scores sharing a rank. A partial comparison reports the individual results
+and blockers. A candidate-scoped request measures only that member and omits its
+rank. The same inputs work outside a generated run with
+`python scripts/screen_extras.py scscore DIRECTORY`.
+
+The comparison accepts up to 256 named nominations from a table of at most 1 MiB,
+with one connected organic molecule per nomination. Supply the intended chemical
+form. Duplicate IDs, salts and mixtures require an unambiguous nomination.
+Equivalent SMILES identify one compound for inference. A comparison needs at least
+two distinct supported molecules.
+
+## sPyRMSD redocking controls
+
+Use this screen to measure how closely a redocked ligand recovers its experimentally
+observed binding pose. Place `spyrmsd_controls.json` and the two ligand files in the
+finished run directory. Each entry names the generated candidate and its redocked pose.
+Omit candidates without a matched experimental reference.
+
+```json
+{
+  "samples": {
+    "binder_0": {
+      "pose": "binder_0_redocked.sdf",
+      "reference": "crystal_ligand.sdf",
+      "experimental_reference_id": "crystal23:model1:A:LIG:401",
+      "pose_frame": "crystal23.model1.prep1",
+      "reference_frame": "crystal23.model1.prep1"
+    }
+  }
+}
+```
+
+Supply two distinct, single-record 3D SDF or MOL files with bond information and
+coordinates in ångströms. Identify the experimental structure, model, chain and
+ligand instance in `experimental_reference_id`. Copy each frame ID from the
+corresponding coordinate preparation. These IDs start with a letter or digit and
+accept letters, digits, periods, underscores, colons, plus signs and hyphens, up
+to 128 characters. If the receptors started in different frames,
+apply the receptor alignment to the ligand coordinates before export. The screen
+checks equality of the declared IDs. Ligand coordinates alone cannot verify that
+alignment or establish the origin of the reference.
+
+A control requires the same connected chemical form, including bond orders,
+formal charges, isotopes and stereochemistry. The score is the smallest heavy-atom
+RMSD over element- and heavy-isotope-labelled graph mappings. Both poses retain their
+supplied coordinates throughout, so displacement within the pocket contributes to the
+result. The calculation has no fitted model or pass threshold. PoseBusters supplies
+the separate physical plausibility checks. [sPyRMSD method](https://doi.org/10.1186/s13321-020-00455-2)
+
+Install the project's `spyrmsd` extra and select the screen on a finished ligand run.
+
+```bash
+uv pip install ".[spyrmsd]"
+human --screen finished-run --binder-kind ligand --screen-method spyrmsd
+```
+
+For a standalone redocking experiment, use the same manifest and ligand files in a
+control directory. The sample names then identify the controls in that experiment.
+
+```bash
+python scripts/screen_pose_safety.py spyrmsd controls --sample binder_0
+```
+
+The standalone command prints JSON. The finished-run screen saves the result under
+`screen.json → method_selection → prepared_measurements → spyrmsd`.
+Each measured sample records `rmsd_angstrom`, the experimental reference and frame IDs,
+the heavy-atom count and both input hashes. The candidate picker and MCP tool
+`run_selected_screens` also accept `spyrmsd`. A missing match or incompatible frame
+supplies a skip reason. In a mixed run, failed nominations retain their blockers and
+count toward `attempted`. The interactive limits are 128 nominated controls, a 64 KiB
+manifest, 1 MiB per ligand file, 256 heavy atoms and 4,096 atom mappings per control.
+A control exceeding the mapping limit returns `untested`. [sPyRMSD release](https://pypi.org/project/spyrmsd/0.9.0/#files)
+
+## ESP-Sim prealigned ligand comparison
+
+Use ESP-Sim to compare a candidate pose with a relevant reference pose
+already placed in the same coordinate frame. The supplied coordinates define
+the comparison. The scores can guide inspection of shape and electrostatic
+differences. Binding and potency require target-specific experimental evidence.
+[ESP-Sim study](https://doi.org/10.1021/acs.jcim.1c01535)
+
+Place `espsim.json` and two separate SDF files in the finished ligand run
+directory. Use distinct local SDF filenames and distinct candidate and
+reference IDs. Give all six manifest fields.
+
+```json
+{
+  "version": 1,
+  "candidate_id": "lead_A",
+  "reference_id": "reference_A",
+  "candidate_structure": "lead_A.sdf",
+  "reference_structure": "reference_A.sdf",
+  "prealigned": true
+}
+```
+
+Each SDF must contain one valid 3D record with explicit hydrogens and a title
+that exactly matches its manifest ID. Use connected, uncharged organic
+molecules containing carbon, with 3–48 heavy atoms and at most 128 atoms per
+record. Supported elements are H, C, N, O, F, P, S, Cl, Br and I. Isotopes
+and radicals are outside the supported input scope. Express both poses in
+ångströms in one common frame. The combined span must be at most 48 Å along
+each coordinate axis. If `ligand_candidates.tsv` includes the nominated
+candidate ID, its molecular graph must agree with the candidate SDF.
+
+Install the verified ESP-Sim 0.0.1 scoring source in the active project
+environment. The comparison uses RDKit and NumPy on the CPU. Add
+`--archive ARCHIVE` to use a local copy of the official source archive.
+[ESP-Sim 0.0.1 release](https://pypi.org/project/espsim/0.0.1/)
+
+```sh
+python scripts/install_espsim.py
+human --screen finished-run --binder-kind ligand --screen-method espsim
+python scripts/screen_extras.py espsim finished-run
+```
+
+Add `--candidate ID` to the standalone command to select the exact candidate
+named in the manifest. The panel saves results in `screen.json` under
+`method_selection.prepared_measurements.espsim`.
+
+The heavy-atom RDKit shape Tanimoto score is dimensionless and ranges from
+0 to 1. The electrostatic Carbo score comes from the analytic Gaussian
+overlap of the two potentials using Gasteiger charges computed in 12 iterations.
+Its raw dimensionless range is −1 to 1. A negative Carbo value denotes
+opposing potentials in the supplied frame. Read the two scores independently.
+An available shape score can accompany an unscored electrostatic result with
+its blocker recorded.
+[ESP-Sim scoring implementation](https://github.com/hesther/espsim) ·
+[RDKit shape documentation](https://www.rdkit.org/docs/source/rdkit.Chem.rdShapeHelpers.html)
 
 ## PRODIGY protein-pair affinity
 
@@ -425,7 +1821,7 @@ protein binder that is `immunogenicity`, `proteome_offtarget`, `mhc_i`, `mhc_ii`
 One axis reading `hit` makes the call `axis_hit` regardless of the bar; every axis
 clear makes it `screened_clear`; anything else stays `untested`.
 
-New screens record `screen_version: 12`. The optional `method_selection` block records the
+New screens record `screen_version: 19`. The optional `method_selection` block records the
 preset, selected methods, attempted methods, reasons for skips and method-specific results.
 Version 11 added optional SyGMa metabolite predictions.
 Version 10 added QupKake microscopic pKa.
@@ -1016,6 +2412,38 @@ about one target at a time.
 `--coverage` reports what a run has on disk and what it will still ask for. A
 run with every table present is **not** offline: those three lookups remain, and
 the report says so rather than letting a network error be the first news of it.
+
+## ImmuScope study benchmarks
+
+Run `python scripts/screen_extras.py immuscope-study` to read the published
+benchmarks for all three ImmuScope models. The same JSON record is available
+under `reference_studies.immuscope` in the MCP `declare_corpora` response.
+Both entry points work offline and take no study inputs.
+
+| Model | Evidence in the study | Reported performance |
+|---|---|---|
+| ImmuScope-EL | Eluted MHC-II ligands and decoys, evaluated across alleles | Precision–recall AUC 0.856, positive predictive value 0.796 |
+| ImmuScope-CD4 | Identification of known CD4 epitopes within their source proteins for a specified MHC-II allele | Mean per-triplet ROC AUC 0.825 |
+| ImmuScope-IM | Peptide-level immunogenicity on 17,897 held-out records, including sampled negatives | ROC AUC 0.909 (95% CI 0.901–0.918) |
+
+Each value describes performance on its own study cohort. Measuring a
+therapeutic's clinical anti-drug antibody incidence requires patient data.
+The Figure 2 source workbook reproduces the EL metrics from 58 allele rows
+and the CD4 mean from 842 triplets. Its caption gives 824 for the paired
+statistical comparison. The Figure 5 workbook omits the pooled IM ROC panel.
+Integrating the curve in the published figure gives 0.90936. The confidence
+interval comes from the authors.
+[Shen et al., Figures 2 and 5 and Methods](https://doi.org/10.1038/s42256-025-01073-z)
+
+A local CPU test ran the released ten-checkpoint ensemble for each endpoint on
+one fixed reference, native human insulin B9–23 (UniProt P01308) presented by
+HLA-DQ8. The raw ensemble scores were 0.21929 for EL, 0.27916 for CD4, and
+0.95919 for IM. Each model has its own scale. Human islet-derived CD4 T-cell
+receptors from two donors with type 1 diabetes responded to this peptide in
+a published experiment. The exact peptide–HLA pair occurs in three rows of
+the released CD4 evaluation set and one row of the IM training set. The
+high IM score is therefore an in-sample result. This control verifies model
+execution on a known epitope. [Human assay, Figure 4](https://doi.org/10.2337/db16-1025)
 
 ## Reference tables
 
@@ -1857,6 +3285,71 @@ Model-backed methods check their required software and assets. Each method shows
 workload and explains which inputs it needs. A prepared QupKake, SyGMa, Vina, PRODIGY
 or nanobody manifest requests that method when the inputs match.
 
+Uniquely named rows in `ligand_candidates.tsv` can be selected before coordinates
+exist. **Select recommended screens** uses the chosen candidate's inputs, stated
+experimental objective and workload. **Select all installed screens** also checks
+installed methods that need more inputs. The execution report explains each skip.
+Saved, attributable observations remain readable if the original producer was removed.
+
+For small molecules, optionally place `screening_context.json` in the run directory.
+Use the same candidate IDs as the molecular nominations.
+
+```json
+{
+  "candidates": {
+    "oral-lead": {"route": "oral", "systemic": true},
+    "topical-lead": {"route": "topical", "systemic": false}
+  }
+}
+```
+
+Each entry accepts a route, a boolean declaration of systemic exposure, or both.
+Supported routes are `oral`, `intravenous`, `subcutaneous`, `intramuscular`,
+`inhaled`, `topical` and `other`. A route alone makes no claim about systemic
+exposure. A valid `cypstrate.json` can also supply the systemic declaration for
+its named candidates. Partial or conflicting evidence leaves the affected
+recommendation manual. At run scope, the chosen batch must meet the method's
+criteria. Selecting one candidate evaluates just that nomination.
+
+Every option shows **Validation performance**. **Evidence basis** tells you how
+that performance was assessed. For example, PRODIGY's quoted error comes from
+its development set, while sPyRMSD was compared with another RMSD implementation.
+Agreement between programs verifies the calculation. Predicting recovery of an experimental
+pose requires a matched redocking control. [PRODIGY method](https://wenmr.science.uu.nl/prodigy/method) ·
+[sPyRMSD study](https://doi.org/10.1186/s13321-020-00455-2)
+
+A published estimate identifies the endpoint, metric and evaluation population with its source. Sensitivity
+and specificity describe two different outcomes at a given cutoff, and RMSE
+measures error in the endpoint's units. For a measurement, the row names the
+controls or reference needed to assess error. A model without a verified
+estimate for the configured release says so. **What this means** explains how
+much weight to give the result for an experimental decision. QupKake's published
+RMSE of 0.5 to 0.8 pKa units matters most when the expected pKa is near the assay
+pH. The Caco-2 study's external macrocycle Spearman correlations of 0.40 for permeability
+and 0.19 for efflux support experimental follow-up, particularly for efflux.
+The picker identifies that study's model and the subsequent retraining of the
+released weights. [QupKake study](https://doi.org/10.1021/acs.jctc.4c00328) ·
+[Caco-2 supplement, Figure S4](https://doi.org/10.1021/acsomega.5c04861.s001)
+
+These annotations are available offline, are returned by MCP `plan_screening`
+in each method's `performance` object, and accompany selected methods in
+`screen.json` under `method_selection.choices`. A locally trained BindingDB
+regressor can report held-out errors by target from its configured model manifest.
+Each target's error describes that fit. Source links let a reviewer check
+published endpoint-specific values, including those distributed with
+the retrained release of ADMET-AI. [ADMET-AI v2.0.1 endpoint table](https://github.com/swansonk14/admet_ai/blob/v_2.0.1/admet_ai/resources/data/admet.csv)
+
+The browser captures each selected method's evidence before it runs. Open the
+result to see what was available at execution time, even after local model
+files change. A result saved without a snapshot keeps its original measurement.
+MCP callers can request the same per-result evidence with `include_performance: true`
+on `run_selected_screens`. Omitting that flag returns the usual compact results.
+
+**Badapple 2 historical scaffold assay evidence** can be recommended when the
+local snapshot and chemistry worker are available and every selected nomination
+is a supported cyclic small molecule. Mixed batches remain selectable. Review
+the experimental coverage beside each reported scaffold score when choosing counterscreens.
+
 **RDKit assay-interference alerts and descriptors** are checked by default for a ligand
 whose nomination identifies one complete, connected molecular graph. The picker verifies
 the descriptor software and the PAINS A/B/C, BRENK and NIH catalogues before recommending
@@ -1880,6 +3373,21 @@ The result estimates aqueous logS across the conditions represented in the train
 data. A pH-specific solubility claim needs a measurement at that pH.
 [AqSolDB study](https://www.nature.com/articles/s41597-019-0151-1)
 
+**fastsolv organic-solvent solubility** can be recommended when the local
+model is installed, `fastsolv.json` specifies supported conditions, and the
+selected solutes all meet the chemistry requirements. The picker shows how many
+solutes qualify and the total predictions across the requested conditions.
+Select a partially eligible batch manually or select one eligible solute.
+
+**Jazzy hydration and hydrogen-bond descriptors** can be recommended when
+the isolated runtime is installed and all selected molecular forms meet the
+neutrality and stereochemistry requirements. A mixed batch remains available
+for manual screening of its eligible members.
+
+Badapple 2, MetFrag, fastsolv and Jazzy preserve the source of a saved
+measurement. A single `ligand_smiles.txt` supplies one result row labelled
+`run_ligand`. A named candidate requires a nomination in `ligand_candidates.tsv`.
+
 **Supplied solubility and aggregation measurements** are checked when every row in
 scope has a finite score, a method, a source, and an explicit unit or scale. Use
 `unit` or `units` for a physical unit or a named predictor scale. A readable score
@@ -1897,6 +3405,21 @@ experiment. A partial run, a peptide selection, or a scope with more than 16 MiB
 structure files requires manual selection. The reader verifies sequence identity
 before returning any score. An invalid report, missing match, ambiguous match, or
 unresolved chain leaves the affected candidate unchecked. [Protein-Sol study](https://doi.org/10.1093/bioinformatics/btx345)
+
+**Dimorphite-DL ligand protonation states** can be recommended for a finished
+ligand run with a valid `dimorphite.json` and eligible molecular input. Set the
+pH window from the assay or docking conditions before selecting the screen.
+
+**CREST ligand conformer sampling** can be recommended after the picker verifies
+the local runtime and the prepared SDF explicitly nominated in `crest.json`.
+For a named candidate, the manifest and SDF title must identify that candidate.
+
+**PROPKA structure-dependent pKa** can be recommended when the installed runtime
+and the explicitly prepared PDB named in `propka.json` are eligible for the
+selection. For a named candidate the manifest must identify that candidate.
+Set `assay_ph` when the predicted sites will inform a specific assay pH.
+A PDB with incomplete termini remains available for manual screening. Review
+the missing atoms before interpreting a partial result.
 
 **QupKake microscopic pKa** is checked for an expressly configured ligand run
 with one supported, identifiable molecular state. Each distinct state starts its own
@@ -1916,6 +3439,27 @@ choice. Equivalent nominations share one ranking. An invalid graph, a disconnect
 salt, or an ambiguous ID cannot identify a parent. The picker verifies both release
 rule tables and leaves reaction enumeration to the selected run. The ranking
 proposes structures for analytical confirmation. [SyGMa release](https://pypi.org/project/SyGMa/1.1.0/)
+
+**MetFrag measured spectrum comparison** can be recommended when the local
+runtime is available, `metfrag.json` names an eligible measured product-ion
+list, and at least one nominated ligand matches the measured precursor window.
+The picker shows how many nominations matched and how many peaks were supplied.
+It checks how many distinct eligible molecular structures those nominations represent.
+A lone compatible structure can explain fragments, but distinguishing alternative
+identities requires additional candidates or a reference standard.
+
+**P2Rank receptor binding pockets** can be recommended after the picker verifies the local
+runtime and an eligible receptor nominated in `p2rank.json`. Create the manifest
+when the site is uncertain or a predicted-site comparison would inform review.
+All candidates in the run share the nominated receptor's result.
+
+**ESP-Sim prealigned ligand comparison** can be recommended when the local
+runtime is installed and `espsim.json` identifies an eligible candidate and
+reference pair in the same frame.
+
+**OpenAntigens human target evidence** can be recommended when the local snapshot
+is installed and contains the run's exact canonical human UniProt accession.
+The lookup provides context shared by the run's candidates.
 
 **PoseBusters** is checked for one uniquely named ligand with a concrete molecular
 graph and a finite 3D conformation in the nominated SDF. The picker keeps a
@@ -1982,11 +3526,23 @@ require manual selection. [AGGRESCAN study](https://pmc.ncbi.nlm.nih.gov/article
 | BindingDB fingerprint and GtoPdb | Valid named compounds can be selected for comparison with reference compounds. These comparisons are optional. |
 | BindingDB ExtraTrees and Chemprop | An installed, compatible model and a valid molecular nomination make model inference available for manual selection. |
 | OpenFE | The proposed edge and both simulation phases agree across completed files. A single repeat in either phase leaves the uncertainty unresolved and the reader manual. |
-| pmx | Both sets of work measurements verify the supplied BAR estimate and its analytical uncertainty in the configured runtime. |
+| pmx | Completed work inputs and a configured PyMBAR runtime make the method available for manual selection. Selecting it fits BAR and checks the supplied estimate and analytical uncertainty. |
+| BayeshERG | A nominated connected molecule and the verified local model make an optional cardiac ion-channel screen available. Each distinct molecule requires 30 stochastic draws. |
 | Supplied toxicology | At least one supplied assay has a readable concentration, a named source and endpoint, and an identity matching the nominated compound. The table is reviewed at run scope. Distinct assays retain separate readings. |
 | Therapeutic Nanobody Profiler | One explicitly nominated VHH matches the structure's chain, full sequence digest and observed residues. |
 | AutoDock Vina supplied pose | One prepared ligand and receptor match the selected structure, and the ligand is within the specified scoring box. |
+| sPyRMSD redocking pose recovery | Each nominated control in scope has a matched experimental ligand, two readable 3D poses and matching receptor-frame IDs. |
+| SCScore synthetic complexity | An explicitly nominated comparison contains distinct eligible small molecules and remains open for chemistry review. |
+| CYPstrate substrate profiling | Systemic exposure and at least one supported human CYP isoform are declared for the selected small molecule. |
+| PK-Sim human organ exposure | A nominated molecule matches a registered individual human small-molecule model, regimen and concentration observers. |
+| CellProfiler regional DAB intensity | Candidate and negative-control fields have matched specimen and acquisition metadata, with a named mask for each field. |
 | PRODIGY | Both configured protein partners are complete and share an interpartner contact in the chosen coordinate model. Several prepared candidates at run scope require manual selection. |
+
+For BayeshERG, place the released source and checkpoint under `DATA_PATH/bayesherg`
+and the compatible Linux interpreter at `DATA_PATH/bayesherg-runtime/bin/python`.
+`BAYESHERG_ROOT` and `BAYESHERG_PYTHON` can select an explicitly configured
+installation. The authors specify noncommercial terms for the weights and prediction
+results. [BayeshERG release terms](https://github.com/GIST-CSBL/BayeshERG)
 
 During interactive generation, the browser offers these choices when the run files
 are ready, before the optional screens start. An explicit CLI selection applies directly.
@@ -2072,6 +3628,15 @@ rather than relying on the warning.
 
 | Blocker | What it means | What to do |
 |---|---|---|
+| `unsupported_caco2_structure` | the submitted graph is outside the local Caco-2 screen's structure scope | nominate the intended connected, closed-shell organic molecule |
+| `caco2_input_limit_exceeded` | the Caco-2 input exceeds the file or nomination limit | use a nomination file within the 1 MiB and 256-row limits |
+| `caco2_checkpoint_missing` | the pinned AstraZeneca Caco-2 checkpoint was not found | ask the administrator to install the published v1 checkpoint |
+| `caco2_checkpoint_invalid` | the local checkpoint could not be read or does not match the pinned release | check file access and verify the documented SHA-256 |
+| `caco2_runtime_unavailable` | the local Caco-2 prediction runtime could not be loaded | check the installed `ligand-safety` environment and checkpoint-read support |
+| `caco2_output_contract_mismatch` | the model output does not match the pinned Caco-2 head contract | check the checkpoint and runtime versions before retrying |
+| `dili_structure_unsupported` | the graph is outside this DILI screen's supported structure scope | nominate the intended connected, closed-shell organic molecule |
+| `dili_inputs_over_limit` | the DILI nomination source exceeds 1 MiB or 256 rows | provide a bounded candidate file |
+| `dili_resources_unavailable` | the local DILI ensemble exceeds the verified artifact limit | check the installed ADMET-AI v2 classification distribution |
 | `predictor_not_configured` | no table for this axis | add `mhc_i.tsv` / `mhc_ii.tsv` |
 | `predictor_unreadable` | the file is not parseable as a table | check the encoding and delimiter |
 | `peptide_column_absent` | ranks with no peptide named | add a `peptide` column |

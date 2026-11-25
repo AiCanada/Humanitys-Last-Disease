@@ -286,6 +286,7 @@ AGENTS.md
 **/outputs/
 
 # Model weights and checkpoints (covered by **.ckpt above)
+/data/scscore/
 
 # Benchmarks (except rfproteina benchmarks which are source-controlled)
 **/benchmarks/

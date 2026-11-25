@@ -622,6 +622,492 @@ _PROVENANCE_SCHEMA: dict[str, object] = {
         },
     },
 }
+
+
+def _admet_measurement_schema(
+    method: str, endpoint: str, unit: str, score_key: str, description: str, *, maximum: int | None = None,
+) -> dict[str, object]:
+    identity = {"method": {"const": method}, "endpoint": {"const": endpoint}, "unit": {"const": unit}}
+    compound = {"type": "string", "pattern": "^smiles_sha256_[0-9a-f]{64}$"}
+    score = {"type": "number", "minimum": 0}
+    if maximum is not None:
+        score["maximum"] = maximum
+    return {
+        "type": "object",
+        "description": description,
+        "properties": {
+            **identity,
+            "scope": {"enum": ["run_ligand", "candidate_table", "standalone"]},
+            "status": {"enum": ["predicted", "partial", "untested"]},
+            "attempted": {"type": "integer", "minimum": 0},
+            "unique_compounds": {"type": "integer", "minimum": 0},
+            "unique_predicted": {"type": "integer", "minimum": 0},
+            "blocker": {"type": "string"},
+            "inputs": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "candidate_id": {"type": "string"},
+                        "compound_id": compound,
+                        "blocker": {"type": "string"},
+                    },
+                    "required": ["candidate_id"],
+                    "additionalProperties": False,
+                },
+            },
+            "compounds": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "compound_id": compound,
+                        **identity,
+                        "status": {"enum": ["predicted", "untested"]},
+                        score_key: score,
+                        "blocker": {"type": "string"},
+                    },
+                    "required": ["compound_id", "status"],
+                    "additionalProperties": False,
+                },
+            },
+            "provider": {"type": "object"},
+            "corpus_provenance": {"type": "object"},
+        },
+        "additionalProperties": False,
+    }
+
+
+def _caco2_measurement_schema() -> dict[str, object]:
+    method = {"const": "az_gnn_mtl_caco2_v1"}
+    scale = {"const": "native_model_score"}
+    compound = {"type": "string", "pattern": "^smiles_sha256_[0-9a-f]{64}$"}
+    status = {"enum": ["predicted", "partial", "untested"]}
+    count = {"type": "integer", "minimum": 0, "maximum": 256}
+
+    def head(endpoint: str) -> dict[str, object]:
+        return {
+            "type": "object",
+            "properties": {
+                "endpoint": {"const": endpoint},
+                "scale": scale,
+                "status": {"enum": ["predicted", "untested"]},
+                "model_score": {
+                    "type": "number",
+                    "description": "Signed native model score. No physical units or cutoff apply.",
+                },
+                "blocker": {"type": "string"},
+            },
+            "required": ["endpoint", "scale", "status"],
+            "if": {"properties": {"status": {"const": "predicted"}}},
+            "then": {"required": ["model_score"], "not": {"required": ["blocker"]}},
+            "else": {"required": ["blocker"], "not": {"required": ["model_score"]}},
+            "additionalProperties": False,
+        }
+
+    return {
+        "type": "object",
+        "description": (
+            "Two separate AstraZeneca Caco-2 native model scores for assay planning, not assay measurements."
+        ),
+        "properties": {
+            "method": method,
+            "scale": scale,
+            "scope": {"enum": ["run_ligand", "candidate_table", "standalone"]},
+            "status": status,
+            **{key: count for key in ("attempted", "unique_compounds", "unique_predicted", "unique_complete")},
+            "blocker": {"type": "string"},
+            "inputs": {
+                "type": "array",
+                "maxItems": 256,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "candidate_id": {"type": "string"},
+                        "compound_id": compound,
+                        "blocker": {"type": "string"},
+                    },
+                    "required": ["candidate_id"],
+                    "additionalProperties": False,
+                },
+            },
+            "compounds": {
+                "type": "array",
+                "maxItems": 256,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "compound_id": compound,
+                        "method": method,
+                        "status": status,
+                        "heads": {
+                            "type": "object",
+                            "properties": {
+                                "efflux_ratio": head("Caco2ER"),
+                                "apparent_permeability": head("Caco2Papp"),
+                            },
+                            "required": ["efflux_ratio", "apparent_permeability"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "required": ["compound_id", "method", "status", "heads"],
+                    "additionalProperties": False,
+                },
+            },
+            "provider": {
+                "type": "object",
+                "properties": {
+                    **{name: {"type": "string"} for name in ("chemprop", "rdkit", "torch")},
+                    "device": {"const": "cpu"},
+                    "release": {"const": "zenodo:16948542"},
+                    "checkpoint_sha256": {
+                        "const": "c979bd0dab17a324e2c0c52c3da0bbe25d93415b7c6b49d62f0e01f6f2a487de",
+                    },
+                },
+                "additionalProperties": False,
+            },
+            "corpus_provenance": {"type": "object"},
+        },
+        "required": ["status", "attempted", "unique_compounds", "unique_predicted", "unique_complete",
+                     "inputs", "compounds"],
+        "additionalProperties": False,
+    }
+
+
+def _delphi_measurement_schema() -> dict[str, object]:
+    status = {"enum": ["predicted", "partial", "untested"]}
+    count = {"type": "integer", "minimum": 0, "maximum": 64}
+    identity = {
+        "method": {"const": "ipi_delphi_onehot_psr_v4"},
+        "endpoint": {"const": "psr_filter"},
+        "unit": {"const": "probability"},
+    }
+    score_key = "predicted_psr_pass_probability"
+    measured = [*identity, "scope", "attempted", "predicted", "pairs"]
+    return {
+        "type": "object",
+        "description": "Advisory DELPHI PSR filter-positive probability (lower predicted polyreactivity) for a "
+                       "nominated paired VH/VL. Not a measured PSR assay or a safety decision.",
+        "properties": {
+            **identity,
+            "status": status,
+            "scope": {"enum": ["candidate", "run"]},
+            "input_sha256": {
+                "type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[0-9a-f]{64}$",
+                "description": "SHA-256 of the exact nomination file bytes parsed for this result.",
+            },
+            "attempted": count,
+            "predicted": count,
+            "blocker": {"type": "string"},
+            "pairs": {
+                "type": "array", "maxItems": 64,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "candidate_id": {"type": "string"},
+                        "status": {"enum": ["predicted", "untested"]},
+                        score_key: {"type": "number", "minimum": 0, "maximum": 1},
+                        "blocker": {"type": "string"},
+                    },
+                    "required": ["candidate_id", "status"],
+                    "if": {"properties": {"status": {"const": "predicted"}}},
+                    "then": {"required": [score_key], "not": {"required": ["blocker"]}},
+                    "else": {"required": ["blocker"], "not": {"required": [score_key]}},
+                    "additionalProperties": False,
+                },
+            },
+            "provider": {
+                "type": "object",
+                "properties": {
+                    "release": {"const": "zenodo:21823887"},
+                    "device": {"const": "cpu"},
+                    "checkpoint_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                    "torch": {"type": "string"},
+                    "anarcii": {"type": "string"},
+                },
+                "required": ["release", "device", "checkpoint_sha256", "torch", "anarcii"],
+                "additionalProperties": False,
+            },
+            "corpus_provenance": {"type": "object"},
+        },
+        "required": ["status"],
+        "allOf": [
+            {"if": {"properties": {"status": {"const": "untested"}}},
+             "then": {"required": ["blocker"]},
+             "else": {"required": [*measured, "provider"], "not": {"required": ["blocker"]}}},
+            {"if": {"required": ["method"]}, "then": {"required": measured}},
+        ],
+        "additionalProperties": False,
+    }
+
+
+def _peptide_rbc_measurement_schema() -> dict[str, object]:
+    identifier = {
+        "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$", "maxLength": 96,
+        "not": {"pattern": "[^A-Za-z0-9._-]"},
+    }
+    count = {"type": "integer", "minimum": 0, "maximum": 256}
+    identity = {
+        "method": {"const": "supplied_peptide_rbc_assay_v1"},
+        "endpoint": {"const": "observed_hemolysis"},
+        "unit": {"const": "percent"},
+    }
+    ids = {field: identifier for field in ("candidate_id", "observation_id", "formulation_id")}
+    reported_fields = {
+        "source_id": identifier,
+        "context_id": identifier,
+        "species": {"enum": ["human", "mouse", "rat", "rabbit", "dog", "pig", "sheep", "cow", "cynomolgus"]},
+        "matrix": {"enum": ["washed_rbc", "whole_blood"]},
+        "concentration": {"type": "number", "exclusiveMinimum": 0},
+        "concentration_unit": {"enum": ["uM", "ug/mL", "mg/mL"]},
+        "exposure_minutes": {"type": "number", "exclusiveMinimum": 0},
+        "hemolysis_percent": {"type": "number", "minimum": 0, "maximum": 100},
+        "controls_qc": {"const": "accepted"},
+    }
+    measured = [*identity, "scope", "attempted", "reported", "human_reported", "observations"]
+    return {
+        "type": "object",
+        "description": "Supplied red-cell hemolysis observations with separate condition and species metadata. "
+                       "Not a sequence prediction, a pooled score, or a safety verdict.",
+        "properties": {
+            **identity,
+            "status": {"enum": ["reported", "partial", "untested"]},
+            "scope": {"enum": ["candidate", "run"]},
+            "input_sha256": {
+                "type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[0-9a-f]{64}$",
+                "description": "SHA-256 of the exact supplied evidence file parsed for this report.",
+            },
+            "attempted": count,
+            "reported": count,
+            "human_reported": count,
+            "blocker": {"type": "string"},
+            "observations": {
+                "type": "array", "maxItems": 256,
+                "items": {
+                    "type": "object",
+                    "properties": {**ids, **reported_fields, "status": {"enum": ["reported", "untested"]},
+                                   "blocker": {"type": "string"}},
+                    "required": ["status"],
+                    "if": {"properties": {"status": {"const": "reported"}}},
+                    "then": {"required": [*ids, *reported_fields], "not": {"required": ["blocker"]}},
+                    "else": {"required": ["blocker"], "not": {"anyOf": [
+                        {"required": [name]} for name in reported_fields
+                    ]}},
+                    "additionalProperties": False,
+                },
+            },
+            "corpus_provenance": {"type": "object"},
+        },
+        "required": ["status"],
+        "allOf": [
+            {"if": {"properties": {"status": {"const": "untested"}}},
+             "then": {"required": ["blocker"]},
+             "else": {"required": [*measured, "input_sha256"], "not": {"required": ["blocker"]}}},
+            {"if": {"required": ["method"]}, "then": {"required": measured}},
+        ],
+        "additionalProperties": False,
+    }
+
+
+def _molprobity_measurement_schema() -> dict[str, object]:
+    statuses = {"enum": ["reported", "partial", "untested"]}
+    count = {"type": "integer", "minimum": 0, "maximum": 8}
+    native_count = {"type": "integer", "minimum": 0, "maximum": 16_000}
+    denominator = {**native_count, "minimum": 1}
+    digest = {"type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[0-9a-f]{64}$"}
+    identifier = {
+        "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", "maxLength": 128,
+        "not": {"pattern": "[^A-Za-z0-9._-]"},
+    }
+    untested = {
+        "type": "object", "properties": {"status": {"const": "untested"}, "blocker": {"type": "string"}},
+        "required": ["status", "blocker"], "additionalProperties": False,
+    }
+
+    def reported(fields: dict[str, object]) -> dict[str, object]:
+        return {"type": "object", "properties": {"status": {"const": "reported"}, **fields},
+                "required": ["status", *fields], "additionalProperties": False}
+
+    torsion = reported({
+        "evaluated": denominator, "outliers": native_count, "favored": native_count, "allowed": native_count,
+        "outlier_percent": {"type": "number", "minimum": 0, "maximum": 100},
+    })
+    clash = reported({
+        "atoms": {**denominator, "maximum": 100_000},
+        "serious_clashes": {**native_count, "maximum": 100_000 * 99_999 // 2},
+        "clashes_per_1000_atoms": {"type": "number", "minimum": 0},
+    })
+
+    def metric_set(properties: dict[str, object]) -> dict[str, object]:
+        return {"type": "object", "properties": properties, "required": list(properties),
+                "additionalProperties": False}
+
+    metric_types = {"ramachandran": torsion, "rotamers": torsion, "clashscore": clash}
+    metrics = metric_set({name: {"oneOf": [reported_result, untested]}
+                          for name, reported_result in metric_types.items()})
+    withheld = metric_set(dict.fromkeys(metric_types, untested))
+    sample = {
+        "type": "object", "properties": {
+            "candidate_id": {"anyOf": [identifier, {"const": ""}]}, "status": statuses,
+            "input_sha256": digest, "blocker": {"type": "string"}, "metrics": metrics,
+        },
+        "required": ["candidate_id", "status"],
+        "if": {"properties": {"status": {"const": "untested"}}},
+        "then": {"required": ["blocker"], "properties": {"metrics": withheld}},
+        "else": {"required": ["metrics", "input_sha256"], "not": {"required": ["blocker"]},
+                 "properties": {"candidate_id": identifier}},
+        "additionalProperties": False,
+    }
+    identity = {"method": {"const": "cctbx_molprobity_geometry_v1"}, "model_scope": {"const": "whole_model"}}
+    measured = [*identity, "scope", "attempted", "reported", "complete", "samples"]
+    provider = {
+        "cctbx_base": {"const": "2025.11"}, "device": {"const": "cpu"},
+        "clash_preparation": {"const": "reduce2_no_flips"}, "clash_method": {"const": "probe2"},
+    }
+    return {
+        "type": "object",
+        "description": "Whole-model Ramachandran, side-chain rotamer and Reduce2/Probe2 clash diagnostics. "
+                       "Separate readouts, not affinity or a verdict.",
+        "properties": {
+            **identity, "scope": {"enum": ["candidate", "run"]}, "status": statuses,
+            "attempted": count, "reported": count, "complete": count,
+            "blocker": {"type": "string"}, "samples": {"type": "array", "maxItems": 8, "items": sample},
+            "provider": metric_set(provider), "corpus_provenance": {"type": "object"},
+        },
+        "required": ["status"],
+        "allOf": [
+            {"if": {"properties": {"status": {"const": "untested"}}}, "then": {"required": ["blocker"]},
+             "else": {"required": [*measured, "provider"], "not": {"required": ["blocker"]}}},
+            {"if": {"required": ["method"]}, "then": {"required": measured}},
+            {"if": {"required": ["scope"], "properties": {"scope": {"const": "candidate"}}},
+             "then": {"properties": {"samples": {"maxItems": 1}}}},
+        ],
+        "additionalProperties": False,
+    }
+
+
+def _httk_measurement_schema() -> dict[str, object]:
+    """The bounded population summary, not a general R or dosimetry interface."""
+    identity = {
+        "method": {"const": "epa_httk_human_css_v2"},
+        "endpoint": {"const": "total_plasma_steady_state_concentration"},
+        "unit": {"const": "mg/L"},
+        "scenario": {"const": "human_oral_unit_intake"},
+        "reference_intake_mg_kg_day": {"const": 1},
+    }
+    provider = {
+        key: {"const": value} for key, value in {
+            "package": "httk", "version": "2.7.4", "model": "3compartmentss",
+            "population": "httkpop_adults_18_79", "draws": 1000, "seed": 2181, "in_vitro_uncertainty": False,
+            "identity_source": "EPA DSSTox CCD 2025-12-09",
+        }.items()
+    }
+    observations = ("p05", "median", "p95")
+    source = {"type": "string", "minLength": 1, "maxLength": 128}
+    human_inputs = {
+        "clint_ul_min_per_million_hepatocytes": {"type": "number", "minimum": 0},
+        "clint_reference": source,
+        "fraction_unbound_plasma": {"type": "number", "minimum": 0.0001, "maximum": 1},
+        "fraction_unbound_plasma_reference": source,
+    }
+    measured = [*identity, "scope", "attempted", "reported", "members"]
+    return {
+        "type": "object",
+        "description": "EPA httk total plasma concentration at a fixed oral reference intake of 1 mg/kg/day. "
+                       "Adult population percentiles for structure-matched chemicals with published human "
+                       "hepatocyte clearance and plasma binding inputs.",
+        "properties": {
+            **identity,
+            "status": {"enum": ["reported", "partial", "untested"]},
+            "scope": {"enum": ["candidate", "run"]},
+            "attempted": {"type": "integer", "minimum": 0, "maximum": 32},
+            "reported": {"type": "integer", "minimum": 0, "maximum": 32},
+            "blocker": {"type": "string"},
+            "manifest_sha256": {"type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[0-9a-f]{64}$"},
+            "provider": {"type": "object", "properties": provider, "required": list(provider),
+                         "additionalProperties": False},
+            "corpus_provenance": {"type": "object"},
+            "members": {
+                "type": "array", "maxItems": 32,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "candidate_id": {"type": "string", "maxLength": 128,
+                                         "pattern": "^([A-Za-z0-9][A-Za-z0-9_.-]{0,127})?$"},
+                        "cas": {"type": "string", "pattern": "^[1-9][0-9]{1,6}-[0-9]{2}-[0-9]$"},
+                        "dtxsid": {"type": "string", "pattern": "^DTXSID[0-9]{7,12}$", "maxLength": 18},
+                        "compound_id": {"type": "string", "pattern": "^smiles_sha256_[0-9a-f]{64}$", "maxLength": 78},
+                        "reference_inchikey": {"type": "string", "pattern": "^[A-Z]{14}-[A-Z]{8}SA-[A-Z]$",
+                                               "minLength": 27, "maxLength": 27},
+                        "human_in_vitro": {"type": "object", "properties": human_inputs, "required": list(human_inputs),
+                                          "additionalProperties": False},
+                        "status": {"enum": ["reported", "untested"]},
+                        "blocker": {"type": "string"},
+                        **{key: {"type": "number", "minimum": 0} for key in observations},
+                    },
+                    "required": ["candidate_id", "status"],
+                    "if": {"properties": {"status": {"const": "reported"}}},
+                    "then": {"required": ["cas", "dtxsid", "compound_id", "reference_inchikey", "human_in_vitro",
+                                          *observations],
+                             "properties": {"candidate_id": {"minLength": 1}},
+                             "not": {"required": ["blocker"]}},
+                    "else": {"required": ["blocker"], "not": {"anyOf": [
+                        {"required": [key]} for key in (*observations, "human_in_vitro")
+                    ]}},
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["status"],
+        "allOf": [
+            {"if": {"properties": {"status": {"const": "untested"}}}, "then": {
+                "required": ["blocker"], "not": {"required": ["provider"]},
+                "properties": {"reported": {"const": 0}, "members": {
+                    "items": {"properties": {"status": {"const": "untested"}}},
+                }},
+            }, "else": {
+                "required": [*measured, "manifest_sha256", "provider"], "not": {"required": ["blocker"]},
+                "properties": {"attempted": {"minimum": 1}, "reported": {"minimum": 1}},
+            }},
+            {"if": {"properties": {"status": {"const": "reported"}}}, "then": {"properties": {
+                "members": {"minItems": 1, "items": {"properties": {"status": {"const": "reported"}}}},
+            }}},
+            {"if": {"properties": {"status": {"const": "partial"}}}, "then": {"properties": {
+                "attempted": {"minimum": 2}, "members": {"minItems": 2, "allOf": [
+                    {"contains": {"properties": {"status": {"const": status}}}}
+                    for status in ("reported", "untested")
+                ]},
+            }}},
+            {"if": {"required": ["method"]}, "then": {"required": measured}},
+            {"if": {"required": ["scope"], "properties": {"scope": {"const": "candidate"}}},
+             "then": {"properties": {"members": {"maxItems": 1}}}},
+        ],
+        "additionalProperties": False,
+    }
+
+
+_HTTK_MEASUREMENT_SCHEMA = _httk_measurement_schema()
+
+_SUPPLEMENTAL_MODEL_SCHEMAS = {
+    "delphi_psr": _delphi_measurement_schema(),
+    "ligand_ames": _admet_measurement_schema(
+        "admet_ai_ames_v2", "AMES", "probability", "predicted_ames_probability",
+        "Advisory ADMET-AI Ames model probability, not an experimental result or a safety decision.", maximum=1,
+    ),
+    "ligand_dili": _admet_measurement_schema(
+        "admet_ai_dili_v2", "DILI", "probability", "predicted_dili_probability",
+        "Advisory ADMET-AI model probability for the TDC DILI-positive label, not a probability of patient injury, "
+        "a severity estimate, or a safety decision.", maximum=1,
+    ),
+    "ligand_microsomal_clearance": _admet_measurement_schema(
+        "admet_ai_microsomal_clearance_v2", "Clearance_Microsome_AZ", "uL/min/mg", "predicted_clint_ul_min_mg",
+        "Advisory in vitro human liver microsomal intrinsic clearance, not a systemic clearance or half-life result.",
+    ),
+    "ligand_caco2": _caco2_measurement_schema(),
+    "molprobity_geometry": _molprobity_measurement_schema(),
+    "peptide_rbc_evidence": _peptide_rbc_measurement_schema(),
+}
+
 #: The decision fields of one screen. These are ``mcp_api._VERDICT_FIELDS``
 #: plus the axis groups, which are ``mcp_api._AXIS_GROUPS``, the fields
 #: ``_verdict`` derives, and the optional full record. A test holds the lists
@@ -777,7 +1263,13 @@ _VERDICT_SCHEMA: dict[str, object] = {
                 "counted in hits. The SMILES itself stays in screen.json."
             ),
         },
-        "method_selection": {"type": "object", "description": "Chosen, attempted and inapplicable methods."},
+        "method_selection": {
+            "type": "object",
+            "description": "Chosen, attempted and inapplicable methods and their prepared measurements.",
+            "properties": {
+                "prepared_measurements": {"type": "object", "properties": {"epa_httk": _HTTK_MEASUREMENT_SCHEMA}},
+            },
+        },
         "sygma": {
             "type": "object",
             "description": (
@@ -802,6 +1294,7 @@ _VERDICT_SCHEMA: dict[str, object] = {
                 "Compound structures stay in the local screen file."
             ),
         },
+        **_SUPPLEMENTAL_MODEL_SCHEMAS,
         "mhc_class_i": {
             "type": "object",
             "description": (
@@ -1097,6 +1590,26 @@ _VALIDATION_SCOPE = {
         "pattern": "^[0-9a-f]{24}$",
         "description": "Optional candidate ID returned for this run by plan_validation.",
     },
+}
+_SCREENING_SCOPE = {
+    **_VALIDATION_SCOPE,
+    "candidate_id": {
+        **_VALIDATION_SCOPE["candidate_id"],
+        "description": "Optional candidate ID returned for this run by plan_screening.",
+    },
+}
+_SCREEN_PERFORMANCE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "enum": [
+            "published_benchmark", "local_benchmark", "reference_dependent", "source_evidence", "not_verified",
+        ]},
+        "basis": {"type": "string", "description": "How the validation evidence was obtained."},
+        "summary": {"type": "string"},
+        "interpretation": {"type": "string", "description": "Application to experimental review."},
+        "source": {"type": "string", "format": "uri"},
+    },
+    "required": ["status", "basis", "summary", "interpretation"],
 }
 _VALIDATION_CHECKS_INPUT = {
     "type": "object",
@@ -1466,7 +1979,8 @@ _TOOLS: tuple[dict[str, object], ...] = (
         "name": "declare_corpora",
         "description": (
             "Declare what every embedded model was trained on, and this program's coverage of the "
-            "DDD Benchmark. Pass 'against' to name a dataset or assay and get each model's overlap "
+            "DDD Benchmark. Includes the published ImmuScope EL, CD4 and IM study benchmarks. "
+            "Pass 'against' to name a dataset or assay and get each model's overlap "
             "with it; overlap is a property of the (model, dataset) pair, not of the model. "
             "Reads nothing from disk and contacts nothing."
         ),
@@ -1489,6 +2003,7 @@ _TOOLS: tuple[dict[str, object], ...] = (
                 "models": {"type": "array", "items": {"type": "object"}},
                 "corpora": {"type": "object"},
                 "benchmark_coverage": {"type": "object"},
+                "reference_studies": {"type": "object", "properties": {"immuscope": {"type": "object"}}},
             },
             "required": ["models", "corpora", "benchmark_coverage"],
             "additionalProperties": False,
@@ -1593,21 +2108,31 @@ _TOOLS: tuple[dict[str, object], ...] = (
     },
     {
         "name": "plan_screening",
-        "description": "List installed post-generation methods, input requirements, compute and recommendations. "
-        "Pass a candidate ID from plan_validation to inspect one candidate.",
-        "inputSchema": {"type": "object", "properties": _VALIDATION_SCOPE,
+        "description": "List installed methods, input requirements, compute, recommendations and validation evidence. "
+        "Returns generated candidates and uniquely named small-molecule nominations for candidate-specific planning.",
+        "inputSchema": {"type": "object",
+                        "properties": {**_SCREENING_SCOPE, "candidate_offset": {"type": "integer", "minimum": 0}},
                         "required": ["directory"], "additionalProperties": False},
         "outputSchema": {
             "type": "object", "properties": {
                 "program": {"type": "string"}, "directory": {"type": "string"},
                 "candidate_id": {"type": ["string", "null"]},
+                "candidates": {"type": "array", "items": {
+                    "type": "object", "properties": {"id": {"type": "string"}, "label": {"type": "string"}},
+                    "required": ["id", "label"],
+                }},
+                "next_candidate_offset": {"type": ["integer", "null"]},
                 "methods": {"type": "array", "items": {"type": "object", "properties": {
                     **{k: {"type": "string"} for k in ("id", "label", "purpose", "reason", "workload")},
                     "operation": {"type": "string", "enum": [
                         "compute", "structure_measurement", "native_result_reader", "recorded_evidence",
                     ]},
-                    **{k: {"type": "boolean"} for k in ("installed", "applicable", "recommended")}},
-                    "required": ["id", "label", "purpose", "reason", "workload",
+                    **{k: {"type": "boolean"} for k in ("installed", "applicable", "recommended")},
+                    "producer_installed": {
+                        "type": "boolean", "description": "Original producer availability for saved evidence.",
+                    },
+                    "performance": _SCREEN_PERFORMANCE_SCHEMA},
+                    "required": ["id", "label", "purpose", "reason", "workload", "performance",
                                  "installed", "applicable", "recommended", "operation"]}},
             }, "required": ["program", "directory", "candidate_id", "methods"],
         },
@@ -1617,7 +2142,11 @@ _TOOLS: tuple[dict[str, object], ...] = (
         "description": "Run selected supplemental screening methods serially on existing candidate inputs. "
         "Returns individual results and reasons for skipped methods.",
         "inputSchema": {"type": "object", "properties": {
-            **_VALIDATION_SCOPE, "selection": {"type": "string", "enum": ["recommended", "all_installed"]},
+            **_SCREENING_SCOPE, "selection": {"type": "string", "enum": ["recommended", "all_installed"]},
+            "include_performance": {
+                "type": "boolean", "default": False,
+                "description": "Include each selected method's validation evidence at the start of the run.",
+            },
             "methods": {"type": "array", "items": {"type": "string"}, "uniqueItems": True}},
             "oneOf": [{"required": ["selection"]}, {"required": ["methods"]}],
             "required": ["directory"], "additionalProperties": False},
@@ -1626,7 +2155,16 @@ _TOOLS: tuple[dict[str, object], ...] = (
             "candidate_id": {"type": ["string", "null"]},
             "results": {"type": "array", "items": {"type": "object", "properties": {
                 "id": {"type": "string"}, "status": {"type": "string"}, "reason": {"type": "string"},
-                "measurement": {"type": "object"}}, "required": ["id", "status"]}}},
+                "measurement": {"type": "object"}, "performance": _SCREEN_PERFORMANCE_SCHEMA},
+                "required": ["id", "status"], "allOf": [
+                    {
+                        "if": {"properties": {"id": {"const": screen_id}}, "required": ["id"]},
+                        "then": {"properties": {"measurement": schema}},
+                    }
+                    for screen_id, schema in (
+                        _SUPPLEMENTAL_MODEL_SCHEMAS | {"epa_httk": _HTTK_MEASUREMENT_SCHEMA}
+                    ).items()
+                ]}}},
             "required": ["program", "directory", "candidate_id", "results"]},
     },
 )

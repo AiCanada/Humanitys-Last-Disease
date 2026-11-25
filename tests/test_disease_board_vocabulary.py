@@ -59,12 +59,22 @@ from pathlib import Path
 import pytest
 
 from rfproteina.disease import (
+    badapple2,
+    crest,
+    openantigens,
+    metfrag,
+    fastsolv,
+    jazzy,
+    espsim,
     ddd_benchmark,
     ddd_endpoint,
     deepsp,
     deepviscosity,
+    dimorphite,
     dynamics,
     human_protocol,
+    p2rank,
+    propka,
     results_actions,
     results_compare,
     results_retrieve,
@@ -288,6 +298,19 @@ def _blocker_helpers() -> dict[str, int]:
 _HELPERS = _blocker_helpers()
 
 
+def _delphi_input_blockers(tree: ast.Module) -> set[str]:
+    """The DELPHI input reader returns (value, blocker) and groups numbering failures by local reason."""
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Return) and node.value is not None:
+            for outcome in ast.walk(node.value):
+                if isinstance(outcome, ast.Tuple) and len(outcome.elts) == 2:
+                    found.update(_literals(outcome.elts[1]))
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "blocker" for t in node.targets):
+            found.update(_literals(node.value))
+    return {name for name in found if name.startswith("delphi_")}
+
+
 def _blocker_names() -> dict[str, set[str]]:
     """Typed report blockers and literal blockers, with the files that declare them."""
     # Aggregation and the screen share these codes with a producer outside
@@ -301,6 +324,41 @@ def _blocker_names() -> dict[str, set[str]]:
     for path in sorted(_PACKAGE.rglob("*.py")):
         tree = _parsed(path)
         where = path.relative_to(_PACKAGE).as_posix()
+        blocker_errors = {"CacoError", "CellProfilerError", "CypstrateError", "DelPhiError", "PKSimError", "SCScoreError"}
+        if where == "cellprofiler_stain.py":
+            blocker_errors.add("StainError")
+            for function in tree.body:
+                if isinstance(function, ast.FunctionDef) and function.name == "read_manifest":
+                    for result in ast.walk(function):
+                        if isinstance(result, ast.Return) and isinstance(result.value, ast.Tuple):
+                            for literal in _literals(result.value.elts[1]):
+                                note(literal, where)
+        if where == "cellprofiler_images.py":
+            blocker_errors.add("ImageError")
+            # The reader passes these shared file errors and role-specific
+            # image/mask errors to ImageError from multiple decoder branches.
+            for assignment in (node for node in ast.walk(tree) if isinstance(node, ast.Assign)):
+                if any(isinstance(t, ast.Name) and t.id in {"_LIMIT", "_UNAVAILABLE", "_PATH", "invalid"}
+                       for t in assignment.targets):
+                    for literal in _literals(assignment.value):
+                        note(literal, where)
+        if where == "pksim_curves.py":
+            blocker_errors.add("CurveError")
+        if where == "delphi_inputs.py":
+            for name in _delphi_input_blockers(tree):
+                note(name, where)
+        if where in {"peptide_rbc.py", "molprobity_geometry.py", "httk.py"}:
+            # These readers publish their closed vocabulary for validated
+            # local-provider and input failures as well as per-record reasons.
+            names = {"BLOCKERS", "_WORKER_BLOCKERS"} if where == "httk.py" else {"BLOCKERS"}
+            declarations = (
+                node.value for node in tree.body if isinstance(node, ast.Assign)
+                and any(isinstance(target, ast.Name) and target.id in names for target in node.targets)
+            )
+            for declared in declarations:
+                for literal in ast.walk(declared):
+                    if isinstance(literal, ast.Constant) and isinstance(literal.value, str):
+                        note(literal.value, where)
         for node in ast.walk(tree):
             # A blocker handed to a helper that takes one, at whatever position
             # that helper declares it: _axis("untested", measurement, "name"),
@@ -311,10 +369,22 @@ def _blocker_names() -> dict[str, set[str]]:
                 if index is not None and len(node.args) > index:
                     for name in _literals(node.args[index]):
                         note(name, where)
-            # any call taking blocker="blocker_name"
+                if node.args and _called_name(node) in blocker_errors:
+                    for name in _literals(node.args[0]):
+                        note(name, where)
+            # Explicit blocker arguments, including the typed limits in a
+            # local ADMET endpoint declaration passed through the shared engine.
             if isinstance(node, ast.Call):
                 for keyword in node.keywords:
-                    if keyword.arg == "blocker":
+                    endpoint_blocker = _called_name(node) == "Endpoint" and keyword.arg in {
+                        "structure_blocker", "input_blocker", "resource_blocker",
+                    }
+                    nomination_blocker = (_called_name(node), keyword.arg) in {
+                        ("molecular_graph", "unsupported"),
+                        ("bounded_inputs", "limit_blocker"),
+                        ("prepare_nominations", "limit_blocker"),
+                    }
+                    if keyword.arg == "blocker" or endpoint_blocker or nomination_blocker:
                         for name in _literals(keyword.value):
                             note(name, where)
             # record["blocker"] = "blocker_name", record["oligo_blocker"] = ...,
@@ -358,6 +428,28 @@ def _blocker_names() -> dict[str, set[str]]:
 
 
 _FOUND = _blocker_names()
+# The pinned protonation worker sends codes through a JSON protocol. Verify its
+# declared vocabulary through the same board check as the literal emissions.
+for _name in dimorphite.BLOCKERS:
+    _FOUND.setdefault(_name, set()).add("dimorphite.py")
+for _name in p2rank.BLOCKERS:
+    _FOUND.setdefault(_name, set()).add("p2rank.py")
+for _name in badapple2.BLOCKERS:
+    _FOUND.setdefault(_name, set()).add("badapple2.py")
+for _name in propka.BLOCKERS:
+    _FOUND.setdefault(_name, set()).add("propka.py")
+for _name in crest.BLOCKERS:
+    _FOUND.setdefault(_name, set()).add("crest.py")
+for _name in openantigens.BLOCKERS:
+    _FOUND.setdefault(_name, set()).add("openantigens.py")
+for _name in metfrag.BLOCKERS:
+    _FOUND.setdefault(_name, set()).add("metfrag.py")
+for _name in fastsolv.BLOCKERS:
+    _FOUND.setdefault(_name, set()).add("fastsolv.py")
+for _name in jazzy.BLOCKERS:
+    _FOUND.setdefault(_name, set()).add("jazzy.py")
+for _name in espsim.BLOCKERS:
+    _FOUND.setdefault(_name, set()).add("espsim.py")
 
 
 def test_the_scan_still_finds_the_blocker_names() -> None:
@@ -395,6 +487,40 @@ def test_every_action_belongs_to_a_blocker() -> None:
     assert not orphans, f"actions with no blocker of that name: {orphans}"
 
 
+def test_delphi_projection_allows_every_actual_delphi_blocker() -> None:
+    from rfproteina.disease.mcp_api import _DELPHI_BLOCKERS
+
+    emitted = {name for name in _FOUND if name.startswith("delphi_")}
+    assert emitted == {name for name in _DELPHI_BLOCKERS if name.startswith("delphi_")}
+
+
+def test_peptide_rbc_projection_allows_every_actual_evidence_blocker() -> None:
+    from rfproteina.disease.mcp_api import _PEPTIDE_RBC_PROJECTION_BLOCKERS
+    from rfproteina.disease.peptide_rbc import BLOCKERS
+
+    emitted = {name for name in _FOUND if name.startswith("peptide_rbc_")}
+    assert emitted == {name for name in BLOCKERS | _PEPTIDE_RBC_PROJECTION_BLOCKERS if name.startswith("peptide_rbc_")}
+    assert emitted <= set(screen_board._BLOCKERS) and emitted <= set(screen_board._ACTIONS)
+
+
+def test_molprobity_projection_allows_every_actual_geometry_blocker() -> None:
+    from rfproteina.disease.mcp_api import _MOLPROBITY_PROJECTION_BLOCKERS
+    from rfproteina.disease.molprobity_geometry import BLOCKERS
+
+    emitted = {name for name in _FOUND if name.startswith("molprobity_")}
+    assert emitted == {name for name in BLOCKERS | _MOLPROBITY_PROJECTION_BLOCKERS if name.startswith("molprobity_")}
+    assert emitted <= set(screen_board._BLOCKERS) and emitted <= set(screen_board._ACTIONS)
+
+
+def test_httk_projection_allows_every_actual_httk_blocker() -> None:
+    from rfproteina.disease.httk import BLOCKERS
+    from rfproteina.disease.mcp_api import _HTTK_PROJECTION_BLOCKERS
+
+    emitted = {name for name in _FOUND if name.startswith("httk_")}
+    assert emitted == {name for name in BLOCKERS | _HTTK_PROJECTION_BLOCKERS if name.startswith("httk_")}
+    assert emitted <= set(screen_board._BLOCKERS) and emitted <= set(screen_board._ACTIONS)
+
+
 #: Board sentences for blockers this scan cannot locate. Each one reaches the
 #: board through a shape no signal-free scan can recognise -- a name held in a
 #: variable, a literal appended into a structure that is read as a blocker
@@ -424,7 +550,6 @@ _UNSEEN_BY_THE_SCAN = frozenset(
         # typed tuple. The scan deliberately inspects only first-member blocker
         # helpers, because treating every optional string in a tuple as a
         # blocker also matches scopes and statuses.
-        "ligand_input_missing",
         "no_nine_mer_ligand",
         # The next three are handed back by ``refold_export.design_fasta`` and
         # ``binder_fasta`` as a bare ``return "name"`` from a function named for

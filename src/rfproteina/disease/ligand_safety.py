@@ -1268,6 +1268,79 @@ def offtarget_profile(
 
 _BAYESHERG_WEIGHTS_SHA256 = "c3b50a881d28b26b2862dc531c5cdd9c6949a49cd06f52f064db9990aae7f28a"
 _BAYESHERG_WEIGHTS_BYTES = 513_837
+# Release 25e9466499905a952f9d41cc6bc6886c3f247acb, with LF-normalized source.
+_BAYESHERG_SOURCE_SHA256 = {
+    "main.py": "8c2ee10e5289d58f844c789379460dc12ec00833fd83f7f6e0e3403fa612a9d4",
+    "model/BayeshERG_model.py": "46df5fecdef1144660674f012f44b28e83bffc7aa5543677560e0603c3b32859",
+}
+
+
+def _bayesherg_checkpoint(weights: Path) -> bytes:
+    if not weights.is_file() or weights.stat().st_size != _BAYESHERG_WEIGHTS_BYTES:
+        raise SafetyBackendUnavailableError("bayesherg_unverified_weights")
+    with weights.open("rb") as handle:
+        checkpoint = handle.read(_BAYESHERG_WEIGHTS_BYTES + 1)
+    if (
+        len(checkpoint) != _BAYESHERG_WEIGHTS_BYTES
+        or hashlib.sha256(checkpoint).hexdigest() != _BAYESHERG_WEIGHTS_SHA256
+    ):
+        raise SafetyBackendUnavailableError("bayesherg_unverified_weights")
+    return checkpoint
+
+
+def _bayesherg_paths(release_dir: str | Path | None = None, python: str | Path | None = None) -> tuple[Path, Path]:
+    from rfproteina.disease.screening_tools import data_dir
+
+    release = release_dir or os.environ.get("BAYESHERG_ROOT") or data_dir("bayesherg")
+    runtime = python or os.environ.get("BAYESHERG_PYTHON")
+    if runtime is None:
+        runtime = data_dir("bayesherg-runtime", "python.exe") if os.name == "nt" else (
+            data_dir("bayesherg-runtime", "bin", "python")
+        )
+    return Path(release).absolute(), Path(runtime).absolute()
+
+
+def bayesherg_installed() -> bool:
+    """Check the configured CPU worker and reviewed weights without invoking inference."""
+    from importlib.util import find_spec
+
+    directory, python = _bayesherg_paths()
+    if not python.is_file() or not os.access(python, os.X_OK):
+        return False
+    if find_spec("rdkit") is None:
+        return False
+    try:
+        _bayesherg_checkpoint(directory / "model/model_weights.pth")
+        for name, digest in _BAYESHERG_SOURCE_SHA256.items():
+            source = directory / name
+            if not source.is_file() or source.stat().st_size > 64 * 1024:
+                return False
+            with source.open("rb") as handle:
+                code = handle.read(64 * 1024 + 1).replace(b"\r\n", b"\n")
+            if hashlib.sha256(code).hexdigest() != digest:
+                return False
+    except (SafetyBackendUnavailableError, OSError):
+        return False
+    # Later DGL packages still expose 'dgl', but dropped the bundled chemistry
+    # API used by this release. Locate its nested package without importing a model.
+    probe = """
+from importlib.machinery import PathFinder
+from importlib.util import find_spec
+import sys
+dgl = find_spec('dgl')
+data = PathFinder.find_spec('dgl.data', dgl.submodule_search_locations) if dgl else None
+chem = PathFinder.find_spec('dgl.data.chem', data.submodule_search_locations) if data else None
+sys.exit(0 if chem and all(find_spec(m) for m in ('rdkit', 'torch', 'numpy', 'pandas', 'tqdm')) else 1)
+"""
+    try:
+        check = subprocess.run(
+            [str(python), "-I", "-c", probe],
+            env={**os.environ, "CUDA_VISIBLE_DEVICES": "-1", "DGLBACKEND": "pytorch"},
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=12,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return check.returncode == 0
 
 
 def _bayesherg_result(path: Path, smiles: str) -> PanelProbabilities:
@@ -1314,24 +1387,22 @@ def bayesherg_probability(
 ) -> PanelProbabilities:
     """Run the Kim et al. BayeshERG release (doi:10.1093/bib/bbac211) on CPU.
 
-    Supply the release directory and its Python interpreter as arguments or via
-    ``BAYESHERG_ROOT`` and ``BAYESHERG_PYTHON``. The upstream README restricts
+    The standard Linux layout is ``DATA_PATH/bayesherg`` for the release and
+    ``DATA_PATH/bayesherg-runtime/bin/python`` for its environment. A trusted
+    installation elsewhere can be selected with ``BAYESHERG_ROOT`` and
+    ``BAYESHERG_PYTHON`` or by passing the paths directly. The upstream README restricts
     the weights to noncommercial use. The repository includes a separate
     Attribution-NonCommercial-ShareAlike licence alongside the MIT source licence.
     """
     text = (smiles or "").strip()
     if not text:
         raise LigandUnreadableError("empty_smiles")
-    release = release_dir or os.environ.get("BAYESHERG_ROOT")
-    interpreter = python or os.environ.get("BAYESHERG_PYTHON")
-    if not release or not interpreter:
-        raise SafetyBackendUnavailableError("bayesherg_unavailable: configure BAYESHERG_ROOT and BAYESHERG_PYTHON")
-    script = Path(release).resolve() / "main.py"
+    release, executable = _bayesherg_paths(release_dir, python)
+    script = release.resolve() / "main.py"
     weights = script.parent / "model" / "model_weights.pth"
-    executable = Path(interpreter).absolute()
     required = (script, weights.parent / "BayeshERG_model.py", weights, executable)
     if not all(path.is_file() for path in required):
-        raise SafetyBackendUnavailableError("bayesherg_unavailable: release source, weights or interpreter missing")
+        raise SafetyBackendUnavailableError("bayesherg_unavailable: configure BAYESHERG_ROOT and BAYESHERG_PYTHON")
     from rdkit import Chem
 
     params = Chem.SmilesParserParams()
@@ -1355,14 +1426,7 @@ def bayesherg_probability(
             work = Path(name)
             for directory in ("model", "prediction_results", "attention_results"):
                 (work / directory).mkdir()
-            with weights.open("rb") as handle:
-                checkpoint = handle.read(_BAYESHERG_WEIGHTS_BYTES + 1)
-            if (
-                len(checkpoint) != _BAYESHERG_WEIGHTS_BYTES
-                or hashlib.sha256(checkpoint).hexdigest() != _BAYESHERG_WEIGHTS_SHA256
-            ):
-                raise SafetyBackendUnavailableError("bayesherg_unverified_weights")
-            (work / "model" / weights.name).write_bytes(checkpoint)
+            (work / "model" / weights.name).write_bytes(_bayesherg_checkpoint(weights))
             with (work / "input.csv").open("w", encoding="utf-8", newline="") as handle:
                 writer = csv.writer(handle)
                 # DGL 0.4.3 returns the original graph for a singleton batch. Upstream

@@ -59,6 +59,7 @@ OCTANT_FILES: tuple[str, ...] = (
 )
 INHIBITION_FILE = "inhibition.tsv"
 SUBSET_FILE = "octant_cyp3a4_subset.tsv"
+SUBSET_REQUIRED_COLUMNS = ("inchikey", "panel_axis", "affinity_nanomolar", "accession", "assay", "relation", "curation")
 
 OCTANT_CURATION = "OpenADMET Octant CYP inhibition (CC BY 4.0)"
 OCTANT_METHOD = "octant_cyp3a4_pic50_to_nm_v1"
@@ -389,7 +390,7 @@ def _matching_nanomolar(subset: Path, inchikey: str) -> tuple[list[float], list[
             raise SafetyBackendUnavailableError("octant_pic50_not_converted")
         if len(names) != len(set(names)):
             raise SafetyBackendUnavailableError("octant_subset_duplicate_columns")
-        for column in ("inchikey", "panel_axis", "affinity_nanomolar", "accession", "assay", "relation", "curation"):
+        for column in SUBSET_REQUIRED_COLUMNS:
             if column not in names:
                 raise SafetyBackendUnavailableError(f"octant_subset_column_absent:{column}")
         for row in reader:

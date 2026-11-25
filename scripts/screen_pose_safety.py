@@ -14,6 +14,7 @@ that touches the network, and only to read ChEMBL's free REST API.
 Examples::
 
     python scripts/screen_pose_safety.py pose ligand.sdf --protein pocket.pdb
+    python scripts/screen_pose_safety.py spyrmsd controls --sample redock_1
     python scripts/screen_pose_safety.py ifp pocket.pdb ligand.sdf
     python scripts/screen_pose_safety.py fnat model.pdb --reference native.pdb --chains A,B
     python scripts/screen_pose_safety.py safety "CC(=O)Oc1ccccc1C(=O)O"
@@ -118,6 +119,14 @@ def _pmx_bar(args: argparse.Namespace) -> int:
     return _print(record)
 
 
+def _spyrmsd(args: argparse.Namespace) -> int:
+    from rfproteina.disease.spyrmsd_pose import measure
+
+    result = measure(args.directory, args.sample, standalone=True)
+    _print(result)
+    return 0 if result["status"] == "reported" else 2
+
+
 def _vina(args: argparse.Namespace) -> int:
     from rfproteina.disease.screen import _cif_text
     from rfproteina.disease.vina_pose import RunPoses, corpus_provenance
@@ -136,6 +145,11 @@ def main(argv: list[str] | None = None) -> int:
     vina.add_argument("--manifest", type=Path, required=True, help="vina_poses.json with prepared inputs and box")
     vina.add_argument("--sample", required=True, help="exact sample ID in the manifest")
     vina.set_defaults(run=_vina)
+
+    redock = sub.add_parser("spyrmsd", help="measure symmetry-corrected RMSD for matched redocking controls")
+    redock.add_argument("directory", type=Path, help="directory containing spyrmsd_controls.json and its ligand files")
+    redock.add_argument("--sample", help="exact control ID in the manifest (default: all nominated controls)")
+    redock.set_defaults(run=_spyrmsd)
 
     pose = sub.add_parser("pose", help="PoseBusters + RDKit pose validation")
     pose.add_argument("ligand", help="one ligand pose with 3D coordinates in SDF, MOL, MOL2 or PDB format")

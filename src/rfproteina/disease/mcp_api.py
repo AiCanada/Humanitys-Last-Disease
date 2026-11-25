@@ -18,10 +18,15 @@ import math
 import os
 import re
 import stat
+from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
 from uuid import uuid4
+
+if TYPE_CHECKING:
+    from rfproteina.disease.ligand_admet import Endpoint
 
 # The one spelling of the program name. Repeated as a literal here and in
 # mcp_layers, it had to be edited in both on the rename to
@@ -121,7 +126,14 @@ _VERDICT_FIELDS = (
     "prodigy_affinity",
     "vina_pose",
     "tnp_profile",
+    "delphi_psr",
+    "peptide_rbc_evidence",
+    "molprobity_geometry",
     "ligand_alerts",
+    "ligand_ames",
+    "ligand_dili",
+    "ligand_microsomal_clearance",
+    "ligand_caco2",
     "ligand_solubility",
     "qupkake",
     "sygma",
@@ -1188,7 +1200,7 @@ def read_output_file(arguments: Mapping[str, object]) -> dict[str, object]:
     }
 
 
-def _validation_scope(arguments: Mapping[str, object]) -> tuple[Path, str | None]:
+def _validation_scope(arguments: Mapping[str, object], *, screening: bool = False) -> tuple[Path, str | None]:
     """Resolve a concrete run in an output root and accept only an opaque candidate ID."""
     from rfproteina.disease.screen import _is_generation_directory
     from rfproteina.disease.trace import VALIDATION_FILE
@@ -1202,7 +1214,7 @@ def _validation_scope(arguments: Mapping[str, object]) -> tuple[Path, str | None
     if "candidate_id" in arguments and (
         not isinstance(candidate, str) or re.fullmatch("[0-9a-f]{24}", candidate) is None
     ):
-        raise ValueError("Use a candidate ID returned by plan_validation.")
+        raise ValueError(f"Use a candidate ID returned by {'plan_screening' if screening else 'plan_validation'}.")
 
     path = _resolved(_path(directory))
     checkout = _resolved(_repo_root())
@@ -1210,13 +1222,27 @@ def _validation_scope(arguments: Mapping[str, object]) -> tuple[Path, str | None
     if not _inside(path, roots):
         raise ValueError("Choose a directory under runs, disease_runs, or RFD4_MCP_ROOTS.")
     record = path / VALIDATION_FILE
-    if not path.is_dir() or not (
+    concrete = path.is_dir() and (
         _is_generation_directory(path, follow_symlinks=False)
         or (not record.is_symlink() and record.is_file())
         or synthesis_receipt_attached(path)
-    ):
+    )
+    if not concrete and screening and path.is_dir():
+        from rfproteina.disease.screen_panel import nominated_ligand_run
+
+        concrete = nominated_ligand_run(path)
+    if not concrete:
         raise ValueError("Choose a concrete finished run directory, rather than a parent directory.")
     return path, candidate if isinstance(candidate, str) else None
+
+
+def _candidate_offset(arguments: Mapping[str, object]) -> int:
+    offset = arguments.get("candidate_offset", 0)
+    if isinstance(offset, float) and offset.is_integer():
+        offset = int(offset)
+    if type(offset) is not int or offset < 0:
+        raise ValueError("candidate_offset must be a nonnegative integer.")
+    return offset
 
 
 def plan_validation(arguments: Mapping[str, object]) -> dict[str, object]:
@@ -1224,11 +1250,7 @@ def plan_validation(arguments: Mapping[str, object]) -> dict[str, object]:
     from rfproteina.disease.validation_checks import candidate_validation_plan
 
     _reject_unknown(arguments, {"directory", "candidate_id", "candidate_offset"})
-    offset = arguments.get("candidate_offset", 0)
-    if isinstance(offset, float) and offset.is_integer():
-        offset = int(offset)
-    if type(offset) is not int or offset < 0:
-        raise ValueError("candidate_offset must be a nonnegative integer.")
+    offset = _candidate_offset(arguments)
     path, candidate = _validation_scope(arguments)
     candidates, choices = candidate_validation_plan((path,), candidate)
     if not choices:
@@ -1257,12 +1279,21 @@ def _screening_panel(name: str, arguments: Mapping[str, object], *, on_line: Pro
     from rfproteina.disease import screen_panel
 
     scope = {"directory", "candidate_id"}
-    _reject_unknown(arguments, scope if name == "plan_screening" else scope | {"selection", "methods"})
-    path, candidate = _validation_scope(arguments)
+    options = {"candidate_offset"} if name == "plan_screening" else {"selection", "methods", "include_performance"}
+    _reject_unknown(arguments, scope | options)
+    path, candidate = _validation_scope(arguments, screening=True)
     result = {"program": PROGRAM, "candidate_id": candidate, "directory": _shown(path)}
     if name == "plan_screening":
-        choices = screen_panel.choices_for(path, candidate)
-        return {**result, "methods": [item.as_record() for item in choices]}
+        offset = _candidate_offset(arguments)
+        candidates = screen_panel.candidates_for(path)
+        choices = screen_panel.choices_for(path, candidate, candidates=candidates)
+        end = offset + _VALIDATION_PAGE_SIZE
+        return {
+            **result,
+            "methods": [item.as_record() for item in choices],
+            "candidates": [{"id": item.key, "label": item.label} for item in candidates[offset:end]],
+            "next_candidate_offset": end if end < len(candidates) else None,
+        }
     if ("methods" in arguments) == ("selection" in arguments):
         raise ValueError("Pass a list of method IDs or one selection mode.")
     methods = arguments.get("methods", [])
@@ -1271,7 +1302,11 @@ def _screening_panel(name: str, arguments: Mapping[str, object], *, on_line: Pro
     mode = arguments.get("selection", "explicit")
     if "selection" in arguments and mode not in ("recommended", "all_installed"):
         raise ValueError("selection must be recommended or all_installed.")
-    return {**result, "results": screen_panel.run(path, candidate, mode, methods, on_line=on_line)}
+    include_performance = arguments.get("include_performance", False)
+    if not isinstance(include_performance, bool):
+        raise ValueError("include_performance must be a boolean.")
+    rows = screen_panel.run(path, candidate, mode, methods, on_line=on_line, include_performance=include_performance)
+    return {**result, "results": rows}
 
 
 def _validation_request(arguments: Mapping[str, object]) -> tuple[Path, str | None, list[str]]:
@@ -1819,7 +1854,290 @@ def _without_held_back(payload: Mapping[str, object]) -> dict[str, object]:
         block = record.get(name)
         if isinstance(block, Mapping):
             record[name] = {key: item for key, item in block.items() if key not in held}
+    # `include_record` must not bypass the molecular-report allowlist, even if
+    # a file was supplied by another producer rather than written by this tool.
+    for name, view in _SUPPLEMENTAL_MODEL_VIEWS.items():
+        if name not in record:
+            continue
+        block = record[name]
+        if isinstance(block, Mapping):
+            record[name] = view(block)
+        else:
+            del record[name]
+    if "method_selection" in record:
+        record["method_selection"] = _method_selection_view(record["method_selection"])
+    # EPA httk has only a nested, typed report. Refuse a stray raw copy.
+    record.pop("epa_httk", None)
     return record
+
+
+def _dimorphite_view(value: object) -> dict:
+    from rfproteina.disease.dimorphite import report_view
+
+    result = report_view(value)
+    for row in result["molecules"]:
+        if _redact(row["candidate_id"]) != row["candidate_id"]:
+            row["candidate_id"] = ""
+        if _redact(row["input_smiles"]) != row["input_smiles"]:
+            row.pop("input_smiles")
+            row["structure_fields_withheld"] = True
+        for state in row["states"]:
+            if _redact(state["smiles"]) != state["smiles"]:
+                state.pop("smiles")
+                row["structure_fields_withheld"] = True
+    return result
+
+
+def _badapple2_view(value: object) -> dict:
+    from rfproteina.disease.badapple2 import report_view
+
+    result = report_view(value)
+    result["dump_sha256"] = _AttestationDigest(result["dump_sha256"])
+    for molecule in result["molecules"]:
+        if _redact(molecule["candidate_id"]) != molecule["candidate_id"]:
+            molecule["candidate_id"] = ""
+        if _redact(molecule["input_smiles"]) != molecule["input_smiles"]:
+            molecule.pop("input_smiles")
+            molecule["structure_fields_withheld"] = True
+        for scaffold in molecule["scaffolds"]:
+            if _redact(scaffold["scafsmi"]) != scaffold["scafsmi"]:
+                scaffold.pop("scafsmi")
+                scaffold["structure_fields_withheld"] = True
+    return result
+
+
+def _espsim_view(value: object) -> dict:
+    from rfproteina.disease.espsim import report_view
+
+    report = report_view(value)
+    for field in ("source_sha256", "candidate_sha256", "reference_sha256"):
+        if field in report:
+            report[field] = _AttestationDigest(report[field])
+    for field in ("candidate_id", "reference_id"):
+        name = report.get(field)
+        if name is not None and _redact(name) != name:
+            del report[field]
+            report[f"{field}_withheld"] = True
+    return report
+
+
+def _jazzy_view(value: object) -> dict:
+    from rfproteina.disease.jazzy import report_view
+
+    report = report_view(value)
+    for row in report["candidates"]:
+        if "candidate_sha256" in row:
+            row["candidate_sha256"] = _AttestationDigest(row["candidate_sha256"])
+        if _redact(row["candidate_id"]) != row["candidate_id"]:
+            del row["candidate_id"]
+            row["candidate_id_withheld"] = True
+    return report
+
+
+def _fastsolv_view(value: object) -> dict:
+    from rfproteina.disease.fastsolv import report_view
+
+    report = report_view(value)
+    report["checkpoint_sha256"] = {
+        name: _AttestationDigest(digest) for name, digest in report["checkpoint_sha256"].items()
+    }
+    for row in report["candidates"]:
+        if "candidate_sha256" in row:
+            row["candidate_sha256"] = _AttestationDigest(row["candidate_sha256"])
+        if _redact(row["candidate_id"]) != row["candidate_id"]:
+            del row["candidate_id"]
+            row["candidate_id_withheld"] = True
+    return report
+
+
+def _metfrag_view(value: object) -> dict:
+    from rfproteina.disease.metfrag import report_view
+
+    report = report_view(value)
+    for field in ("spectrum_sha256", "jar_sha256"):
+        if field in report:
+            report[field] = _AttestationDigest(report[field])
+    for row in report["candidates"]:
+        if "candidate_sha256" in row:
+            row["candidate_sha256"] = _AttestationDigest(row["candidate_sha256"])
+        if _redact(row["candidate_id"]) != row["candidate_id"]:
+            del row["candidate_id"]
+            row["candidate_id_withheld"] = True
+    return report
+
+
+def _openantigens_view(value: object) -> dict:
+    from rfproteina.disease.openantigens import report_view
+
+    report = report_view(value)
+    for field in ("index_sha256", "accession_map_sha256"):
+        report[field] = _AttestationDigest(report[field])
+    return report
+
+
+def _crest_view(value: object) -> dict:
+    from rfproteina.disease.crest import report_view
+
+    result = report_view(value)
+    for field in ("structure_sha256", "executable_sha256"):
+        if field in result:
+            result[field] = _AttestationDigest(result[field])
+    candidate = result.get("candidate_id")
+    if candidate is not None and _redact(candidate) != candidate:
+        del result["candidate_id"]
+        result["candidate_id_withheld"] = True
+    return result
+
+
+def _propka_view(value: object) -> dict:
+    from rfproteina.disease.propka import report_view
+
+    result = report_view(value)
+    for field in ("structure_sha256", "parameter_sha256", "protein_bonds_sha256"):
+        if field in result:
+            result[field] = _AttestationDigest(result[field])
+    candidate = result.get("candidate_id")
+    if candidate is not None and _redact(candidate) != candidate:
+        del result["candidate_id"]
+        result["candidate_id_withheld"] = True
+    return result
+
+
+def _p2rank_view(value: object) -> dict:
+    from rfproteina.disease.p2rank import report_view
+
+    result = report_view(value)
+    for field in ("receptor_sha256", "archive_sha256"):
+        if field in result:
+            result[field] = _AttestationDigest(result[field])
+    for pocket in result["pockets"]:
+        residues = pocket["residue_ids"]
+        retained = [identifier for identifier in residues if _redact(identifier) == identifier]
+        if len(retained) != len(residues):
+            pocket.update(residue_ids=retained, residue_ids_withheld=len(residues) - len(retained))
+    return result
+
+
+def _method_selection_view(value: object) -> object:
+    """Keep both saved-record paths within each prepared screen's output schema."""
+    if not isinstance(value, Mapping) or "prepared_measurements" not in value:
+        return value
+    selection = dict(value)
+    prepared = selection.pop("prepared_measurements")
+    if isinstance(prepared, Mapping):
+        selected = dict(prepared)
+        for method, project in (
+            ("epa_httk", _httk_view), ("cellprofiler", _cellprofiler_view),
+            ("dimorphite_dl", _dimorphite_view),
+            ("badapple2", _badapple2_view),
+            ("p2rank", _p2rank_view),
+            ("propka", _propka_view),
+            ("crest", _crest_view),
+            ("openantigens", _openantigens_view),
+            ("metfrag", _metfrag_view),
+            ("fastsolv", _fastsolv_view),
+            ("jazzy", _jazzy_view),
+            ("espsim", _espsim_view),
+        ):
+            if method in selected:
+                selected[method] = project(selected[method])
+        selection["prepared_measurements"] = selected
+    return selection
+
+
+def _cellprofiler_view(raw: object) -> dict[str, object]:
+    """Read stored regional measurements without forwarding image payloads or arbitrary metadata."""
+    from rfproteina.disease import cellprofiler_runtime
+    from rfproteina.disease import cellprofiler_stain as stain
+    from rfproteina.disease.corpus_provenance import declare
+
+    invalid = {"method": stain.METHOD_ID, "status": "untested", "blocker": "cellprofiler_record_invalid"}
+    if not isinstance(raw, Mapping):
+        return invalid
+    rows = raw.get("comparisons")
+    if (raw.get("method") != stain.METHOD_ID or raw.get("endpoint") != stain.ENDPOINT
+            or raw.get("stains") != "hematoxylin_dab" or raw.get("scope") not in ("run", "candidate")
+            or raw.get("provider_version") != cellprofiler_runtime.VERSION
+            or raw.get("provider_image_digest") != cellprofiler_runtime.DIGEST
+            or not isinstance(rows, list) or len(rows) > stain.MAX_COMPARISONS):
+        return invalid
+
+    def fields(record: Mapping, names: tuple[str, ...]) -> dict:
+        # Stored JSON is file input. Even a known field could contain an image
+        # array, a mapping with private keys or path components from an export.
+        projected = {}
+        for name in names:
+            item = record.get(name)
+            label = (isinstance(item, str) and len(item) <= 180 and item.isprintable()
+                     and "/" not in item and "\\" not in item)
+            if label or (type(item) in (int, float) and -1 <= item <= 2**32):
+                projected[name] = item
+        return projected
+
+    result = fields(raw, ("method", "endpoint", "stains", "scope", "provider_version", "intensity_unit",
+                          "interpretation", "manifest_sha256", "blocker"))
+    result["provider_image_digest"] = cellprofiler_runtime.DIGEST
+    result["corpus_provenance"] = declare(stain.METHOD_ID, against=stain.ENDPOINT)
+    roles = ("test", "negative", "positive")
+    comparisons = []
+    for source in rows:
+        if not isinstance(source, Mapping):
+            return invalid
+        row = fields(source, ("method", "candidate_id", "comparison_id", "status", "blocker", "positive_control_status",
+                              "test_minus_negative_mean_dab"))
+        if (row.get("method") != stain.METHOD_ID or row.get("status") not in ("reported", "untested")
+                or not all(isinstance(row.get(key), str) and row[key] for key in ("candidate_id", "comparison_id"))):
+            return invalid
+        if row["status"] == "reported":
+            for role in roles:
+                if role == "positive" and role not in source:
+                    continue
+                entry = source.get(role)
+                if not isinstance(entry, Mapping):
+                    return invalid
+                identifiers = ("field_id", "material", "specimen_id", "tissue", "region", "assay_batch",
+                               "acquisition_id", "role", "reagent_id")
+                dimensions = ("width", "height", "roi_pixels")
+                field = fields(entry, ("method", *identifiers, *dimensions, "image_sha256", "mask_sha256",
+                                       "mean_dab", "median_dab"))
+                if (field.get("method") != stain.METHOD_ID or
+                        not all(isinstance(field.get(k), str) and field[k] for k in identifiers) or
+                        not all(isinstance(field.get(k), str) and _ADMET_DIGEST.fullmatch(field[k])
+                                for k in ("image_sha256", "mask_sha256")) or
+                        not all(type(field.get(k)) is int and field[k] > 0 for k in dimensions) or
+                        field["roi_pixels"] > field["width"] * field["height"] or
+                        not all(type(field.get(k)) in (int, float) and 0 <= field[k] <= 1
+                                for k in ("mean_dab", "median_dab"))):
+                    return invalid
+                row[role] = field
+            test, negative = row["test"], row["negative"]
+            delta = row.get("test_minus_negative_mean_dab")
+            if (test["role"] != "candidate" or negative["role"] not in ("no_primary_control", "isotype_control")
+                    or test["material"] not in ("human_frozen_tissue", "human_chip")
+                    or test["reagent_id"] == negative["reagent_id"]
+                    or test["image_sha256"] == negative["image_sha256"]
+                    or any(test[k] != negative[k] for k in ("material", "specimen_id", "tissue", "region",
+                                                             "assay_batch", "acquisition_id"))
+                    or delta != test["mean_dab"] - negative["mean_dab"]):
+                return invalid
+            positive = row.get("positive")
+            if row.get("positive_control_status") != ("measured" if positive else "not_supplied"):
+                return invalid
+            if positive and (positive["role"] != "positive_control"
+                             or positive["image_sha256"] in (test["image_sha256"], negative["image_sha256"])
+                             or any(positive[k] != test[k] for k in ("assay_batch", "acquisition_id"))):
+                return invalid
+        else:
+            for key in ("field_ids", "field_blockers"):
+                if isinstance(source.get(key), Mapping):
+                    row[key] = fields(source[key], roles)
+        comparisons.append(row)
+    count = sum(row["status"] == "reported" for row in comparisons)
+    status = ("reported" if count == len(rows) else "partial") if count else "untested"
+    if raw.get("status") != status or raw.get("reported") != count or raw.get("attempted") != len(rows):
+        return invalid
+    result.update(status=status, reported=count, attempted=len(rows), comparisons=comparisons)
+    return result
 
 
 def _affinity_view(report: Mapping[str, object]) -> dict[str, object]:
@@ -1904,6 +2222,10 @@ def _verdict(payload: Mapping[str, object], *, include_record: bool) -> dict[str
         held = _HELD_BACK.get(name)
         if held:
             value = {key: item for key, item in value.items() if key not in held}
+        if name in _SUPPLEMENTAL_MODEL_VIEWS:
+            value = _SUPPLEMENTAL_MODEL_VIEWS[name](value)
+        if name == "method_selection":
+            value = _method_selection_view(value)
         if name in _PROVENANCE_BLOCKS:
             value = _provenance(value, name, malformed)
         view[name] = _redact(value)
@@ -1924,6 +2246,784 @@ def _verdict(payload: Mapping[str, object], *, include_record: bool) -> dict[str
     if include_record:
         view["record"] = _redact(_without_held_back(payload))
     return view
+
+
+_ADMET_COMPOUND_ID = re.compile(r"smiles_sha256_[0-9a-f]{64}\Z")
+_ADMET_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+_ADMET_VERSION = re.compile(r"[0-9][0-9A-Za-z.+!_-]{0,63}\Z")
+_ADMET_BLOCKER = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
+_DILI_SHARED_BLOCKERS = frozenset({
+    "candidate_requires_named_nomination", "duplicate_candidate_id", "duplicate_provider_row",
+    "expected_one_run_ligand", "input_unavailable", "invalid_candidate_table_header", "invalid_candidate_table_width",
+    "invalid_nominated_smiles", "invalid_or_duplicate_nomination", "invalid_provider_result",
+    "ligand_input_missing", "ligand_input_unreadable", "missing_candidate_id", "missing_provider_row",
+    "no_attributable_prediction", "no_candidates", "no_usable_candidates", "provider_dependency_unavailable",
+    "provider_or_input_unavailable", "provider_timeout", "provider_worker_failed", "rdkit_unavailable",
+    "trained_model_unavailable",
+    "unsupported_extended_smiles",
+})
+
+
+def _ames_view(report: Mapping[str, object]) -> dict[str, object]:
+    from rfproteina.disease.ligand_ames import SPEC
+
+    return _admet_view(report, SPEC)
+
+
+def _dili_view(report: Mapping[str, object]) -> dict[str, object]:
+    from rfproteina.disease.ligand_dili import SPEC
+
+    allowed = _DILI_SHARED_BLOCKERS | {SPEC.structure_blocker, SPEC.input_blocker, SPEC.resource_blocker}
+    return _admet_view(report, SPEC, allowed_blockers=allowed)
+
+
+def _microsomal_clearance_view(report: Mapping[str, object]) -> dict[str, object]:
+    from rfproteina.disease.ligand_microsomal_clearance import SPEC
+
+    return _admet_view(report, SPEC)
+
+
+def _model_nominations(
+    inputs: object,
+    *,
+    maximum: int,
+    recognized_blocker: Callable[[Mapping[str, object]], str | None],
+) -> tuple[list[dict[str, str]], dict[str, None]]:
+    """Project nominations and retain compound IDs in first-accepted order."""
+    from rfproteina.disease.ligand_admet import valid_candidate_id
+
+    def candidate_id(row: object) -> str:
+        value = row.get("candidate_id") if isinstance(row, Mapping) else None
+        return value if isinstance(value, str) and valid_candidate_id(value) else ""
+
+    nominations = inputs[:maximum] if isinstance(inputs, list) else []
+    counts = Counter(candidate_id(row) for row in nominations)
+    accepted: dict[str, None] = {}
+    input_rows = []
+    for row in nominations:
+        name = candidate_id(row)
+        nomination = {"candidate_id": name}
+        input_rows.append(nomination)
+        if not isinstance(row, Mapping):
+            nomination["blocker"] = "invalid_or_duplicate_nomination"
+            continue
+        blocker = recognized_blocker(row)
+        compound_id = row.get("compound_id")
+        if blocker:
+            nomination["blocker"] = blocker
+        elif not name or "blocker" in row:
+            nomination["blocker"] = "invalid_or_duplicate_nomination"
+        elif counts[name] != 1:
+            nomination["blocker"] = "duplicate_candidate_id"
+        elif not isinstance(compound_id, str) or _ADMET_COMPOUND_ID.fullmatch(compound_id) is None:
+            nomination["blocker"] = "invalid_provider_result"
+        else:
+            nomination["compound_id"] = compound_id
+            accepted[compound_id] = None
+    return input_rows, accepted
+
+
+def _model_compounds(
+    compounds: object, accepted: dict[str, None], *, maximum: int,
+) -> dict[str, list[Mapping[str, object]]]:
+    """Index only attributable records and retain duplicates for refusal."""
+    by_id: dict[str, list[Mapping[str, object]]] = {key: [] for key in accepted}
+    if isinstance(compounds, list):
+        for row in compounds[:maximum]:
+            if isinstance(row, Mapping):
+                compound_id = row.get("compound_id")
+                if isinstance(compound_id, str) and compound_id in by_id:
+                    by_id[compound_id].append(row)
+    return by_id
+
+
+def _admet_view(
+    report: Mapping[str, object], spec: Endpoint, *, allowed_blockers: frozenset[str] | None = None,
+) -> dict[str, object]:
+    """Keep attributed predictions and provenance, never submitted chemical structures."""
+    from rfproteina.disease.corpus_provenance import declare
+    from rfproteina.disease.ligand_admet import MAX_CANDIDATES
+
+    identity, score_key = spec.identity, spec.value_field
+
+    def matches(pattern: re.Pattern[str], value: object) -> bool:
+        return isinstance(value, str) and pattern.fullmatch(value) is not None
+
+    def blocker_for(record: Mapping[str, object]) -> str | None:
+        value = record.get("blocker")
+        if not isinstance(value, str) or _ADMET_BLOCKER.fullmatch(value) is None:
+            return None
+        return value if allowed_blockers is None or value in allowed_blockers else None
+
+    def literal_fields(record: Mapping[str, object]) -> dict[str, str]:
+        return {key: expected for key, expected in identity.items() if record.get(key) == expected}
+
+    attribution = literal_fields(report)
+    scope = report.get("scope")
+    found: dict[str, object] = dict(attribution)
+    if isinstance(scope, str) and scope in ("candidate_table", "run_ligand", "standalone"):
+        found["scope"] = scope
+
+    inputs = report.get("inputs")
+    input_rows, accepted = _model_nominations(inputs, maximum=MAX_CANDIDATES, recognized_blocker=blocker_for)
+    if isinstance(inputs, list):
+        found["inputs"] = input_rows
+
+    compounds = report.get("compounds")
+    global_blocker = blocker_for(report)
+    if global_blocker is None:
+        if any(isinstance(rows, list) and len(rows) > MAX_CANDIDATES for rows in (inputs, compounds)):
+            global_blocker = spec.input_blocker
+        elif len(attribution) != len(identity) or "scope" not in found or "blocker" in report:
+            global_blocker = "invalid_provider_result"
+        elif report.get("status") not in ("predicted", "partial"):
+            global_blocker = "no_attributable_prediction"
+
+    by_id = _model_compounds(compounds, accepted, maximum=MAX_CANDIDATES)
+    predicted = 0
+    compound_rows = []
+    for compound_id, rows in by_id.items():
+        entry = {**attribution, "compound_id": compound_id, "status": "untested"}
+        if global_blocker:
+            entry["blocker"] = global_blocker
+        elif not rows:
+            entry["blocker"] = "missing_provider_row"
+        elif len(rows) != 1:
+            entry["blocker"] = "duplicate_provider_row"
+        else:
+            row = rows[0]
+            value = row.get(score_key)
+            if (
+                len(literal_fields(row)) == len(identity) and row.get("status") == "predicted"
+                and "blocker" not in row and type(value) in {int, float} and spec.accepts(value)
+            ):
+                entry.update({"status": "predicted", score_key: value})
+                predicted += 1
+            else:
+                entry["blocker"] = blocker_for(row) or "invalid_provider_result"
+        compound_rows.append(entry)
+    if isinstance(compounds, list) or accepted:
+        found["compounds"] = compound_rows
+    if isinstance(inputs, list):
+        found.update(attempted=len(input_rows), unique_compounds=len(accepted), unique_predicted=predicted)
+    if predicted:
+        complete = predicted == len(accepted) and all("compound_id" in row for row in input_rows)
+        found["status"] = "predicted" if complete else "partial"
+    else:
+        found.update(status="untested", blocker=global_blocker or "no_attributable_prediction")
+    provider = report.get("provider")
+    if isinstance(provider, Mapping):
+        source = {
+            key: provider[key]
+            for key in ("admet_ai", "chemprop", "rdkit")
+            if matches(_ADMET_VERSION, provider.get(key))
+        }
+        if provider.get("device") == "cpu":
+            source["device"] = "cpu"
+        members = provider.get("ensemble_members")
+        if _is_count(members) and members == 5:
+            source["ensemble_members"] = members
+        hashes = provider.get("verified_sha256")
+        if isinstance(hashes, Mapping):
+            source["verified_sha256"] = {
+                name: hashes[name]
+                for name in ("admet.csv", *(f"model_{i}.pt" for i in range(5)))
+                if matches(_ADMET_DIGEST, hashes.get(name))
+            }
+        found["provider"] = source
+    # This is public release metadata. Keep an exact declared record rather than
+    # recursing through unknown properties in a hand-edited result.
+    provenance = declare(spec.method, against=spec.endpoint)
+    if report.get("corpus_provenance") == provenance:
+        found["corpus_provenance"] = provenance
+    return found
+
+
+_CACO2_BLOCKERS = frozenset({
+    "unsupported_caco2_structure", "caco2_input_limit_exceeded", "caco2_checkpoint_missing",
+    "caco2_checkpoint_invalid", "caco2_runtime_unavailable", "caco2_output_contract_mismatch",
+    "candidate_requires_named_nomination", "duplicate_candidate_id", "duplicate_provider_row",
+    "expected_one_run_ligand", "invalid_candidate_table_header", "invalid_candidate_table_width",
+    "invalid_nominated_smiles", "invalid_or_duplicate_nomination", "invalid_provider_result",
+    "ligand_input_missing", "ligand_input_unreadable", "missing_candidate_id", "missing_provider_row",
+    "no_attributable_prediction", "no_candidates", "no_usable_candidates", "provider_dependency_unavailable",
+    "provider_or_input_unavailable", "provider_timeout", "provider_worker_failed", "rdkit_unavailable",
+    "trained_model_unavailable", "unsupported_extended_smiles",
+})
+
+
+def _caco2_blocker(row: Mapping[str, object]) -> str | None:
+    reason = row.get("blocker")
+    return reason if isinstance(reason, str) and reason in _CACO2_BLOCKERS else None
+
+
+def _finite_model_score(value: object) -> bool:
+    if type(value) not in {float, int}:
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _caco2_head(
+    value: object, *, endpoint: str, scale: str, blocker: str | None, allow_score: bool,
+) -> dict[str, object]:
+    view: dict[str, object] = {"endpoint": endpoint, "scale": scale, "status": "untested"}
+    if blocker:
+        view["blocker"] = blocker
+    elif (isinstance(value, Mapping) and value.get("endpoint") == endpoint and value.get("scale") == scale
+          and "unit" not in value):
+        score = value.get("model_score")
+        if allow_score and value.get("status") == "predicted" and "blocker" not in value and _finite_model_score(score):
+            view.update(status="predicted", model_score=score)
+        else:
+            view["blocker"] = _caco2_blocker(value) or "invalid_provider_result"
+    else:
+        view["blocker"] = "invalid_provider_result"
+    return view
+
+
+def _caco2_view(report: Mapping[str, object]) -> dict[str, object]:
+    """Keep separate native model scores, with only attributable compound rows."""
+    from rfproteina.disease.corpus_provenance import declare
+    from rfproteina.disease.ligand_caco2 import CHECKPOINT_SHA256, HEADS, MAX_CANDIDATES, METHOD, RELEASE, SCALE
+
+    found: dict[str, object] = {
+        key: value for key, value in {"method": METHOD, "scale": SCALE}.items() if report.get(key) == value
+    }
+    scope = report.get("scope")
+    if isinstance(scope, str) and scope in ("candidate_table", "run_ligand", "standalone"):
+        found["scope"] = scope
+    inputs, compounds = report.get("inputs"), report.get("compounds")
+    nominations, accepted = _model_nominations(inputs, maximum=MAX_CANDIDATES, recognized_blocker=_caco2_blocker)
+    reported_blocker = _caco2_blocker(report)
+    global_blocker = None if reported_blocker == "no_attributable_prediction" else reported_blocker
+    if global_blocker is None:
+        if any(isinstance(rows, list) and len(rows) > MAX_CANDIDATES for rows in (inputs, compounds)):
+            global_blocker = "caco2_input_limit_exceeded"
+        elif len(found) != 3 or "unit" in report or ("blocker" in report and reported_blocker is None):
+            global_blocker = "invalid_provider_result"
+        elif scope == "run_ligand" and [row["candidate_id"] for row in nominations] != ["run_ligand"]:
+            global_blocker = "invalid_or_duplicate_nomination"
+    allow_scores = reported_blocker is None and report.get("status") in ("predicted", "partial")
+    compound_rows = []
+    predicted = complete = 0
+    for compound_id, rows in _model_compounds(compounds, accepted, maximum=MAX_CANDIDATES).items():
+        blocker = global_blocker
+        allow_score = allow_scores
+        heads: Mapping[str, object] = {}
+        if not blocker:
+            if not rows:
+                blocker = "missing_provider_row"
+            elif len(rows) != 1:
+                blocker = "duplicate_provider_row"
+            else:
+                row = rows[0]
+                candidate_heads = row.get("heads")
+                if row.get("method") != METHOD or row.get("status") not in ("predicted", "partial", "untested"):
+                    blocker = _caco2_blocker(row) or "invalid_provider_result"
+                elif not isinstance(candidate_heads, Mapping) or "blocker" in row or "unit" in row:
+                    blocker = "invalid_provider_result"
+                else:
+                    heads = candidate_heads
+                    allow_score = allow_scores and row.get("status") != "untested"
+        view_heads = {
+            key: _caco2_head(heads.get(key), endpoint=endpoint, scale=SCALE, blocker=blocker, allow_score=allow_score)
+            for key, endpoint in HEADS
+        }
+        n = sum(head["status"] == "predicted" for head in view_heads.values())
+        status = "predicted" if n == len(HEADS) else "partial" if n else "untested"
+        predicted += n > 0
+        complete += status == "predicted"
+        compound_rows.append({"compound_id": compound_id, "method": METHOD, "status": status, "heads": view_heads})
+    found.update(
+        inputs=nominations, compounds=compound_rows, attempted=len(nominations), unique_compounds=len(accepted),
+        unique_predicted=predicted, unique_complete=complete,
+    )
+    if predicted:
+        all_scored = complete == len(accepted) and all("compound_id" in row for row in nominations)
+        found["status"] = "predicted" if all_scored else "partial"
+    else:
+        found.update(status="untested", blocker=global_blocker or "no_attributable_prediction")
+
+    provider = report.get("provider")
+    if isinstance(provider, Mapping):
+        source = {
+            key: provider[key]
+            for key in ("chemprop", "torch", "rdkit")
+            if isinstance(provider.get(key), str) and _ADMET_VERSION.fullmatch(provider[key])
+        }
+        for key, value in (
+            ("device", "cpu"), ("release", RELEASE), ("checkpoint_sha256", CHECKPOINT_SHA256),
+        ):
+            if provider.get(key) == value:
+                source[key] = value
+        found["provider"] = source
+    provenance = declare(METHOD)
+    if report.get("corpus_provenance") == provenance:
+        found["corpus_provenance"] = provenance
+    return found
+
+
+_DELPHI_BLOCKERS = frozenset({
+    "delphi_candidate_id_duplicate", "delphi_candidate_id_invalid", "delphi_candidate_not_nominated",
+    "delphi_cdr3_unsupported", "delphi_chain_roles_invalid", "delphi_checkpoint_invalid", "delphi_checkpoint_missing",
+    "delphi_domain_incomplete", "delphi_domain_length_out_of_range", "delphi_domain_numbering_failed",
+    "delphi_domain_numbering_unavailable", "delphi_domain_residues_unsupported", "delphi_domains_required",
+    "delphi_inference_failed", "delphi_no_predictions", "delphi_pair_header_invalid", "delphi_pair_width_invalid",
+    "delphi_pairs_empty", "delphi_pairs_missing", "delphi_pairs_over_limit", "delphi_pairs_unreadable",
+    "delphi_prediction_record_invalid", "delphi_runtime_unavailable", "delphi_worker_timeout", "input_unavailable",
+    "provider_or_input_unavailable",
+})
+
+
+def _delphi_blocker(record: Mapping[str, object]) -> str | None:
+    value = record.get("blocker")
+    return value if isinstance(value, str) and value in _DELPHI_BLOCKERS else None
+
+
+def _delphi_view(report: Mapping[str, object]) -> dict[str, object]:
+    """Project only bounded, attributable PSR scores and named blockers, never VH/VL or CDR3."""
+    from rfproteina.disease.corpus_provenance import declare
+    from rfproteina.disease.delphi_inputs import MAX_ROWS, valid_candidate_id
+    from rfproteina.disease.delphi_psr import CHECKPOINT_SHA256, ENDPOINT, METHOD, RELEASE, UNIT, VALUE_FIELD
+
+    identity = {"method": METHOD, "endpoint": ENDPOINT, "unit": UNIT}
+    scope = report.get("scope")
+    top_blocker = _delphi_blocker(report)
+    if not all(report.get(key) == value for key, value in identity.items()) or scope not in ("candidate", "run"):
+        # Even if supplied by a foreign writer, a known untested reason is useful without attributing a score.
+        return {"status": "untested", "blocker": top_blocker or "delphi_prediction_record_invalid"}
+    view: dict[str, object] = {**identity, "scope": scope}
+    input_digest = report.get("input_sha256")
+    if isinstance(input_digest, str) and _ADMET_DIGEST.fullmatch(input_digest):
+        view["input_sha256"] = _AttestationDigest(input_digest)
+    rows = report.get("pairs")
+    if not isinstance(rows, list):
+        rows = []
+        top_blocker = top_blocker or "delphi_prediction_record_invalid"
+    elif len(rows) > MAX_ROWS:
+        rows = []
+        top_blocker = "delphi_pairs_over_limit"
+    if "blocker" in report and top_blocker is None:
+        top_blocker = "delphi_prediction_record_invalid"
+    provider = report.get("provider")
+    fixed = {"device": "cpu", "release": RELEASE, "checkpoint_sha256": CHECKPOINT_SHA256}
+    version_keys = ("torch", "anarcii")
+    verified_provider = (
+        isinstance(provider, Mapping) and all(provider.get(key) == value for key, value in fixed.items())
+        and all(isinstance(provider.get(key), str) and _ADMET_VERSION.fullmatch(provider[key]) for key in version_keys)
+    )
+    claimed_scores = report.get("status") in ("predicted", "partial")
+    if claimed_scores and not top_blocker and (not verified_provider or (scope == "candidate" and len(rows) != 1)):
+        top_blocker = "delphi_prediction_record_invalid"
+    allow_scores = claimed_scores and not top_blocker
+
+    def candidate_id(row: object) -> str:
+        value = row.get("candidate_id") if isinstance(row, Mapping) else None
+        return value if isinstance(value, str) and valid_candidate_id(value) else ""
+
+    pairs: list[dict[str, object]] = []
+    counts = Counter(candidate_id(row) for row in rows)
+    predicted = 0
+    for row in rows:
+        name = candidate_id(row)
+        entry: dict[str, object] = {"candidate_id": name, "status": "untested"}
+        pairs.append(entry)
+        if not isinstance(row, Mapping):
+            entry["blocker"] = "delphi_prediction_record_invalid"
+            continue
+        reason = _delphi_blocker(row)
+        if not name:
+            entry["blocker"] = reason or "delphi_candidate_id_invalid"
+        elif counts[name] != 1:
+            entry["blocker"] = "delphi_candidate_id_duplicate"
+        elif reason:
+            entry["blocker"] = reason
+        else:
+            value = row.get(VALUE_FIELD)
+            if (
+                allow_scores and row.get("status") == "predicted" and "blocker" not in row
+                and type(value) in (int, float) and 0 <= value <= 1
+            ):
+                entry.update({"status": "predicted", VALUE_FIELD: value})
+                predicted += 1
+            else:
+                entry["blocker"] = top_blocker or "delphi_prediction_record_invalid"
+    view.update(pairs=pairs, attempted=len(pairs), predicted=predicted)
+    if predicted:
+        view["status"] = "predicted" if predicted == len(pairs) else "partial"
+    else:
+        view.update(status="untested", blocker=top_blocker or "delphi_no_predictions")
+
+    if verified_provider:
+        view["provider"] = {**fixed, **{key: provider[key] for key in version_keys}}
+    provenance = declare(METHOD, against=ENDPOINT)
+    if report.get("corpus_provenance") == provenance:
+        view["corpus_provenance"] = provenance
+    return view
+
+
+_PEPTIDE_RBC_PROJECTION_BLOCKERS = frozenset({
+    "peptide_rbc_record_invalid", "input_unavailable", "provider_or_input_unavailable",
+})
+
+
+def _peptide_rbc_view(raw: Mapping[str, object]) -> dict[str, object]:
+    """Keep supplied observations in input order and with their full assay context."""
+    from rfproteina.disease import peptide_rbc as rbc
+    from rfproteina.disease.corpus_provenance import declare
+
+    known = rbc.BLOCKERS | _PEPTIDE_RBC_PROJECTION_BLOCKERS
+
+    def blocker(row: Mapping[str, object]) -> str | None:
+        value = row.get("blocker")
+        return value if isinstance(value, str) and value in known else None
+
+    def identifier(value: object) -> str | None:
+        # Keep a sanitized wire identity consistent with the typed schema. A
+        # value that the full MCP response would redact cannot attach a number.
+        return value if isinstance(value, str) and rbc.valid_identifier(value) and _redact(value) == value else None
+
+    invalid = "peptide_rbc_record_invalid"
+    identity = {"method": rbc.METHOD, "endpoint": rbc.ENDPOINT, "unit": rbc.UNIT}
+    scope = raw.get("scope")
+    top_blocker = blocker(raw)
+    if scope not in ("candidate", "run") or any(raw.get(key) != value for key, value in identity.items()):
+        return {"status": "untested", "blocker": top_blocker or "peptide_rbc_record_invalid"}
+
+    result: dict[str, object] = {**identity, "scope": scope}
+    digest = raw.get("input_sha256")
+    if isinstance(digest, str) and _ADMET_DIGEST.fullmatch(digest):
+        result["input_sha256"] = _AttestationDigest(digest)
+    if (provenance := declare(rbc.METHOD)) == raw.get("corpus_provenance"):
+        result["corpus_provenance"] = provenance
+
+    raw_rows = raw.get("observations")
+    if not isinstance(raw_rows, list):
+        raw_rows, top_blocker = [], top_blocker or invalid
+    elif len(raw_rows) > rbc.MAX_ROWS:
+        raw_rows, top_blocker = [], "peptide_rbc_over_limit"
+    if "blocker" in raw and top_blocker is None:
+        top_blocker = invalid
+
+    safe_rows = [row if isinstance(row, Mapping) else {} for row in raw_rows]
+    ids = [(identifier(row.get("candidate_id")), identifier(row.get("observation_id"))) for row in safe_rows]
+    duplicates = Counter(ids)
+    allow_reports = raw.get("status") in ("reported", "partial") and top_blocker is None
+    if allow_reports and ("input_sha256" not in result or (
+        scope == "candidate" and len({name for name, _ in ids if name is not None}) != 1
+    )):
+        allow_reports, top_blocker = False, invalid
+
+    rows: list[dict[str, object]] = []
+    reported = human_reported = 0
+    for row, (candidate, observation) in zip(safe_rows, ids, strict=True):
+        formulation = identifier(row.get("formulation_id"))
+        entry: dict[str, object] = {"status": "untested"}
+        for key, value in (
+            ("candidate_id", candidate), ("observation_id", observation), ("formulation_id", formulation),
+        ):
+            if value is not None:
+                entry[key] = value
+        rows.append(entry)
+        reason = blocker(row)
+        if candidate and observation and duplicates[(candidate, observation)] > 1:
+            entry["blocker"] = "peptide_rbc_duplicate_observation"
+            continue
+        if row.get("status") != "reported" or "blocker" in row or not allow_reports:
+            entry["blocker"] = reason or top_blocker or invalid
+            continue
+        source = identifier(row.get("source_id"))
+        context = identifier(row.get("context_id"))
+        species, matrix, unit = (row.get(key) for key in ("species", "matrix", "concentration_unit"))
+        concentration, exposure, measure = (row.get(key) for key in (
+            "concentration", "exposure_minutes", "hemolysis_percent",
+        ))
+        if (
+            not all((candidate, observation, formulation, source, context))
+            or not isinstance(species, str) or species not in rbc.SPECIES
+            or not isinstance(matrix, str) or matrix not in rbc.MATRICES
+            or not isinstance(unit, str) or unit not in rbc.CONCENTRATION_UNITS
+            or not rbc.is_number(concentration) or concentration <= 0
+            or not rbc.is_number(exposure) or exposure <= 0
+            or not rbc.is_number(measure) or not 0 <= measure <= 100
+            or row.get("controls_qc") != "accepted"
+        ):
+            entry["blocker"] = invalid
+            continue
+        entry.update(
+            status="reported", source_id=source, context_id=context, species=species, matrix=matrix,
+            concentration=concentration, concentration_unit=unit, exposure_minutes=exposure,
+            hemolysis_percent=measure, controls_qc="accepted",
+        )
+        reported += 1
+        human_reported += species == "human"
+
+    result.update(observations=rows, attempted=len(rows), reported=reported, human_reported=human_reported)
+    if reported:
+        result["status"] = "reported" if reported == len(rows) else "partial"
+    else:
+        result.update(status="untested", blocker=top_blocker or "peptide_rbc_no_qualified_observations")
+    return result
+
+
+_MOLPROBITY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
+_MOLPROBITY_PROJECTION_BLOCKERS = frozenset({
+    "molprobity_record_invalid", "input_unavailable", "provider_or_input_unavailable",
+})
+
+
+_HTTK_PROJECTION_BLOCKERS = frozenset({
+    "httk_record_invalid", "httk_legacy_identity_unverified", "input_unavailable", "provider_or_input_unavailable",
+})
+
+
+def _httk_view(raw: object) -> dict[str, object]:
+    """Read bounded v2 evidence, including the structure match and published human inputs."""
+    from rfproteina.disease import httk, httk_identity
+    from rfproteina.disease.corpus_provenance import declare
+    from rfproteina.disease.ligand_admet import valid_candidate_id
+
+    known = httk.BLOCKERS | _HTTK_PROJECTION_BLOCKERS
+    invalid = "httk_record_invalid"
+    if not isinstance(raw, Mapping):
+        return {"status": "untested", "blocker": "httk_record_invalid"}
+    if raw.get("method") == "epa_httk_human_css_v1":
+        return {"status": "untested", "blocker": "httk_legacy_identity_unverified"}
+
+    def blocker(value: Mapping[str, object]) -> str | None:
+        reason = value.get("blocker")
+        return reason if isinstance(reason, str) and reason in known else None
+
+    identity = {"method": httk.METHOD, "endpoint": httk.ENDPOINT, "unit": httk.UNIT, "scenario": httk.SCENARIO}
+    scope, intake, top_blocker = raw.get("scope"), raw.get("reference_intake_mg_kg_day"), blocker(raw)
+    if (
+        scope not in ("candidate", "run") or type(intake) not in (int, float) or intake != 1
+        or any(raw.get(key) != expected for key, expected in identity.items())
+    ):
+        return {"status": "untested", "blocker": top_blocker or "httk_record_invalid"}
+
+    result: dict[str, object] = {**identity, "scope": scope, "reference_intake_mg_kg_day": 1}
+    if (provenance := declare(httk.METHOD)) == raw.get("corpus_provenance"):
+        result["corpus_provenance"] = provenance
+    digest = raw.get("manifest_sha256")
+    if isinstance(digest, str) and _ADMET_DIGEST.fullmatch(digest):
+        result["manifest_sha256"] = _AttestationDigest(digest)
+    provider = raw.get("provider")
+    verified = isinstance(provider, Mapping) and all(
+        type(provider.get(key)) is type(expected) and provider.get(key) == expected
+        for key, expected in httk.PROVIDER.items()
+    )
+
+    members = raw.get("members")
+    if not isinstance(members, list):
+        members, top_blocker = [], top_blocker or invalid
+    elif len(members) > httk.MAX_ENTRIES:
+        members, top_blocker = [], "httk_input_over_limit"
+    elif scope == "candidate" and len(members) > 1:
+        members, top_blocker = [], invalid
+    if "blocker" in raw and top_blocker is None:
+        top_blocker = invalid
+    if raw.get("status") in ("reported", "partial") and (
+        not verified or "manifest_sha256" not in result or not members
+    ):
+        top_blocker = top_blocker or invalid
+    allow_quantiles = raw.get("status") in ("reported", "partial") and top_blocker is None
+    reference_index = None
+    if "manifest_sha256" in result and members:
+        # A saved v2 result carries its original identity evidence. If the pinned
+        # reference is installed here, also verify the recorded identifier pair.
+        with contextlib.suppress(httk_identity.IdentityReferenceError):
+            reference_index = httk_identity.load_index()
+
+    def candidate_id(row: Mapping[str, object]) -> str:
+        name = row.get("candidate_id")
+        return name if isinstance(name, str) and valid_candidate_id(name) and _redact(name) == name else ""
+
+    safe_members = [row if isinstance(row, Mapping) else {} for row in members]
+    ids = [candidate_id(row) for row in safe_members]
+    counts = Counter(ids)
+    graphs = defaultdict(set)
+    reference_keys = defaultdict(set)
+    references = defaultdict(set)
+    identities = []
+    for row in safe_members:
+        cas, dtxsid, compound = (row.get(field) for field in ("cas", "dtxsid", "compound_id"))
+        cas = cas if httk.valid_cas(cas) else None
+        dtxsid = dtxsid if httk.valid_dtxsid(dtxsid) else None
+        compound = compound if isinstance(compound, str) and _ADMET_COMPOUND_ID.fullmatch(compound) else None
+        key = row.get("reference_inchikey")
+        key = key if isinstance(key, str) and httk_identity.STANDARD_KEY.fullmatch(key) else None
+        identities.append((cas, dtxsid, compound, key))
+        if cas and dtxsid and compound:
+            graphs[cas, dtxsid].add(compound)
+            references[compound].add((cas, dtxsid))
+            if key is not None:
+                reference_keys[cas, dtxsid].add(key)
+    rows: list[dict[str, object]] = []
+    reported = 0
+    for row, name, (cas, dtxsid, compound, key) in zip(safe_members, ids, identities, strict=True):
+        entry: dict[str, object] = {"candidate_id": name, "status": "untested"}
+        rows.append(entry)
+        if cas:
+            entry["cas"] = cas
+        if dtxsid:
+            entry["dtxsid"] = dtxsid
+        if compound:
+            entry["compound_id"] = _AttestationDigest(compound)
+        conflict = bool(cas and dtxsid and compound and (
+            len(graphs[cas, dtxsid]) > 1 or len(references[compound]) > 1 or len(reference_keys[cas, dtxsid]) > 1
+        ))
+        identity_blocker = None
+        if key and cas and dtxsid and reference_index is not None:
+            if (cas, dtxsid) not in reference_index:
+                identity_blocker = "httk_structure_unmapped"
+            elif reference_index[cas, dtxsid] != key:
+                identity_blocker = "httk_structure_mismatch"
+        assays = row.get("human_in_vitro")
+        low, middle, high = (row.get(field) for field in ("p05", "median", "p95"))
+        attributed = bool(name and counts[name] == 1 and cas and dtxsid and compound and key
+                          and not conflict and not identity_blocker and "manifest_sha256" in result)
+        if (
+            allow_quantiles and attributed and row.get("status") == "reported"
+            and "blocker" not in row and httk.valid_human_in_vitro(assays)
+            and all(_finite_model_score(value) for value in (low, middle, high)) and 0 <= low <= middle <= high
+        ):
+            entry.update(status="reported", reference_inchikey=_Prose(key), human_in_vitro=dict(assays),
+                         p05=low, median=middle, p95=high)
+            reported += 1
+        else:
+            reason = identity_blocker or blocker(row) or top_blocker or (
+                "httk_ambiguous_ligand" if conflict else invalid
+            )
+            entry["blocker"] = reason
+            if attributed and row.get("status") == "untested" and reason in {
+                "httk_reference_identity_unavailable", "httk_human_inputs_unavailable", "httk_model_inapplicable",
+                "httk_invalid_draws", "httk_simulation_failed", "httk_runtime_unavailable", "httk_worker_failed",
+                "httk_worker_timeout",
+            }:
+                entry["reference_inchikey"] = _Prose(key)
+    result.update(members=rows, attempted=len(rows), reported=reported)
+    if reported:
+        result.update(status="reported" if reported == len(rows) else "partial", provider=dict(httk.PROVIDER))
+    else:
+        result.update(status="untested", blocker=top_blocker or "httk_no_usable_results")
+    return result
+
+
+def _molprobity_view(raw: Mapping[str, object]) -> dict[str, object]:
+    """Expose bounded geometry evidence only, never coordinate text or a combined verdict."""
+    from rfproteina.disease import molprobity_geometry as mp
+    from rfproteina.disease.corpus_provenance import declare
+
+    known = mp.BLOCKERS | _MOLPROBITY_PROJECTION_BLOCKERS
+    invalid = "molprobity_record_invalid"
+
+    def blocker(record: Mapping[str, object]) -> str | None:
+        value = record.get("blocker")
+        return value if isinstance(value, str) and value in known else None
+
+    def metric(name: str, value: object) -> dict[str, object]:
+        if isinstance(value, Mapping):
+            if value.get("status") == "untested" and (reason := blocker(value)):
+                return {"status": "untested", "blocker": reason}
+            native = mp.validate_metric(name, dict(value))
+            if native["status"] == "reported":
+                return native
+        return {"status": "untested", "blocker": invalid}
+
+    identity = {"method": mp.METHOD, "model_scope": mp.MODEL_SCOPE}
+    scope = raw.get("scope")
+    top_blocker = blocker(raw)
+    if scope not in ("candidate", "run") or any(raw.get(key) != value for key, value in identity.items()):
+        return {"status": "untested", "blocker": top_blocker or "molprobity_record_invalid"}
+
+    view: dict[str, object] = {**identity, "scope": scope}
+    if (provenance := declare(mp.METHOD)) == raw.get("corpus_provenance"):
+        view["corpus_provenance"] = provenance
+    provider = raw.get("provider")
+    fixed = mp.PROVIDER.copy()
+    verified_provider = isinstance(provider, Mapping) and all(provider.get(k) == v for k, v in fixed.items())
+    if verified_provider:
+        view["provider"] = fixed
+
+    raw_rows = raw.get("samples")
+    if not isinstance(raw_rows, list):
+        raw_rows, top_blocker = [], top_blocker or invalid
+    elif len(raw_rows) > mp.MAX_MODELS:
+        raw_rows, top_blocker = [], "molprobity_too_many_models"
+    elif scope == "candidate" and len(raw_rows) > 1:
+        raw_rows, top_blocker = [], invalid
+    if "blocker" in raw and top_blocker is None:
+        top_blocker = invalid
+    if top_blocker is None and raw.get("status") in ("reported", "partial") and (
+        not verified_provider or not raw_rows
+    ):
+        top_blocker = invalid
+    allow_measurements = raw.get("status") in ("reported", "partial") and top_blocker is None
+
+    def candidate_id(row: Mapping[str, object]) -> str:
+        value = row.get("candidate_id")
+        if isinstance(value, str) and _MOLPROBITY_ID.fullmatch(value) and _redact(value) == value:
+            return value
+        return ""
+
+    safe_rows = [row if isinstance(row, Mapping) else {} for row in raw_rows]
+    ids = [candidate_id(row) for row in safe_rows]
+    counts = Counter(ids)
+    rows: list[dict[str, object]] = []
+    reported = complete = 0
+    for row, name in zip(safe_rows, ids, strict=True):
+        entry: dict[str, object] = {"candidate_id": name, "status": "untested"}
+        rows.append(entry)
+        if name and counts[name] != 1:
+            entry["blocker"] = "molprobity_candidate_ambiguous"
+            continue
+        digest = row.get("input_sha256")
+        if isinstance(digest, str) and _ADMET_DIGEST.fullmatch(digest):
+            entry["input_sha256"] = _AttestationDigest(digest)
+        metrics = row.get("metrics")
+        status = row.get("status")
+        if name and "input_sha256" in entry and isinstance(metrics, Mapping) and (
+            (allow_measurements and status in ("reported", "partial") and "blocker" not in row)
+            or (status == "untested" and blocker(row))
+        ):
+            measured = {
+                key: metric(key, metrics.get(key)) for key in mp.METRICS
+                if status != "untested" or (
+                    isinstance(metrics.get(key), Mapping) and metrics[key].get("status") == "untested"
+                )
+            }
+            if len(measured) == len(mp.METRICS):
+                entry["metrics"] = measured
+                n = sum(value["status"] == "reported" for value in measured.values())
+                if n:
+                    full = n == len(mp.METRICS)
+                    entry["status"] = "reported" if full else "partial"
+                    reported += 1
+                    complete += full
+                    continue
+        entry["blocker"] = blocker(row) or top_blocker or invalid
+
+    view.update(samples=rows, attempted=len(rows), reported=reported, complete=complete)
+    if reported:
+        view["status"] = "reported" if complete == len(rows) else "partial"
+    else:
+        view.update(status="untested", blocker=top_blocker or "molprobity_no_measurements")
+    return view
+
+
+_SUPPLEMENTAL_MODEL_VIEWS = {
+    "delphi_psr": _delphi_view,
+    "ligand_ames": _ames_view,
+    "ligand_caco2": _caco2_view,
+    "ligand_dili": _dili_view,
+    "ligand_microsomal_clearance": _microsomal_clearance_view,
+    "molprobity_geometry": _molprobity_view,
+    "peptide_rbc_evidence": _peptide_rbc_view,
+}
 
 
 def _axis_summary(
@@ -2226,7 +3326,14 @@ _VERDICT_TYPES: dict[str, Callable[[object], bool]] = {
     "prodigy_affinity": _is_object,
     "vina_pose": _is_object,
     "tnp_profile": _is_object,
+    "delphi_psr": _is_object,
+    "peptide_rbc_evidence": _is_object,
+    "molprobity_geometry": _is_object,
     "ligand_alerts": _is_object,
+    "ligand_ames": _is_object,
+    "ligand_dili": _is_object,
+    "ligand_microsomal_clearance": _is_object,
+    "ligand_caco2": _is_object,
     "ligand_solubility": _is_object,
     "qupkake": _is_object,
     "sygma": _is_object,
@@ -2251,6 +3358,12 @@ class _Prose(str):
     __slots__ = ()
 
 
+class _AttestationDigest(str):
+    """A canonical digest or digest-backed identity checked by a typed projection."""
+
+    __slots__ = ()
+
+
 def _redact(value: object) -> object:
     """Drop sequences, secrets, and personal paths from a returned value.
 
@@ -2263,6 +3376,10 @@ def _redact(value: object) -> object:
     from rfproteina.disease.publish import scrub_for_upload
 
     if isinstance(value, str):
+        if isinstance(value, _AttestationDigest) and (
+            _ADMET_DIGEST.fullmatch(value) or _ADMET_COMPOUND_ID.fullmatch(value)
+        ):
+            return value
         rule = _PROSE_SEQUENCE if isinstance(value, _Prose) else _SEQUENCE
         cleaned = rule.sub("[sequence omitted]", value)
         scrubbed = scrub_for_upload(cleaned)

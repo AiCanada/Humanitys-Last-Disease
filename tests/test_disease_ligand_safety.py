@@ -201,7 +201,7 @@ def test_probabilities_record_passes_the_guard():
     assert record["unit"] == "probability"
 
 
-def test_bayesherg_and_admet_refuse_loudly_when_absent(monkeypatch):
+def test_bayesherg_and_admet_refuse_loudly_when_absent(monkeypatch, tmp_path):
     """Absence is reported, never faked -- whatever happens to be installed.
 
     Forced rather than assumed. ADMET-AI is installable here through the
@@ -212,6 +212,7 @@ def test_bayesherg_and_admet_refuse_loudly_when_absent(monkeypatch):
 
     monkeypatch.delenv("BAYESHERG_ROOT", raising=False)
     monkeypatch.delenv("BAYESHERG_PYTHON", raising=False)
+    monkeypatch.setenv("DATA_PATH", str(tmp_path))
     monkeypatch.setitem(sys.modules, "admet_ai", None)
     ls.reset_admet_model()
     with pytest.raises(ls.SafetyBackendUnavailableError, match="BAYESHERG_ROOT and BAYESHERG_PYTHON"):
