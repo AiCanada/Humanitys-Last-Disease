@@ -139,6 +139,42 @@ _BLOCKERS = {
     "cellprofiler_image_reader_unavailable": "The host lacks the supported local image-reading dependencies.",
     "cellprofiler_execution_timeout": "CellProfiler exceeded the time available for the requested analysis.",
     "pksim_manifest_missing": "This run has no PK-Sim simulation manifest.",
+    "canagliflozin_manifest_missing": "This run has no nomination for the oral canagliflozin reference control.",
+    "canagliflozin_invalid_manifest": "The canagliflozin nomination does not specify the supported reference scenario.",
+    "canagliflozin_requires_run_scope": "The canagliflozin control applies to the whole run.",
+    "canagliflozin_model_missing": "The canagliflozin model file is unavailable.",
+    "canagliflozin_model_integrity": "The canagliflozin model differs from the verified release.",
+    "canagliflozin_solver_unavailable": "The solver for the canagliflozin model is unavailable.",
+    "canagliflozin_timeout": "The canagliflozin reference simulation exceeded its time limit.",
+    "canagliflozin_simulation_failed": "The canagliflozin simulation failed to produce its reference endpoints.",
+    "canagliflozin_invalid_report": "The saved canagliflozin report failed validation.",
+    "toxscan_manifest_missing": "This run has no nomination for a saved ToxScan export.",
+    "toxscan_nomination_changed": "The current ligand structure differs from the prepared ToxScan request.",
+    "toxscan_import_conflict": "This run already contains a different ToxScan export or nomination.",
+    "toxscan_import_write_failed": "The verified ToxScan result could not be saved to the run.",
+    "toxscan_invalid_request_digest": "The supplied request digest is invalid.",
+    "toxscan_ames_select_one": "The local Ames model requires one nominated ligand.",
+    "toxscan_ames_model_missing": "The local ToxScan Ames fingerprint model is missing.",
+    "toxscan_ames_model_integrity": "The local Ames model failed its asset integrity checks.",
+    "toxscan_ames_runtime_unavailable": "The CPU runtime for the local Ames fingerprint model is unavailable.",
+    "toxscan_ames_invalid_structure": "The local Ames fingerprint model cannot represent this structure.",
+    "toxscan_ames_invalid_metrics": "The local Ames model's evaluation record failed validation.",
+    "toxscan_ames_invalid_report": "The local Ames prediction failed its identity or result checks.",
+    "toxscan_invalid_manifest": "The ToxScan candidate nomination or export identity could not be verified.",
+    "toxscan_export_missing": "The nominated ToxScan CSV is missing.",
+    "toxscan_invalid_export": "The saved file could not be read as a supported ToxScan platform export.",
+    "toxscan_export_digest_mismatch": "The ToxScan export differs from the file named in the nomination.",
+    "toxscan_candidate_table_required": "The ToxScan export needs a named small molecule in ligand_candidates.tsv.",
+    "toxscan_candidate_not_nominated": "The ToxScan export is unavailable for the selected candidate.",
+    "toxscan_ambiguous_nomination": "The ToxScan candidate entry is duplicated or incomplete.",
+    "toxscan_invalid_structure": "The nominated molecular structure could not be validated for ToxScan.",
+    "toxscan_rdkit_unavailable": "RDKit is unavailable for matching the exported ToxScan structure to the candidate.",
+    "toxscan_invalid_report": "The saved ToxScan report failed validation.",
+    "toxscan_invalid_export_schema": "The CSV headers differ from the supported ToxScan platform export.",
+    "toxscan_invalid_export_value": "The ToxScan CSV contains an unsupported classification or numeric value.",
+    "toxscan_invalid_domain": "The ToxScan export contains an unrecognized applicability-domain label.",
+    "toxscan_structure_not_found": "The export has no structure matching the nominated candidate.",
+    "toxscan_ambiguous_export": "More than one exported structure matches the nominated candidate.",
     "pksim_invalid_manifest": "The supplied PK-Sim manifest could not identify valid candidate scenarios.",
     "pksim_candidate_not_nominated": "The selected candidate has no PK-Sim scenario in the manifest.",
     "pksim_molecule_mismatch": "The nominated molecule and the compound identified for this simulation differ.",
@@ -718,6 +754,42 @@ _ACTIONS = {
     "cellprofiler_image_reader_unavailable": "Install the documented image reader in the screening environment.",
     "cellprofiler_execution_timeout": "Check field dimensions and runtime availability before repeating the analysis.",
     "pksim_manifest_missing": "Supply pksim.json with a prepared human model for the nominated compound.",
+    "canagliflozin_manifest_missing": "Add canagliflozin_pbpk.json to the run to nominate the reference control.",
+    "canagliflozin_invalid_manifest": "Select the version 1 oral_reference scenario in canagliflozin_pbpk.json.",
+    "canagliflozin_requires_run_scope": "Select the whole run to simulate the fixed reference dose.",
+    "canagliflozin_model_missing": "Install the published canagliflozin model release.",
+    "canagliflozin_model_integrity": "Restore the verified canagliflozin model from its published release.",
+    "canagliflozin_solver_unavailable": "Install the supported solver for the canagliflozin model.",
+    "canagliflozin_timeout": "Retry the reference control when local CPU resources are available.",
+    "canagliflozin_simulation_failed": "Check the installed model and solver before rerunning the reference control.",
+    "canagliflozin_invalid_report": "Run the reference control again to obtain a validated report.",
+    "toxscan_manifest_missing": "Import the downloaded CSV for a named ligand to create toxscan.json.",
+    "toxscan_nomination_changed": "Prepare a request for the current structure and select its matching export.",
+    "toxscan_import_conflict": "Review the existing files or import into a separate run with the intended ligand.",
+    "toxscan_invalid_request_digest": "Use the 64 lowercase hexadecimal characters from the prepared request.",
+    "toxscan_import_write_failed": "Check the run's available storage and write permissions before retrying.",
+    "toxscan_ames_select_one": "Choose a candidate in the picker or supply its ID on the command line.",
+    "toxscan_ames_model_missing": "Fit the fingerprint model using the released Ames splits and the training script.",
+    "toxscan_ames_model_integrity": "Restore the matching model and evaluation files, or train a fresh local fit.",
+    "toxscan_ames_runtime_unavailable": "Use the configured screening environment with its CPU dependencies.",
+    "toxscan_ames_invalid_structure": "Review the exact nominated single-molecule graph and its stereochemistry.",
+    "toxscan_ames_invalid_metrics": "Restore the evaluation record produced with the installed model.",
+    "toxscan_ames_invalid_report": "Run the local model again on the nominated ligand.",
+    "toxscan_invalid_manifest": "Check the candidate ID, ToxScan source and export digest in toxscan.json.",
+    "toxscan_export_missing": "Place the saved export beside toxscan.json as toxscan.csv.",
+    "toxscan_invalid_export": "Check the original ToxScan CSV and its header.",
+    "toxscan_export_digest_mismatch": "Select the matching CSV or update the nomination after checking the new file.",
+    "toxscan_candidate_table_required": "Supply the candidate ID and its SMILES in ligand_candidates.tsv.",
+    "toxscan_candidate_not_nominated": "Select the candidate named in the ToxScan manifest and ligand table.",
+    "toxscan_ambiguous_nomination": "Use one candidate-table row with its ID and a complete molecular structure.",
+    "toxscan_invalid_structure": "Check the nominated candidate SMILES, including stereochemistry and charge.",
+    "toxscan_rdkit_unavailable": "Install RDKit to match the candidate to the ToxScan export.",
+    "toxscan_invalid_report": "Read the original matched CSV again to rebuild the report.",
+    "toxscan_invalid_export_schema": "Use the original Export CSV download from the ToxScan results page.",
+    "toxscan_invalid_export_value": "Check the reported labels, numeric displays and applicability fields in the CSV.",
+    "toxscan_invalid_domain": "Check the original applicability-domain field in the platform export.",
+    "toxscan_structure_not_found": "Check the identity and stereochemistry of the candidate against the export.",
+    "toxscan_ambiguous_export": "Supply an export containing one unambiguous match for this structure.",
     "pksim_invalid_manifest": "Check the manifest fields and identify each candidate and scenario unambiguously.",
     "pksim_candidate_not_nominated": "Select a nominated candidate or prepare a PK-Sim scenario for this molecule.",
     "pksim_molecule_mismatch": "Verify the candidate's molecular nomination against the compound in the model.",
@@ -1375,6 +1447,12 @@ def _summary(screen: Mapping[str, object], prefix: str) -> str:
         checks.extend(_crest_lines(prepared["crest"]))
     if "openantigens" in prepared:
         checks.extend(_openantigens_lines(prepared["openantigens"]))
+    if "canagliflozin_pbpk" in prepared:
+        checks.extend(_canagliflozin_lines(prepared["canagliflozin_pbpk"]))
+    if "toxscan" in prepared:
+        checks.extend(_toxscan_lines(prepared["toxscan"]))
+    if "toxscan_fingerprint_ames" in prepared:
+        checks.extend(toxscan_ames_lines(prepared["toxscan_fingerprint_ames"]))
     if "metfrag" in prepared:
         checks.extend(_metfrag_lines(prepared["metfrag"]))
     if "fastsolv" in prepared:
@@ -1675,6 +1753,136 @@ def _metfrag_lines(raw: object) -> list[str]:
     elif untested:
         lines.append(f"{untested} candidates were outside the supported precursor or chemistry scope.")
     return lines
+
+
+def toxscan_ames_lines(raw: object) -> list[str]:
+    from rfproteina.disease import toxscan_ames
+
+    report = toxscan_ames.report_view(raw)
+    if report["status"] != "complete":
+        return ["Local ToxScan fingerprint Ames prediction untested.", *_blocker_lines(report.get("blocker"))]
+    counts = report["validation"]
+    lines = [
+        f"The local fingerprint model gave nomination {report['candidate_id_sha256'][:12]} an Ames score "
+        f"of {report['score']:.4f} (predicted {report['class_call']} at 0.5).",
+        f"On {counts['n_test']:,} held-out structures it identified {counts['tp']} of {counts['test_positives']} "
+        f"positives and {counts['tn']} of {counts['test_negatives']} negatives. "
+        f"AUROC was {counts['roc_auc']:.3f} and accuracy was {counts['accuracy']:.1%}.",
+        f"{counts['test_fingerprint_seen_in_train']} held-out structures shared a training fingerprint.",
+        "Use this locally trained score to prioritize a bacterial reverse-mutation assay.",
+    ]
+    if report["graph_membership"] != "not_in_retained_splits":
+        lines.append(f"This graph occurs in the model's {report['graph_membership']} partition.")
+    if report["fingerprint_seen_in_training"]:
+        lines.append("Training included this molecular fingerprint.")
+    return lines
+
+
+def toxscan_validation_lines(report: Mapping) -> list[str]:
+    """Summarize endpoint benchmarks from a validated ToxScan projection for the board and picker."""
+    benchmarks = report.get("classification_validation")
+    if not benchmarks:
+        return []
+    calls = report["results"]["classifications"]
+    # Use source order within each group and show positive findings first when the export contains many calls.
+    shown = sorted(benchmarks, key=lambda name: calls[name] != "YES")[:3]
+    lines = [
+        "Supplementary Tables S1 and S2 report mean test-set AUROC and accuracy. "
+        "AUROC measures how well the model ranked positives above negatives. "
+        "Accuracy is the fraction of test labels it classified correctly."
+    ]
+    for name in shown:
+        benchmark = benchmarks[name]
+        lines.append(f"{name} was {calls[name]}. Mean AUROC was {benchmark['auroc']:.3f} and accuracy was "
+                     f"{benchmark['accuracy']:.1%} for the {benchmark['assay']}.")
+    if len(benchmarks) > len(shown):
+        lines.append(f"The detailed result includes means and standard deviations for all {len(benchmarks)} "
+                     "reported classification endpoints.")
+    return lines
+
+
+def _toxscan_lines(raw: object) -> list[str]:
+    from rfproteina.disease import toxscan_validation
+    from rfproteina.disease.mcp_api import _toxscan_view
+
+    report = _toxscan_view(raw)
+    if report["status"] == "untested":
+        return ["ToxScan export untested.", *_blocker_lines(report.get("blocker"))]
+    candidate = report.get("candidate_id") or f"the nomination with ID digest {report['candidate_id_sha256'][:12]}"
+    calls = {name: value for name, value in report["results"]["classifications"].items() if value is not None}
+    displays = sum(value is not None for value in report["results"]["source_displays"].values())
+    positives = [name for name, decision in calls.items() if decision == "YES"]
+    if report["identity_check_version"] == 1:
+        lines = [f"An earlier reader recorded a ToxScan export for {candidate}.",
+                 "Re-import the original export to verify stereochemistry with the current reader."]
+    else:
+        lines = [f"The saved ToxScan export matches {candidate}."]
+    if calls:
+        lines.append(f"ToxScan marked {len(positives)} of {len(calls)} reported classification endpoints positive.")
+    if len(calls) < 26:
+        lines.append(f"The export left {26 - len(calls)} of 26 classification labels blank.")
+    if positives:
+        lines.append(f"Positive endpoint labels were {', '.join(positives)}.")
+    lines.extend(toxscan_validation_lines(report))
+    lines.append({
+        "in_domain": "ToxScan placed this structure inside its applicability domain.",
+        "out_of_domain": "ToxScan placed this structure outside its applicability domain. "
+                         "Interpret the labels cautiously when planning confirmation assays.",
+        "unreported": "The export leaves the applicability domain unreported. "
+                      "Review the labels pending confirmation that this structure is in domain.",
+    }[report["applicability_domain"]])
+    if report["similarity_score"] is not None:
+        lines.append(f"The mean Tanimoto similarity to the ten closest training structures "
+                     f"was {report['similarity_score']:.4g}.")
+    disagreement = toxscan_validation.domain_disagreement(report["applicability_domain"], report["similarity_score"])
+    if disagreement:
+        lines.append(disagreement)
+    if displays:
+        lines.append(f"The picker shows numerical values for {displays} of 5 regression endpoints on the source scale. "
+                     "Conversion to physical quantities remains unverified.")
+    else:
+        lines.append("All five numerical endpoint fields were blank in the export.")
+    return lines
+
+
+def _canagliflozin_lines(raw: object) -> list[str]:
+    from rfproteina.disease.canagliflozin import report_view
+
+    report = report_view(raw)
+    if report["status"] == "untested":
+        return ["Canagliflozin reference control untested.", *_blocker_lines(report.get("blocker"))]
+
+    def amount(name: str) -> str:
+        row = report["measurements"][name]
+        return f"{row['value']:.4g} {row['unit']}"
+
+    comparison = report["recovery_168h"]
+    urine = comparison["urine"]
+    feces = comparison["feces"]
+    return [
+        f"The canagliflozin reference model simulated a {report['dose_mg']:g} mg oral dose "
+        f"over {report['duration_h']:g} hours.",
+        f"In the first 24 hours, peak parent concentrations were {amount('gut_lumen_parent_cmax_0_24h')} "
+        f"in the gut lumen, {amount('liver_tissue_parent_cmax_0_24h')} in liver tissue and "
+        f"{amount('kidney_plasma_parent_cmax_0_24h')} in kidney plasma.",
+        f"Venous plasma canagliflozin peaked at {amount('venous_parent_cmax_0_24h')} after "
+        f"{amount('venous_parent_tmax_0_24h')}. Exposure over the first 24 hours (AUC) was "
+        f"{amount('venous_parent_auc_0_24h')}.",
+        f"Peak venous plasma concentrations over the first 24 hours were {amount('venous_m5_cmax_0_24h')} "
+        f"for metabolite M5 and {amount('venous_m7_cmax_0_24h')} for M7.",
+        f"By 48 hours, cumulative urinary excretion was {amount('urine_m5_48h')} for M5 and "
+        f"{amount('urine_m7_48h')} for M7.",
+        f"By 168 hours, recovery in urine (parent, M5 and M7) was {amount('urine_total_168h')}. "
+        f"Recovery in feces (parent, M7 and M9) was {amount('feces_total_168h')}.",
+        f"The model recovered {urine['simulated_percent_dose']:.2f}% of the dose in urine and "
+        f"{feces['simulated_percent_dose']:.2f}% in feces. FDA Clinical Pharmacology Review Table 15 "
+        f"reports mean radiolabel recovery of {urine['study_mean_percent_dose']:g}% and "
+        f"{feces['study_mean_percent_dose']:g}%, respectively, in {comparison['study_n']} participants.",
+        f"Modeled recovery minus the study mean was {urine['difference_percentage_points']:+.2f} percentage points "
+        f"for urine and {feces['difference_percentage_points']:+.2f} percentage points for feces.",
+        "For comparison with chip sampling, expand this screen's result in the picker or open screen.json "
+        "to find the modeled concentrations by compartment and elapsed time.",
+    ]
 
 
 def _openantigens_lines(raw: object) -> list[str]:

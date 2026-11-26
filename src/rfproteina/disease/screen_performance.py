@@ -71,6 +71,23 @@ def _bindingdb_benchmark(backend: str) -> Evidence | None:
 def for_method(key: str, operation: str, *, installed: bool = True) -> dict[str, str]:
     """Historical measurements can come from a different release than today's local producer."""
     evidence = _METHODS.get(key)
+    if key == "toxscan_fingerprint_ames" and installed and operation == "compute":
+        from rfproteina.disease import toxscan_ames_model
+
+        metrics = toxscan_ames_model.benchmark()
+        if metrics is not None:
+            evidence = Evidence(
+                "local_benchmark",
+                f"The installed fingerprint model scored AUROC {metrics['roc_auc']:.3f} and "
+                f"{metrics['accuracy']:.1%} accuracy at 0.5 on {metrics['n_test']:,} held-out Ames structures "
+                f"({metrics['test_positives']:,} positive and {metrics['test_negatives']:,} negative). "
+                f"{metrics['test_fingerprint_seen_in_train']:,} test structures shared a training fingerprint.",
+                f"At 0.5 the model identified {metrics['tp'] / metrics['test_positives']:.1%} of positives and "
+                f"{metrics['tn'] / metrics['test_negatives']:.1%} of negatives. Calling every compound positive "
+                f"would score {metrics['test_positives'] / metrics['n_test']:.1%} accuracy. Use this score to "
+                "prioritize confirmatory Ames testing.",
+                basis="Held-out Ames structures from the released ToxScan test partition",
+            )
     if operation == "compute" and installed and key in {"bindingdb_forest", "bindingdb_chemprop"}:
         evidence = _bindingdb_benchmark("forest" if key == "bindingdb_forest" else "chemprop") or evidence
     if evidence is None:
@@ -85,6 +102,11 @@ def for_method(key: str, operation: str, *, installed: bool = True) -> dict[str,
 
 
 _METHODS = {
+    "toxscan_fingerprint_ames": Evidence(
+        "not_verified", "Install a verified local fit to display its held-out Ames accuracy and AUROC.",
+        "This single-endpoint adaptation uses the study's fingerprint branch. The full model's published "
+        "accuracy applies to a different predictor.", basis="Local fit required",
+    ),
     "badapple2": Evidence(
         "source_evidence",
         "Badapple 2 drew on 906 NIH screening assays. Its scaffold pScores use compounds tested in at least "
@@ -213,6 +235,16 @@ _METHODS = {
         "https://wenmr.science.uu.nl/prodigy/method",
         basis="Development-set fit",
     ),
+    "toxscan": Evidence(
+        "published_benchmark",
+        "The authors reported an AUROC of 0.879 for Ames mutagenicity, 0.775 for carcinogenicity and 0.671 for "
+        "the hERG IC50 cutoff of 10 micromolar (Supplementary Table S1).",
+        "The study model separated positives from negatives better for Ames than for that hERG cutoff. "
+        "Each reported classification includes its own test-set accuracy and AUROC. Use the applicable assay "
+        "to confirm a call. The export omits checkpoint identity.",
+        "https://doi.org/10.1021/acs.est.5c04614.s001",
+        basis="Endpoint-specific performance on the authors' test data",
+    ),
     "cypstrate": Evidence(
         "published_benchmark",
         "Matthews correlation across nine CYP isoforms ranged from 0.37 to 0.81 in best-performance mode "
@@ -288,6 +320,17 @@ _METHODS = {
         "margin depends on the concentration, obtain compound-specific exposure measurements.",
         "https://pmc.ncbi.nlm.nih.gov/articles/PMC4560038/",
         basis="Human exposure comparison for an earlier model",
+    ),
+    "canagliflozin_pbpk": Evidence(
+        "reference_dependent",
+        "The authors used 22 clinical studies for calibration and evaluation. For the 188 mg reference, local "
+        "release 0.8.0 predicted 30.4% urinary and 57.6% fecal recovery at seven days. The study means were "
+        "32.5% and 60.4% in six participants.",
+        "This comparison checks a study used in model development. Compare chip concentrations at matching time "
+        "points and measure tissue injury separately. The authors also reported overprediction of the effect of "
+        "hepatic impairment on parent exposure in the one available study with plasma profiles.",
+        "https://doi.org/10.20944/preprints202601.2095.v1",
+        basis="Clinical pharmacokinetic calibration and evaluation for one reference drug",
     ),
     "pksim": Evidence(
         "reference_dependent",

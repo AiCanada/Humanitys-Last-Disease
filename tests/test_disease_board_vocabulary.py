@@ -60,25 +60,28 @@ import pytest
 
 from rfproteina.disease import (
     badapple2,
+    canagliflozin,
     crest,
-    openantigens,
-    metfrag,
-    fastsolv,
-    jazzy,
-    espsim,
     ddd_benchmark,
     ddd_endpoint,
     deepsp,
     deepviscosity,
     dimorphite,
     dynamics,
+    espsim,
+    fastsolv,
     human_protocol,
+    jazzy,
+    metfrag,
+    openantigens,
     p2rank,
     propka,
     results_actions,
     results_compare,
     results_retrieve,
     screen_board,
+    toxscan,
+    toxscan_ames,
 )
 from rfproteina.utils.metrics_files import MetricsBlocker
 
@@ -325,6 +328,8 @@ def _blocker_names() -> dict[str, set[str]]:
         tree = _parsed(path)
         where = path.relative_to(_PACKAGE).as_posix()
         blocker_errors = {"CacoError", "CellProfilerError", "CypstrateError", "DelPhiError", "PKSimError", "SCScoreError"}
+        if where == "toxscan_handoff.py":
+            blocker_errors.add("ToxScanError")
         if where == "cellprofiler_stain.py":
             blocker_errors.add("StainError")
             for function in tree.body:
@@ -442,6 +447,12 @@ for _name in crest.BLOCKERS:
     _FOUND.setdefault(_name, set()).add("crest.py")
 for _name in openantigens.BLOCKERS:
     _FOUND.setdefault(_name, set()).add("openantigens.py")
+for _name in canagliflozin.BLOCKERS:
+    _FOUND.setdefault(_name, set()).add("canagliflozin.py")
+for _name in toxscan.BLOCKERS:
+    _FOUND.setdefault(_name, set()).add("toxscan.py")
+for _name in toxscan_ames.BLOCKERS:
+    _FOUND.setdefault(_name, set()).add("toxscan_ames.py")
 for _name in metfrag.BLOCKERS:
     _FOUND.setdefault(_name, set()).add("metfrag.py")
 for _name in fastsolv.BLOCKERS:

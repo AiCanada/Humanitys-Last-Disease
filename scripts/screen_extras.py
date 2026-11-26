@@ -196,6 +196,42 @@ def _metfrag(args: argparse.Namespace) -> int:
     return 0 if result["status"] == "complete" else 2
 
 
+def _toxscan(args: argparse.Namespace) -> int:
+    if args.command == "toxscan-ames":
+        from rfproteina.disease.toxscan_ames import screen_run
+    else:
+        from rfproteina.disease.toxscan import screen_run
+
+    result = screen_run(args.directory, args.candidate)
+    _print(result)
+    return 0 if result["status"] == "complete" else 2
+
+
+def _toxscan_handoff(args: argparse.Namespace) -> int:
+    from rfproteina.disease import toxscan_handoff, toxscan_inputs
+    from rfproteina.disease.screen_board import _blocker_lines
+
+    try:
+        if args.command == "toxscan-request":
+            result = toxscan_handoff.prepare_request(args.directory, args.candidate)
+        else:
+            data = toxscan_inputs.read_export_file(args.exported_csv)
+            result = toxscan_handoff.import_export(args.directory, args.candidate, data,
+                                                   expected_structure_sha256=args.expected_structure_sha256)
+    except toxscan_inputs.ToxScanError as error:
+        _print({"status": "untested", "blocker": str(error), "reason": " ".join(_blocker_lines(str(error)))})
+        return 2
+    return _print(result)
+
+
+def _canagliflozin(args: argparse.Namespace) -> int:
+    from rfproteina.disease.canagliflozin import screen_run
+
+    result = screen_run(args.directory)
+    _print(result)
+    return 0 if result["status"] == "complete" else 2
+
+
 def _openantigens(args: argparse.Namespace) -> int:
     from rfproteina.disease.openantigens import screen_run
 
@@ -330,6 +366,27 @@ def main(argv: list[str] | None = None) -> int:
     conformers.add_argument("directory", type=Path, help="run directory with crest.json and the nominated SDF")
     conformers.add_argument("--candidate", help="require the manifest to name this candidate")
     conformers.set_defaults(run=_crest)
+    reference = sub.add_parser("canagliflozin_pbpk", help="simulate the oral canagliflozin reference control")
+    reference.add_argument("directory", type=Path, help="run directory containing canagliflozin_pbpk.json")
+    reference.set_defaults(run=_canagliflozin)
+    toxicity = sub.add_parser("toxscan", help="read a saved ToxScan platform export for a nominated small molecule")
+    toxicity.add_argument("directory", type=Path, help="run directory containing toxscan.json and toxscan.csv")
+    toxicity.add_argument("--candidate", help="require the ToxScan nomination to match this candidate ID")
+    toxicity.set_defaults(run=_toxscan)
+    ames = sub.add_parser("toxscan-ames", help="run the local ToxScan study fingerprint model for Ames")
+    ames.add_argument("directory", type=Path, help="run directory containing ligand_candidates.tsv")
+    ames.add_argument("--candidate", help="candidate ID, required when the table contains multiple ligands")
+    ames.set_defaults(run=_toxscan)
+    request = sub.add_parser("toxscan-request", help="prepare one nominated SMILES to copy to the author platform")
+    request.add_argument("directory", type=Path, help="run directory containing ligand_candidates.tsv")
+    request.add_argument("--candidate", required=True, help="exact candidate ID in the nomination table")
+    request.set_defaults(run=_toxscan_handoff)
+    attach = sub.add_parser("toxscan-import", help="verify and attach a downloaded author-platform CSV")
+    attach.add_argument("directory", type=Path, help="run directory containing ligand_candidates.tsv")
+    attach.add_argument("exported_csv", type=Path, help="saved author-platform CSV file")
+    attach.add_argument("--candidate", required=True, help="exact candidate ID in the nomination table")
+    attach.add_argument("--expected-structure-sha256", help="require the structure digest from the prepared request")
+    attach.set_defaults(run=_toxscan_handoff)
     antigens = sub.add_parser("openantigens", help="review public evidence for a known human run target")
     antigens.add_argument("directory", type=Path, help="run directory containing a target or openantigens.json")
     antigens.set_defaults(run=_openantigens)

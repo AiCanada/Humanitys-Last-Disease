@@ -10,9 +10,26 @@ from types import ModuleType
 from typing import TYPE_CHECKING
 
 from rfproteina.disease import (
-    badapple2, cellprofiler_stain, crest, cypstrate, dimorphite, espsim, fastsolv, httk, jazzy, ligand_inputs, metfrag,
+    badapple2,
+    canagliflozin,
+    cellprofiler_stain,
+    crest,
+    cypstrate,
+    dimorphite,
+    espsim,
+    fastsolv,
+    httk,
+    jazzy,
+    ligand_inputs,
+    metfrag,
     openantigens,
-    p2rank, pksim, propka, scscore, spyrmsd_pose,
+    p2rank,
+    pksim,
+    propka,
+    scscore,
+    spyrmsd_pose,
+    toxscan,
+    toxscan_ames,
 )
 
 if TYPE_CHECKING:
@@ -21,6 +38,9 @@ if TYPE_CHECKING:
 # The first existing file is authoritative, including an unreadable file.
 FILES = {
     badapple2.METHOD_ID: badapple2.SOURCES,
+    canagliflozin.METHOD_ID: (canagliflozin.MANIFEST,),
+    toxscan.METHOD_ID: (toxscan.MANIFEST, toxscan.SOURCE_FILE, "ligand_candidates.tsv"),
+    toxscan_ames.METHOD_ID: (toxscan_ames.TABLE,),
     cellprofiler_stain.METHOD_ID: (cellprofiler_stain.MANIFEST,),
     pksim.METHOD_ID: (pksim.MANIFEST,),
     httk.METHOD_ID: (httk.MANIFEST,),
@@ -353,6 +373,12 @@ def measure(directory: Path, key: str, example: str | None, *, expected_target: 
         return cellprofiler_stain.measure(directory, example)
     if key == pksim.METHOD_ID:
         return pksim.measure(directory, example)
+    if key == canagliflozin.METHOD_ID:
+        return canagliflozin.screen_run(directory, example)
+    if key == toxscan.METHOD_ID:
+        return toxscan.screen_run(directory, example)
+    if key == toxscan_ames.METHOD_ID:
+        return toxscan_ames.screen_run(directory, example)
     if key == httk.METHOD_ID:
         return httk.measure(directory, example)
     if key == cypstrate.METHOD_ID:

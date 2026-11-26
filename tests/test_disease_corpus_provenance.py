@@ -32,19 +32,20 @@ def _slugs_the_package_names() -> set[str]:
     """
     from rfproteina.disease import (
         badapple2,
-        crest,
-        espsim,
-        fastsolv,
-        jazzy,
+        canagliflozin,
         cellprofiler_stain,
         class_ii,
+        crest,
         cypstrate,
         deepsp,
         deepviscosity,
         delphi_psr,
         developability,
+        espsim,
+        fastsolv,
         httk,
         humanness,
+        jazzy,
         ligand_ames,
         ligand_caco2,
         ligand_dili,
@@ -53,22 +54,24 @@ def _slugs_the_package_names() -> set[str]:
         ligand_regressor,
         ligand_safety,
         ligand_solubility,
+        metfrag,
         mhc_tables,
         molprobity_geometry,
         octant,
-        p2rank,
         openantigens,
-        metfrag,
-        propka,
+        p2rank,
         peptide_rbc,
         pksim,
         prodigy,
+        propka,
         qupkake,
         scscore,
         solubility,
         spyrmsd_pose,
         stability,
         tnp,
+        toxscan,
+        toxscan_ames,
         vina_pose,
     )
     # Importing the CATH metric initializes the training framework. Read only its
@@ -84,6 +87,9 @@ def _slugs_the_package_names() -> set[str]:
 
     return {
         badapple2.METHOD,
+        canagliflozin.METHOD,
+        toxscan.METHOD,
+        toxscan_ames.METHOD_ID,
         crest.METHOD,
         espsim.METHOD,
         fastsolv.METHOD,
@@ -166,6 +172,15 @@ def test_every_kind_is_in_the_closed_vocabulary():
     assert set(cp.OVERLAP_CAVEAT) == cp.OVERLAP_KINDS
     for found in cp.TRAINED_ON.values():
         assert found.unaligned_kind in cp.OVERLAP_KINDS
+
+
+def test_toxscan_local_ames_model_shares_the_author_export_label_corpus():
+    from rfproteina.disease import toxscan, toxscan_ames
+
+    local = cp.trained_on(toxscan_ames.METHOD_ID)
+    assert local.corpora == cp.trained_on(toxscan.METHOD).corpora == ("ToxScan-study-partitions",)
+    assert cp.overlap_with(toxscan_ames.METHOD_ID, "AMES") == cp.BENCHMARK_LABEL_CORPUS
+    assert cp.overlap_with(toxscan.METHOD, "Ames Mutagenicity") == cp.BENCHMARK_LABEL_CORPUS
 
 
 def test_delphi_psr_names_only_the_private_ipi_training_set():

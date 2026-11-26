@@ -28,6 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs
 
+from rfproteina.disease import ui_toxscan
 from rfproteina.disease.archive import generation_archive_root
 from rfproteina.disease.design_spec import cif_text
 from rfproteina.disease.dispatch import is_local_host
@@ -1889,6 +1890,7 @@ class BrowserSession:
         self._validation_report: dict[str, str] = {}
         self._screen_method_selection: tuple[str, ...] | None = None
         self._screen_method_results: list[dict] = []
+        self._toxscan_request: dict | None = None
         self._screen_scope_version = 0
         self._shutdown = False
         #: Set when this session opened the panel window, so Close can end that window.
@@ -2139,7 +2141,8 @@ class BrowserSession:
 
         scope_prefix = f"{SCREENING_SCOPE_FIELD}="
         posted_scopes = [entry.removeprefix(scope_prefix) for entry in fields or () if entry.startswith(scope_prefix)]
-        if action in {VALIDATION_ACTION, VALIDATION_SCOPE_ACTION, SCREENING_ACTION}:
+        if action in {VALIDATION_ACTION, VALIDATION_SCOPE_ACTION, SCREENING_ACTION,
+                      ui_toxscan.PREPARE, ui_toxscan.IMPORT}:
             return self._run_validation_action(action, fields or (), posted_scopes)
 
         with self._lock:
@@ -2174,6 +2177,7 @@ class BrowserSession:
 
     def _reset_screen_methods(self) -> None:
         self._screen_scope_version += 1
+        self._toxscan_request = None
         self._screen_method_selection = None
         self._screen_method_results.clear()
 
@@ -2233,6 +2237,11 @@ class BrowserSession:
                 self._reset_screen_methods()
             return "Recommendations refreshed. Review the selected checks before running them."
 
+        if action in {ui_toxscan.PREPARE, ui_toxscan.IMPORT}:
+            if len(directories) != 1 or not candidate_key or posted_scopes != [str(scope_version)]:
+                return "Choose one named ligand and refresh its screening recommendations."
+            return self._toxscan_handoff(action, fields, directories[0], candidate_key, scope_version)
+
         if action == SCREENING_ACTION:
             if len(directories) != 1:
                 raise ValueError("Choose one finished run for scientific screening.")
@@ -2268,6 +2277,37 @@ class BrowserSession:
         if not report:
             return "Select at least one installed validation check."
         return f"Completed {len(report)} validation {'checks' if len(report) > 1 else 'check'}."
+
+    def _toxscan_handoff(self, action: str, fields: Sequence[str], directory: Path,
+                         candidate_key: str, scope_version: int) -> str:
+        from rfproteina.disease import screen_panel, toxscan_handoff, toxscan_inputs
+        from rfproteina.disease.screen_board import _blocker_lines
+
+        kind, candidate = screen_panel.context(directory, candidate_key)
+        if kind != "ligand" or candidate is None or not candidate.example_id:
+            return "Choose a named ligand from the current candidate table."
+        # Keep the saved run and candidate bound through the entire local import.
+        with self._lock:
+            if self._screen_scope_version != scope_version or self._validation_candidate != candidate_key:
+                return "The candidate changed. Prepare a request from the current screening scope."
+            try:
+                if action == ui_toxscan.PREPARE:
+                    request = toxscan_handoff.prepare_request(directory, candidate.example_id)
+                    self._toxscan_request = {**request, "token": secrets.token_urlsafe(24)}
+                    return "The nominated structure is ready to copy into ToxScan."
+                request = self._toxscan_request
+                tokens = [value.removeprefix(ui_toxscan.TOKEN + "=") for value in fields
+                          if value.startswith(ui_toxscan.TOKEN + "=")]
+                if request is None or tokens != [request["token"]] or request["candidate_id"] != candidate.example_id:
+                    return "Prepare a current ToxScan request before importing a prediction."
+                data = ui_toxscan.decode_upload([value.removeprefix(ui_toxscan.FILE + "=") for value in fields
+                                                 if value.startswith(ui_toxscan.FILE + "=")])
+                toxscan_handoff.import_export(directory, candidate.example_id, data,
+                                              expected_structure_sha256=request["structure_sha256"])
+            except toxscan_inputs.ToxScanError as error:
+                return " ".join(_blocker_lines(str(error)))
+            self._toxscan_request = None
+        return "The ToxScan export matched the nominated structure. Select the saved prediction to review its assays."
 
     def note_validation_runs(self, directories: Sequence[Path], *, standalone: bool = False) -> None:
         """Register local directories from the completed requests."""
@@ -2390,6 +2430,7 @@ class BrowserSession:
             method_selection = self._screen_method_selection
             method_results = list(self._screen_method_results)
             scope_version = self._screen_scope_version
+            toxscan_request = self._toxscan_request
         structures = render_structure_views(catalog)
         validation = ""
         if directories:
@@ -2405,11 +2446,17 @@ class BrowserSession:
                 choices, selected, validation_report, directories, scope, candidate_options, candidate_key
             )
             if len(included) == 1 and (candidate_key is None or candidate_key in dict(candidate_options)):
-                methods = screen_panel.choices_for(included[0], candidate_key)
-                kind, _ = screen_panel.context(included[0], None)
+                methods = screen_panel.choices_for(included[0], candidate_key, scoped)
+                kind, candidate = screen_panel.context(included[0], candidate_key, scoped)
                 validation += _scientific_screen_panel(
                     methods, method_selection, method_results, kind=kind, scope_version=scope_version,
+                    directory=included[0], candidate_id=(candidate.example_id or "") if candidate else None,
+                    toxscan_request=toxscan_request,
                 )
+            elif len(included) == 1:
+                for result_row in method_results:
+                    if result_row["id"] == "toxscan_fingerprint_ames" and result_row["status"] == "complete":
+                        validation += _scientific_result_detail(result_row, previous_inputs=True)
         if not lines and not screens and not structures and not validation:
             return _done_page()
         board = render_closing(lines, screens) if lines or screens else ""
@@ -4931,6 +4978,10 @@ def parse_submission(raw: bytes, content_type: str, uploads: Path | None = None)
             continue
         payload = part.get_payload(decode=True) or b""
         filename = part.get_filename()
+        if name == ui_toxscan.FILE:
+            # Preserve the exact CSV bytes in memory. Never interpret an uploaded filename as a local path.
+            fields.setdefault(name, []).append(ui_toxscan.encode_upload(payload) if filename else "")
+            continue
         if filename:
             if not payload or uploads is None:
                 continue
@@ -5084,7 +5135,7 @@ def _screen_performance_text(performance: Mapping) -> str:
     )
 
 
-def _scientific_result_detail(outcome: dict) -> str:
+def _scientific_result_detail(outcome: dict, *, previous_inputs: bool = False) -> str:
     body = (json.dumps(outcome["measurement"], ensure_ascii=False, indent=2)
             if "measurement" in outcome else outcome["reason"])
     evidence = outcome.get("performance")
@@ -5092,12 +5143,38 @@ def _scientific_result_detail(outcome: dict) -> str:
         at_execution = f'<h4>Validation evidence at execution</h4><p>{_screen_performance_text(evidence)}</p>'
     else:
         at_execution = '<p class="hint">Validation evidence for this result is unavailable.</p>'
-    return f'<details><summary>{_esc(outcome["status"])}</summary>{at_execution}<pre>{_esc(body)}</pre></details>'
+    caption = outcome["status"]
+    endpoint_evidence = ""
+    if outcome.get("id") == "toxscan_fingerprint_ames" and outcome.get("status") == "complete":
+        from rfproteina.disease.screen_board import toxscan_ames_lines
+
+        if previous_inputs:
+            caption = "Previous local Ames prediction (the nomination or checkpoint changed or is unavailable)"
+        lines = toxscan_ames_lines(outcome.get("measurement"))
+        endpoint_evidence = "<ul>" + "".join(f"<li>{_esc(line)}</li>" for line in lines) + "</ul>"
+    if outcome.get("id") == "toxscan" and outcome.get("status") == "complete":
+        from rfproteina.disease import toxscan, toxscan_validation
+        from rfproteina.disease.screen_board import toxscan_validation_lines
+
+        measurement = outcome["measurement"]
+        if measurement.get("identity_check_version") != toxscan.IDENTITY_CHECK_VERSION:
+            caption = "Previous ToxScan import (re-import the original export to verify stereochemistry)"
+        elif previous_inputs:
+            caption = "Previous ToxScan import (current inputs differ or are unavailable)"
+        lines = toxscan_validation_lines(measurement)
+        if lines:
+            source = _esc(toxscan_validation.SOURCE)
+            items = "".join(f"<li>{_esc(line)}</li>" for line in lines)
+            endpoint_evidence = (f'<h4>Validation for reported ToxScan endpoints</h4><ul>{items}</ul>'
+                                 f'<p><a href="{source}" target="_blank" rel="noopener">Published test results</a></p>')
+    return (f'<details><summary>{_esc(caption)}</summary>{at_execution}'
+            f'{endpoint_evidence}<pre>{_esc(body)}</pre></details>')
 
 
 def _scientific_screen_panel(
     choices: Sequence[ScreenChoice], selected: tuple[str, ...] | None, results: list[dict],
-    *, kind: str = "", submit_button: bool = True, scope_version: int | None = None,
+    *, kind: str = "", submit_button: bool = True, scope_version: int | None = None, directory: Path | None = None,
+    candidate_id: str | None = None, toxscan_request: dict | None = None,
 ) -> str:
     outcomes = {row["id"]: row for row in results}
     groups: dict[str, list[str]] = {
@@ -5111,7 +5188,21 @@ def _scientific_screen_panel(
         checked_count += checked
         attributes = (" data-recommended" if choice.recommended else "") + ("" if choice.installed else " disabled")
         outcome = outcomes.get(key, {})
-        detail = _scientific_result_detail(outcome) if outcome else ""
+        previous_inputs = False
+        if key == "toxscan" and outcome.get("status") == "complete" and directory is not None:
+            from rfproteina.disease.screen_panel import matches_toxscan_nomination
+
+            previous_inputs = not choice.applicable or not matches_toxscan_nomination(directory, outcome["measurement"])
+        if key == "toxscan_fingerprint_ames" and outcome.get("status") == "complete":
+            from rfproteina.disease.screen_panel import matches_toxscan_ames_nomination
+
+            previous_inputs = (
+                not choice.installed or not choice.applicable or directory is None
+                or not matches_toxscan_ames_nomination(directory, candidate_id, outcome["measurement"])
+            )
+        detail = _scientific_result_detail(outcome, previous_inputs=previous_inputs) if outcome else ""
+        if key == "toxscan" and choice.installed and kind == "ligand" and scope_version is not None:
+            detail += ui_toxscan.controls(candidate_id is not None, toxscan_request)
         if not choice.installed:
             group = "Unavailable"
         elif not choice.applicable:

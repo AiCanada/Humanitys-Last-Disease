@@ -25,7 +25,8 @@ LOG_NAME = "Humanitys-Last-Disease.log"
 #: Bytes kept before the log rolls over, and how many rolled files are kept.
 LOG_BYTES = 2_000_000
 LOG_BACKUPS = 3
-_SECRET_FIELDS = ("grok_key", "claude_key", "openai_key", "nvidia_key", "openrouter_key")
+_SECRET_FIELDS = ("grok_key", "claude_key", "openai_key", "nvidia_key", "openrouter_key",
+                  "toxscan_export_file", "toxscan_request_token")
 _REDACTED = "[redacted]"
 
 

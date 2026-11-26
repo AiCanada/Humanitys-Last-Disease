@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from rfproteina.disease import (
     badapple2,
+    canagliflozin,
     cellprofiler_stain,
     crest,
     cypstrate,
@@ -41,6 +42,8 @@ from rfproteina.disease import (
     screening_context,
     scscore,
     spyrmsd_pose,
+    toxscan,
+    toxscan_ames,
 )
 
 if TYPE_CHECKING:
@@ -676,6 +679,22 @@ def posebusters_nominations(directory: Path, example: str | None, budget: int) -
 
 def cellprofiler_staining(directory: Path, example: str | None) -> Decision:
     return Decision(*cellprofiler_stain.readiness(directory, example))
+
+
+def canagliflozin_reference(directory: Path, example: str | None) -> Decision:
+    try:
+        canagliflozin.prepare(directory, example)
+    except canagliflozin.CanagliflozinError:
+        return Decision(False, False, "Nominate the published oral reference in the run's canagliflozin_pbpk.json.")
+    return Decision(True, True, "The run requests the fixed oral canagliflozin control for gut, liver and kidney.")
+
+
+def toxscan_export(directory: Path, example: str | None) -> Decision:
+    return Decision(*toxscan.readiness(directory, example))
+
+
+def toxscan_local_ames(directory: Path, example: str | None) -> Decision:
+    return Decision(*toxscan_ames.readiness(directory, example))
 
 
 def pksim_exposure(directory: Path, example: str | None) -> Decision:

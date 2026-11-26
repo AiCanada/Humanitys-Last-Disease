@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from rfproteina.disease import (
+    canagliflozin,
     delphi_psr,
     httk,
     ligand_ames,
@@ -27,6 +28,8 @@ from rfproteina.disease import (
     screen_inventory,
     screen_physical,
     screen_selection,
+    toxscan,
+    toxscan_ames,
 )
 from rfproteina.disease.prodigy import RunAffinity
 from rfproteina.disease.solubility import read_protein_sol, read_solubility
@@ -50,12 +53,56 @@ def _kind(directory: Path) -> str:
     return screen._canonical_kind(kind or "")
 
 
-def nominated_ligand_run(directory: Path) -> bool:
+NOMINATION_FILES = frozenset({"ligand_candidates.tsv", canagliflozin.MANIFEST})
+
+
+def nominated_ligand_run(directory: Path, *, binder_kind: str | None = None) -> bool:
     """Recognize a prepared ligand run without requiring generated coordinate files."""
+    has_table = (directory / "ligand_candidates.tsv").is_file()
+    if not (has_table or (directory / canagliflozin.MANIFEST).is_file()):
+        return False
+    kind = screen._canonical_kind(binder_kind) if binder_kind is not None else _kind(directory)
+    if kind != "ligand":
+        return False
+    if has_table and ligand_inputs.named_nominations(directory):
+        return True
+    try:
+        canagliflozin.prepare(directory)
+    except canagliflozin.CanagliflozinError:
+        return False
+    return True
+
+
+def matches_toxscan_nomination(directory: Path, report: Mapping) -> bool:
+    """Compare an earlier import receipt with the nomination already checked by the current plan."""
+    from rfproteina.disease import toxscan_inputs
+
+    if report.get("identity_check_version") != toxscan.IDENTITY_CHECK_VERSION:
+        return False
+    try:
+        nomination = toxscan_inputs.nomination(directory, None)
+    except toxscan_inputs.ToxScanError:
+        return False
     return (
-        (directory / "ligand_candidates.tsv").is_file()
-        and _kind(directory) == "ligand"
-        and bool(ligand_inputs.named_nominations(directory))
+        report.get("source_sha256") == nomination.export_sha256
+        and report.get("structure_sha256") == toxscan_inputs.sha256(nomination.canonical_smiles.encode("ascii"))
+        and report.get("candidate_id_sha256") == toxscan_inputs.sha256(nomination.candidate_id.encode("utf-8"))
+    )
+
+
+def matches_toxscan_ames_nomination(directory: Path, candidate: str | None, report: Mapping) -> bool:
+    """Check the current nomination and verified checkpoint without rerunning inference."""
+    from rfproteina.disease import toxscan_ames_model, toxscan_inputs
+
+    try:
+        candidate_hash, graph_hash = toxscan_ames.nomination_identity(directory, candidate)
+    except toxscan_inputs.ToxScanError:
+        return False
+    return (
+        report.get("candidate_id_sha256") == candidate_hash
+        and report.get("structure_sha256") == graph_hash
+        and report.get("model_sha256") is not None
+        and report["model_sha256"] == toxscan_ames_model.installed_sha256()
     )
 
 
@@ -93,7 +140,7 @@ def context(
 
 
 def choices_for(
-    directory: Path, candidate_key: str | None, *, candidates: Sequence[ScreenCandidate] | None = None,
+    directory: Path, candidate_key: str | None, candidates: Sequence[ScreenCandidate] | None = None,
 ) -> tuple[screen_selection.Choice, ...]:
     kind, candidate = context(directory, candidate_key, candidates)
     example = (candidate.example_id or "") if candidate else None
@@ -197,6 +244,18 @@ def _redact_fresh_assay(key: str, report: dict) -> dict:
         from rfproteina.disease.mcp_api import _crest_view
 
         return _redact(_crest_view(report))
+    if key == canagliflozin.METHOD_ID:
+        from rfproteina.disease.mcp_api import _canagliflozin_view
+
+        return _redact(_canagliflozin_view(report))
+    if key == toxscan.METHOD_ID:
+        from rfproteina.disease.mcp_api import _toxscan_view
+
+        return _redact(_toxscan_view(report))
+    if key == toxscan_ames.METHOD_ID:
+        from rfproteina.disease.mcp_api import _toxscan_ames_view
+
+        return _redact(_toxscan_ames_view(report))
     if key == "openantigens":
         from rfproteina.disease.mcp_api import _openantigens_view
 
@@ -333,7 +392,10 @@ def run(
                 report = {"blocker": "provider_or_input_unavailable"}
             report = report or {"blocker": "input_unavailable"}
             measurement = _verdict({key: report}, include_record=False).get(key, {})
-        projected = {httk.METHOD_ID, molprobity_geometry.METHOD_ID, peptide_rbc.METHOD_ID}
+        projected = {
+            canagliflozin.METHOD_ID, httk.METHOD_ID, molprobity_geometry.METHOD_ID, peptide_rbc.METHOD_ID,
+            toxscan.METHOD_ID, toxscan_ames.METHOD_ID,
+        }
         status = _status(key, measurement if key in projected else report)
         result.update(status=status, measurement=measurement)
         if on_line is not None:

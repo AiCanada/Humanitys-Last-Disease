@@ -2245,9 +2245,7 @@ def _screen_only(
         return 2
     cut_short = False
     try:
-        from rfproteina.disease.screen_panel import nominated_ligand_run
-
-        runs = [root] if nominated_ligand_run(root) else generation_directories(root)
+        runs = generation_directories(root, prepared_ligands=True, binder_kind=_typed_binder_kind(incoming))
     except ScreenWalkTruncatedError as stopped:
         # Screen what was found, but never let a short list read as a complete
         # one: silence here meant a run under the named directory was skipped

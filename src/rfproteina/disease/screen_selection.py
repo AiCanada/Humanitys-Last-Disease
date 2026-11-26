@@ -15,14 +15,15 @@ from pathlib import Path
 
 from rfproteina.disease import (
     badapple2,
+    canagliflozin,
     cellprofiler_runtime,
     cellprofiler_stain,
     crest,
     cypstrate,
     cypstrate_runtime,
-    dimorphite,
     delphi_inputs,
     delphi_psr,
+    dimorphite,
     espsim,
     fastsolv,
     httk,
@@ -37,10 +38,10 @@ from rfproteina.disease import (
     molprobity_geometry,
     openantigens,
     p2rank,
-    propka,
     peptide_rbc,
     pksim,
     pksim_runtime,
+    propka,
     qupkake,
     screen_assays,
     screen_criteria,
@@ -52,6 +53,8 @@ from rfproteina.disease import (
     spyrmsd_pose,
     sygma_engine,
     tnp,
+    toxscan,
+    toxscan_ames,
     vina_pose,
 )
 
@@ -103,6 +106,20 @@ METHODS = (
         SMILES,
         "CPU classification ensemble",
         "Prioritize bacterial reverse-mutation testing for nominated small-molecule leads.",
+    ),
+    Method(
+        toxscan.METHOD_ID,
+        "ToxScan saved toxicity predictions",
+        LIGAND,
+        (toxscan.MANIFEST,),
+        "Local CSV reader with RDKit",
+        "Match the authors' exported predictions to a nominated structure and choose a confirmatory toxicity assay.",
+        operation="native_result_reader",
+    ),
+    Method(
+        toxscan_ames.METHOD_ID, "ToxScan study fingerprint model for Ames", LIGAND, (toxscan_ames.TABLE,),
+        "Local CPU fingerprint model",
+        "Use a locally fitted Ames prediction to prioritize bacterial reverse-mutation testing.",
     ),
     Method(
         ligand_microsomal_clearance.METHOD_ID,
@@ -232,6 +249,14 @@ METHODS = (
         (cellprofiler_stain.MANIFEST,),
         "CPU brightfield image analysis",
         "Compare staining in annotated regions of candidate and control images from human tissue or chip experiments.",
+    ),
+    Method(
+        canagliflozin.METHOD_ID,
+        "Canagliflozin gut, liver and kidney reference control",
+        LIGAND,
+        (canagliflozin.MANIFEST,),
+        "Local CPU SBML simulation",
+        "Run the published canagliflozin reference scenario to check absorption, metabolism and renal elimination.",
     ),
     Method(
         pksim.METHOD_ID,
@@ -417,6 +442,9 @@ _REQUIREMENTS = {
     spyrmsd_pose.METHOD: "Requires the spyrmsd extra with RDKit and a working graph backend.",
     scscore.METHOD_ID: "Requires RDKit, NumPy and the verified SCScore 1024-bit Boolean checkpoint.",
     pksim.METHOD_ID: "Requires RDKit and the supported local PK-Sim simulation runtime.",
+    canagliflozin.METHOD_ID: "Requires the pinned canagliflozin SBML model and local simulation runtime.",
+    toxscan.METHOD_ID: "Requires RDKit for matching a nominated compound to a saved ToxScan CSV.",
+    toxscan_ames.METHOD_ID: "Requires RDKit and the locally trained, verified ToxScan Ames fingerprint model.",
     httk.METHOD_ID: "Requires RDKit, a compatible local EPA httk R runtime and its verified reference data.",
     cypstrate.METHOD_ID: "Requires RDKit and the pinned CYPstrate v0.0.25 image on a local Docker engine.",
 }
@@ -546,6 +574,9 @@ def installations(keys: set[str] | None = None) -> dict[str, bool]:
     probes = {
         cellprofiler_stain.METHOD_ID: lambda: _modules("PIL.Image", "numpy") and cellprofiler_runtime.installed(),
         pksim.METHOD_ID: lambda: _modules("rdkit") and pksim_runtime.installed(),
+        canagliflozin.METHOD_ID: canagliflozin.installed,
+        toxscan.METHOD_ID: toxscan.installed,
+        toxscan_ames.METHOD_ID: toxscan_ames.installed,
         httk.METHOD_ID: httk.asset_available,
         delphi_psr.METHOD_ID: delphi_psr.asset_available,
         molprobity_geometry.METHOD_ID: molprobity_geometry.asset_available,
@@ -600,11 +631,14 @@ def _regular(path: Path) -> bool:
 
 
 _READ_LIMIT = 16 * 1024 * 1024
-_RUN_LEVEL = {"toxicology_table", openantigens.METHOD_ID}
+_RUN_LEVEL = {"toxicology_table", openantigens.METHOD_ID, canagliflozin.METHOD_ID}
 _PREPARED_STRUCTURES = {"tnp_profile", "vina_pose", "prodigy_affinity"}
 _CRITERIA = {
     cellprofiler_stain.METHOD_ID: screen_criteria.cellprofiler_staining,
     pksim.METHOD_ID: screen_criteria.pksim_exposure,
+    canagliflozin.METHOD_ID: screen_criteria.canagliflozin_reference,
+    toxscan.METHOD_ID: screen_criteria.toxscan_export,
+    toxscan_ames.METHOD_ID: screen_criteria.toxscan_local_ames,
     httk.METHOD_ID: screen_criteria.httk_exposure,
     cypstrate.METHOD_ID: screen_criteria.cyp_substrates,
     delphi_psr.METHOD_ID: screen_criteria.delphi_antibody_pairs,
@@ -633,8 +667,10 @@ _CRITERIA = {
 def _input_requirement(directory: Path, method: Method, kind: str, example: str | None) -> str | None:
     if method.kinds and kind not in method.kinds:
         return "Requires a " + " or ".join(method.kinds) + " candidate."
-    if example is not None and (not example or method.key in _RUN_LEVEL):
-        return "The measurement requires an identifiable candidate or a run-level selection."
+    if example is not None and method.key in _RUN_LEVEL:
+        return "Select this screen for the whole run."
+    if example == "":
+        return "Select a candidate with an identifiable input."
     inputs = method.inputs
     if method.key == openantigens.METHOD_ID:
         return None  # The archived run or job can identify the target without a separate nomination.

@@ -1966,6 +1966,40 @@ def _metfrag_view(value: object) -> dict:
     return report
 
 
+def _toxscan_ames_view(value: object) -> dict:
+    from rfproteina.disease.toxscan_ames import report_view
+
+    report = report_view(value)
+    for key in ("structure_sha256", "candidate_id_sha256", "model_sha256", "archive_sha256", "result_sha256"):
+        if key in report:
+            report[key] = _AttestationDigest(report[key])
+    return report
+
+
+def _toxscan_view(value: object) -> dict:
+    from rfproteina.disease.toxscan import report_view
+
+    report = report_view(value)
+    for field in ("source_sha256", "structure_sha256", "result_sha256"):
+        if report.get(field):
+            report[field] = _AttestationDigest(report[field])
+    candidate = report.get("candidate_id")
+    if candidate is not None:
+        report["candidate_id_sha256"] = _AttestationDigest(hashlib.sha256(candidate.encode("utf-8")).hexdigest())
+        if _redact(candidate) != candidate:
+            del report["candidate_id"]
+            report["candidate_id_withheld"] = True
+    return report
+
+
+def _canagliflozin_view(value: object) -> dict:
+    from rfproteina.disease.canagliflozin import report_view
+
+    report = report_view(value)
+    report["model_sha256"] = _AttestationDigest(report["model_sha256"])
+    return report
+
+
 def _openantigens_view(value: object) -> dict:
     from rfproteina.disease.openantigens import report_view
 
@@ -2034,6 +2068,9 @@ def _method_selection_view(value: object) -> object:
             ("propka", _propka_view),
             ("crest", _crest_view),
             ("openantigens", _openantigens_view),
+            ("canagliflozin_pbpk", _canagliflozin_view),
+            ("toxscan", _toxscan_view),
+            ("toxscan_fingerprint_ames", _toxscan_ames_view),
             ("metfrag", _metfrag_view),
             ("fastsolv", _fastsolv_view),
             ("jazzy", _jazzy_view),

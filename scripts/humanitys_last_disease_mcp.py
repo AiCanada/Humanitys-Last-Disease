@@ -1088,6 +1088,179 @@ def _httk_measurement_schema() -> dict[str, object]:
 
 _HTTK_MEASUREMENT_SCHEMA = _httk_measurement_schema()
 
+
+def _canagliflozin_measurement_schema() -> dict:
+    units = {
+        "umol/L": ("gut_lumen_parent_cmax_0_24h", "liver_tissue_parent_cmax_0_24h",
+                   "kidney_plasma_parent_cmax_0_24h", "venous_parent_cmax_0_24h",
+                   "venous_m5_cmax_0_24h", "venous_m7_cmax_0_24h"),
+        "umol*h/L": ("venous_parent_auc_0_24h",),
+        "h": ("venous_parent_tmax_0_24h",),
+        "umol": ("urine_m5_48h", "urine_m7_48h", "urine_total_168h", "feces_total_168h"),
+    }
+    endpoints = {
+        name: {"type": "object", "properties": {
+            "value": {"type": "number", "exclusiveMinimum": 0}, "unit": {"const": unit},
+        }, "required": ["value", "unit"], "additionalProperties": False}
+        for unit, names in units.items() for name in names
+    }
+    hours = [0, 1, 2, 4, 8, 12, 24]
+    series = {
+        name.removesuffix("_cmax_0_24h"): {"type": "array", "minItems": len(hours), "maxItems": len(hours),
+                                           "prefixItems": [{"const": 0}], "items": {"type": "number", "minimum": 0}}
+        for name in units["umol/L"] if name.endswith("_parent_cmax_0_24h")
+    }
+    profile = {
+        "time_unit": {"const": "h"}, "concentration_unit": {"const": "umol/L"}, "time": {"const": hours}, **series,
+    }
+    recovery = {
+        "study_n": {"const": 6},
+        "study_source": {"const": "https://www.accessdata.fda.gov/drugsatfda_docs/nda/2013/"
+                                  "204042Orig1s000ClinPharmR.pdf#page=39"},
+    }
+    for route, observed in (("urine", 32.5), ("feces", 60.4)):
+        comparison = {
+            "simulated_percent_dose": {"type": "number", "minimum": 0},
+            "study_mean_percent_dose": {"const": observed},
+            "difference_percentage_points": {"type": "number"},
+        }
+        recovery[route] = {"type": "object", "properties": comparison,
+                           "required": list(comparison), "additionalProperties": False}
+    common = {
+        "method": {"const": "canagliflozin_reference_pbpk"},
+        "endpoint": {"const": "canagliflozin_multiorgan_reference_pk"},
+        "scope": {"const": "reference_control"}, "scenario": {"const": "oral_reference"},
+        "solver": {"const": "libroadrunner"}, "solver_version": {"type": "string"},
+        "release": {"type": "string"}, "model_revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "model_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "dose_mg": {"const": 188}, "duration_h": {"const": 170},
+        "status": {"enum": ["complete", "untested"]}, "corpus_provenance": {"type": "object"},
+        "measurements": {"type": "object", "properties": endpoints, "additionalProperties": False},
+        "profile": {"type": "object", "properties": profile, "additionalProperties": False},
+        "recovery_168h": {"type": "object", "properties": recovery, "additionalProperties": False},
+    }
+    return {
+        "type": "object", "description": "Multi-organ simulation for the nominated oral canagliflozin control.",
+        "properties": {**common, "blocker": {"type": "string"}}, "required": list(common),
+        "if": {"properties": {"status": {"const": "complete"}}},
+        "then": {"properties": {"measurements": {"required": list(endpoints)}, "profile": {"required": list(profile)},
+                                "recovery_168h": {"required": list(recovery)}}, "not": {"required": ["blocker"]}},
+        "else": {"required": ["blocker"], "properties": {
+            key: {"maxProperties": 0} for key in ("measurements", "profile", "recovery_168h")
+        }},
+        "additionalProperties": False,
+    }
+
+
+def _toxscan_measurement_schema() -> dict:
+    classifications = (
+        "Carcinogenicity", "Ames Mutagenicity", "Respiratory toxicity", "Eye irritation", "Eye corrosion",
+        "Cardiotoxicity1", "Cardiotoxicity10", "Cardiotoxicity30", "Cardiotoxicity5",
+        "CYP1A2", "CYP2C19", "CYP2C9", "CYP2D6", "CYP3A4", "NR-AR", "NR-AR-LBD", "NR-AhR",
+        "NR-Aromatase", "NR-ER", "NR-ER-LBD", "NR-PPAR-gamma", "SR-ARE", "SR-ATAD5", "SR-HSE", "SR-MMP", "SR-p53",
+    )
+    displays = ("LC50DM (48h Daphnia magna LC50)", "LC50 (96h Fathead minnow LC50)",
+                "IGC50 (40h Tetrahymena pyriformis IGC50)", "BCF (Bioconcentration factor)", "Rat oral LD50")
+    values = {
+        "classifications": {"type": "object",
+                            "properties": {name: {"enum": ["YES", "NO", None]} for name in classifications},
+                            "required": list(classifications), "additionalProperties": False},
+        "source_displays": {"type": "object", "properties": {name: {"type": ["number", "null"]} for name in displays},
+                            "required": list(displays), "additionalProperties": False},
+        "regression_scale": {"const": "unverified_source_display"},
+    }
+    metric_fields = {
+        name: {"type": "number", "minimum": 0, "maximum": 1}
+        for name in ("auroc", "accuracy", "auroc_sd", "accuracy_sd")
+    }
+    metric_fields["assay"] = {"type": "string", "minLength": 1}
+    benchmark = {"type": "object", "properties": metric_fields,
+                 "required": list(metric_fields), "additionalProperties": False}
+    digests = ("source_sha256", "structure_sha256", "result_sha256")
+    common = {
+        "method": {"const": "toxscan_author_export"}, "endpoint": {"const": "toxscan_toxicity_profile"},
+        "scope": {"const": "candidate"}, "source": {"const": "https://funmg.dp.tech/Toxscan"},
+        "identity_check_version": {"enum": [1, 2, None]},
+        "corpus_provenance": {"type": "object"}, "status": {"enum": ["complete", "untested"]},
+        "applicability_domain": {"enum": ["in_domain", "out_of_domain", "unreported"]},
+        "similarity_score": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "results": {"type": "object", "properties": values, "additionalProperties": False},
+        "classification_validation": {"type": "object", "propertyNames": {"enum": list(classifications)},
+                                      "additionalProperties": benchmark},
+        "classification_validation_source": {"const": "https://doi.org/10.1021/acs.est.5c04614.s001"},
+        **{key: {"type": "string"} for key in digests},
+    }
+    return {
+        "type": "object", "description": "Model labels and numerical displays from a structure-matched ToxScan export.",
+        "properties": {**common, "candidate_id": {"type": ["string", "null"]}, "candidate_id_withheld": {"const": True},
+                       "candidate_id_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$",
+                                               "description": "SHA-256 of the UTF-8 nominated candidate ID."},
+                       "blocker": {"type": "string"}}, "required": list(common), "additionalProperties": False,
+        "if": {"properties": {"status": {"const": "complete"}}},
+        "then": {"required": ["candidate_id_sha256"],
+                 "allOf": [
+                     {"if": {"properties": {"results": {"properties": {"classifications": {
+                         "properties": {name: {"type": "string"}},
+                     }}}}},
+                      "then": {"properties": {"classification_validation": {"required": [name]}}},
+                      "else": {"properties": {"classification_validation": {"not": {"required": [name]}}}}}
+                     for name in classifications
+                 ],
+                 "oneOf": [{"required": ["candidate_id"]}, {"required": ["candidate_id_withheld"]}],
+                 "not": {"required": ["blocker"]}, "properties": {
+                     "identity_check_version": {"enum": [1, 2]},
+                     "candidate_id": {"type": "string", "minLength": 1},
+                     "results": {"required": list(values), "not": {"properties": {
+                         field: {"additionalProperties": {"type": "null"}}
+                         for field in ("classifications", "source_displays")
+                     }}},
+                     **{key: {"pattern": "^[a-f0-9]{64}$"} for key in digests},
+                 }},
+        "else": {"required": ["blocker", "candidate_id"], "not": {"anyOf": [
+            {"required": ["candidate_id_sha256"]}, {"required": ["candidate_id_withheld"]},
+        ]}, "properties": {
+            "candidate_id": {"const": None}, "results": {"maxProperties": 0}, "similarity_score": {"const": None},
+            "identity_check_version": {"const": None},
+            "classification_validation": {"maxProperties": 0},
+            "applicability_domain": {"const": "unreported"}, **{key: {"const": ""} for key in digests},
+        }},
+    }
+
+
+def _toxscan_ames_measurement_schema() -> dict:
+    digest = {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+    unit_interval = {"type": "number", "minimum": 0, "maximum": 1}
+    counts = ("n_train", "n_validation", "n_test", "test_positives", "test_negatives", "selected_epoch")
+    metrics = {
+        **{k: {"type": "integer", "minimum": 1} for k in counts},
+        **{k: {"type": "integer", "minimum": 0} for k in ("tp", "tn", "fp", "fn", "test_fingerprint_seen_in_train")},
+        **dict.fromkeys(("roc_auc", "accuracy", "validation_roc_auc"), unit_interval),
+    }
+    fields = {
+        "score": unit_interval, "class_call": {"enum": ["YES", "NO"]},
+        "graph_membership": {"enum": ["train", "validation", "test", "not_in_retained_splits"]},
+        "fingerprint_seen_in_training": {"type": "boolean"},
+        **dict.fromkeys(("structure_sha256", "candidate_id_sha256", "model_sha256", "result_sha256"), digest),
+        "archive_sha256": {"const": "e199ef53ee13ed2fe598ac96dd1ca4340b2b9aa602677c61e489cbc2dc4dd71f"},
+        "validation": {"type": "object", "properties": metrics, "required": list(metrics),
+                       "additionalProperties": False},
+    }
+    base = {"method": {"const": "toxscan_fingerprint_ames"}, "endpoint": {"const": "AMES"},
+            "corpus_provenance": {"type": "object"}, "scope": {"const": "candidate"}}
+    return {"oneOf": [
+        {"type": "object", "properties": values, "required": list(values), "additionalProperties": False}
+        for values in ({**base, "status": {"const": "complete"}, **fields},
+                       {**base, "status": {"const": "untested"}, "blocker": {"type": "string"}})
+    ]}
+
+
+_PREPARED_MEASUREMENT_SCHEMAS = {
+    "epa_httk": _HTTK_MEASUREMENT_SCHEMA,
+    "canagliflozin_pbpk": _canagliflozin_measurement_schema(),
+    "toxscan": _toxscan_measurement_schema(),
+    "toxscan_fingerprint_ames": _toxscan_ames_measurement_schema(),
+}
+
 _SUPPLEMENTAL_MODEL_SCHEMAS = {
     "delphi_psr": _delphi_measurement_schema(),
     "ligand_ames": _admet_measurement_schema(
@@ -1267,7 +1440,7 @@ _VERDICT_SCHEMA: dict[str, object] = {
             "type": "object",
             "description": "Chosen, attempted and inapplicable methods and their prepared measurements.",
             "properties": {
-                "prepared_measurements": {"type": "object", "properties": {"epa_httk": _HTTK_MEASUREMENT_SCHEMA}},
+                "prepared_measurements": {"type": "object", "properties": _PREPARED_MEASUREMENT_SCHEMAS},
             },
         },
         "sygma": {
@@ -2162,7 +2335,7 @@ _TOOLS: tuple[dict[str, object], ...] = (
                         "then": {"properties": {"measurement": schema}},
                     }
                     for screen_id, schema in (
-                        _SUPPLEMENTAL_MODEL_SCHEMAS | {"epa_httk": _HTTK_MEASUREMENT_SCHEMA}
+                        _SUPPLEMENTAL_MODEL_SCHEMAS | _PREPARED_MEASUREMENT_SCHEMAS
                     ).items()
                 ]}}},
             "required": ["program", "directory", "candidate_id", "results"]},

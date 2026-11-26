@@ -23,11 +23,14 @@ axis with no input stays `untested`, and a bar with an untested axis never clear
 - [CYPstrate substrate profiling](#cypstrate-substrate-profiling)
 - [EPA httk steady-state exposure screen](#epa-httk-steady-state-exposure-screen)
 - [PK-Sim human organ exposure](#pk-sim-human-organ-exposure)
+- [Canagliflozin gut, liver and kidney reference control](#canagliflozin-gut-liver-and-kidney-reference-control)
 - [CellProfiler chromogenic tissue and chip imaging](#cellprofiler-chromogenic-tissue-and-chip-imaging)
 - [Small-molecule aqueous solubility](#small-molecule-aqueous-solubility)
 - [fastsolv organic-solvent solubility](#fastsolv-organic-solvent-solubility)
 - [Jazzy hydration and hydrogen-bond descriptors](#jazzy-hydration-and-hydrogen-bond-descriptors)
 - [Small-molecule Ames mutagenicity prediction](#small-molecule-ames-mutagenicity-prediction)
+- [ToxScan saved toxicity predictions](#toxscan-saved-toxicity-predictions)
+- [Local ToxScan study fingerprint model for Ames](#local-toxscan-study-fingerprint-model-for-ames)
 - [Human liver microsomal clearance](#human-liver-microsomal-clearance)
 - [Small-molecule Caco-2 permeability and efflux](#small-molecule-caco-2-permeability-and-efflux)
 - [Small-molecule drug-induced liver injury](#small-molecule-drug-induced-liver-injury)
@@ -118,6 +121,8 @@ object must start the file.
 | `cypstrate.json` and molecular nominations | human CYP substrate classifications for the isoforms named for each systemic small molecule |
 | `httk.json` and `ligand_candidates.tsv` | adult human plasma steady-state estimates at a fixed reference intake for substances covered by EPA httk |
 | `pksim.json` and molecular nominations | individual human concentration–time profiles from a registered PK-Sim project |
+| `canagliflozin_pbpk.json` | run-level nomination of the published canagliflozin oral reference simulation |
+| `toxscan.json`, `toxscan.csv` and `ligand_candidates.tsv` | one nominated molecule matched to a saved ToxScan result |
 | `cellprofiler.json`, RGB fields and region masks | regional DAB intensity in candidate-stained tissue or chip images and matched reagent controls |
 | `paralog_coevolution.tsv` | a co-evolution note stored on `paralog` |
 | `axis_evidence.json` | any axis, as a curated judgement |
@@ -266,6 +271,161 @@ internally hydrogen-bonded or aggregation-prone compounds. Use the results
 as descriptors when reviewing comparable molecules.
 [Jazzy benchmark](https://doi.org/10.1038/s41598-023-30089-x) ·
 [Jazzy descriptor definitions](https://jazzy.readthedocs.io/en/latest/cookbook.html)
+
+## ToxScan saved toxicity predictions
+
+Use `toxscan` to review a previously exported author-platform result while
+choosing a confirmatory assay for a small molecule. Place the candidate's
+identifier and SMILES in `ligand_candidates.tsv` and keep the original CSV
+download for import. The local reader uses RDKit to match the
+molecule, including its specified stereochemistry. It runs on CPU.
+[Authors' export platform](https://funmg.dp.tech/Toxscan)
+
+In the finished-run picker, select a named ligand and choose **Prepare a
+ToxScan website request**. Copy the displayed structure if you want to submit
+it to the authors' service. After downloading their result, choose the CSV
+and press **Verify and import prediction**. Submitting on the website is the
+step that sends the molecule to the service. The picker verifies the saved
+bytes and the requested molecular graph locally.
+
+The equivalent local commands are
+
+```bash
+python scripts/screen_extras.py toxscan-request RUN_DIRECTORY --candidate ligand_1
+python scripts/screen_extras.py toxscan-import RUN_DIRECTORY downloaded.csv --candidate ligand_1 --expected-structure-sha256 REQUEST_STRUCTURE_DIGEST
+```
+
+Use the `structure_sha256` printed by the first command. The importer writes
+the original CSV and a version 2 `toxscan.json` binding the identifier, graph
+and export digests. Repeating the import verifies existing matching files.
+A different saved result requires its own run directory. Attribution to the
+author platform depends on where the operator obtained the export.
+
+The reader also accepts existing version 1 manifests in this form.
+
+```json
+{
+  "version": 1,
+  "candidate_id": "ligand_1",
+  "source": "https://funmg.dp.tech/Toxscan",
+  "export_sha256": "<64 lowercase hexadecimal characters>"
+}
+```
+
+Select **ToxScan saved toxicity predictions** or run
+`python scripts/screen_extras.py toxscan RUN_DIRECTORY`. The reader preserves
+the authors' individual yes/no calls, the domain assessment and the reported
+similarity. Blank endpoint cells stay unreported. The picker recommends a
+matched, in-domain result with a reported classification. A result with
+unknown or outside-domain status remains available for manual review. The
+study's similarity measure is the mean Tanimoto similarity to the ten closest
+training structures. The study used similarity strictly above 0.679 for its
+in-domain group. Where the displayed score and explicit flag disagree under
+that rule, the picker keeps the original values and leaves selection to the
+reviewer. The export does not identify its serving checkpoint.
+Every complete picker or MCP result includes `candidate_id_sha256`, the SHA-256
+digest of the UTF-8 nomination identifier, and `structure_sha256`, the digest of
+the canonical molecular graph representation. When the privacy filter withholds
+the identifier, the board shows a prefix of the nomination digest so the
+operator can still identify the result.
+
+New receipts record identity check version 2, which rejects stereochemistry
+the parser cannot preserve and bonds that do not specify a unique molecular
+graph. The reader can display a version 1 receipt from an earlier run.
+Re-import the original export to verify that match under the current checks.
+
+The reader keeps the five numeric outputs on their source display scale.
+The web exporter labels all five with the same unit, including the
+bioconcentration factor. Their physical units and transformations need
+independent verification before quantitative use.
+
+Each reported classification includes its assay, study AUROC, fraction
+correct and standard deviations over ten random-seed runs in
+`classification_validation`. Blank calls have no entry. AUROC measures how
+often a positive ranks above a negative. Accuracy also depends on how many
+test compounds fall into each class. For Ames, the reported AUROC was 0.879
+and accuracy was 0.876. An Ames flag can prioritize a bacterial
+reverse-mutation assay. For the 10 micromolar hERG IC50 cutoff, AUROC was
+0.671 and accuracy 0.655. Use a direct channel assay when that decision
+matters. The four cardiac columns use different cutoffs on the same compound
+set. Their agreement does not count as independent replication.
+The five CYP columns describe inhibition of the named human enzymes. Follow
+up a flagged isoform with an inhibition assay. The twelve Tox21 columns
+describe activity in individual pathway assays.
+[hERG data](https://doi.org/10.1039/C5TX00294J), [CYP data](https://pubmed.ncbi.nlm.nih.gov/31644282/)
+and [Tox21 assays](https://tripod.nih.gov/tox21/challenge/about.jsp).
+The public release supplies code and data partitions. The inference script
+requires ten separately trained checkpoints. This integration reads saved
+predictions locally. [Supplementary Tables S1 and S2](https://doi.org/10.1021/acs.est.5c04614.s001)
+and [authors' inference script](https://github.com/FanmengWang/ToxScan/blob/5eecd78a645366fbd2564ccb1c16032abf05a581/inference.sh).
+
+## Local ToxScan study fingerprint model for Ames
+
+Select **ToxScan study fingerprint model for Ames** to compute a fresh CPU
+prediction for a named small molecule in `ligand_candidates.tsv`. The
+installed method ID is `toxscan_fingerprint_ames`. Select one candidate when
+the table contains multiple ligands. A table with one ligand also supports
+whole-run screening. A matching author-platform Ames call makes this local
+fit optional because they share study labels. A fingerprint already seen in
+training remains available for manual review as a control.
+
+```bash
+python scripts/screen_extras.py toxscan-ames RUN_DIRECTORY --candidate ligand_1
+```
+
+This locally trained single-endpoint model uses ToxScan's molecular
+fingerprint projection and an Ames classification head. It uses 1,024-bit
+radius-two Morgan fingerprints with explicit hydrogens. The fingerprint
+omits stereochemistry, so distinct stereoisomers can receive the same score.
+The full author model also uses a 3D transformer and multitask supervision.
+[Authors' architecture](https://github.com/FanmengWang/ToxScan/blob/5eecd78a645366fbd2564ccb1c16032abf05a581/ToxScan/models/ToxScan.py)
+
+Each prediction records the model and archive digests, the nominated graph
+and candidate digests, the sigmoid score, and a YES/NO call at 0.5. The
+score is uncalibrated. The report identifies prior exposure to the same graph
+or training fingerprint. Use the result to prioritize a bacterial
+reverse-mutation assay. The picker displays the installed fit's held-out
+AUROC, fraction correct and class counts. The results board gives the number
+of positives and negatives recovered at 0.5. This lets a reviewer compare
+performance with calling every molecule positive on this positive-heavy test set.
+
+The reference CPU fit used 6,245 training and 694 validation structures.
+On 731 held-out structures it achieved AUROC 0.806 and accuracy 85.1%.
+At 0.5 it detected 587 of 614 positives and correctly called 35 of 117
+negatives. An always-positive call would achieve 84.0% accuracy on this
+split. Many experimental negatives therefore receive positive flags at this
+threshold. Among the 664 test structures with fingerprints absent from
+training, AUROC was 0.796. The picker reads the metrics for the installed
+weights when displaying a result.
+
+As a separate control, the CLI and screening picker both scored canagliflozin
+0.313 (predicted Ames-negative). Its graph was absent from the retained
+partitions and its fingerprint was absent from training. The FDA label
+reports a negative Ames assay both with and without metabolic activation.
+It also records a positive mouse lymphoma assay with metabolic activation,
+illustrating why the Ames call applies specifically to the bacterial assay.
+[Control structure](https://www.guidetopharmacology.org/GRAC/LigandDisplayForward?ligandId=4582&tab=structure)
+and [Invokana prescribing information, section 13.1](https://www.accessdata.fda.gov/drugsatfda_docs/label/2024/204042s041s042lbl.pdf).
+
+For a fresh installation, use the project's optional `toxscan` extra and
+download the public `dataset.tar.gz` linked from the authors' repository.
+Run the following in the configured environment. Extraction stages one
+2.52 GB database at a time alongside the 659 MB compressed archive. The
+installer fits on CPU and stores the weights and evaluation receipt together
+under the active Python environment's `share/toxscan_fingerprint_ames`.
+[Study release and data download](https://github.com/FanmengWang/ToxScan/tree/5eecd78a645366fbd2564ccb1c16032abf05a581)
+
+```bash
+python scripts/extract_toxscan_ames.py --archive dataset.tar.gz --output ames-labels
+python scripts/train_toxscan_ames.py ames-labels
+```
+
+The extractor verifies the archive hash, reads each endpoint's label mask and
+writes the three official Ames splits. The trainer authenticates the tables,
+excludes conflicting and cross-partition graph identities, and selects the
+epoch using validation AUROC. It evaluates the selected weights on retained
+test structures. This is an internal holdout from the published corpus.
+Each installation reports results for the weights it actually loads.
 
 ## Small-molecule Ames mutagenicity prediction
 
@@ -1246,6 +1406,57 @@ Use `human_chip` for identically stained chip images. A reagent-control contrast
 measures staining background. Establishing a treatment effect requires biological
 comparators. These image measurements alone cannot establish antibody specificity,
 tissue injury, or absence of cross-reactivity in an unexamined tissue.
+
+## Canagliflozin gut, liver and kidney reference control
+
+Use this control when comparing a canagliflozin experiment with the published
+human pharmacokinetic model. The Mamidi 2014 reference scenario uses a single
+oral dose of 188 mg, body weight of 75 kg and fasting glucose of 5 mM. The
+gut, liver and kidney readouts are model predictions. To compare chip data,
+match the analyte, compartment, elapsed time and units. The clinical study
+provides measured systemic exposure and excretion for comparison. Tissue
+injury requires its own experimental readout.
+[Published model and experiment definitions](https://github.com/matthiaskoenig/canagliflozin-model/tree/0.8.0)
+
+Save the following in `canagliflozin_pbpk.json` in the run directory. The picker
+recommends the installed control when this nomination is valid. Results
+belong to the run and always describe canagliflozin.
+
+```json
+{"version": 1, "scenario": "oral_reference"}
+```
+
+Install the pinned model and isolated CPU solver with
+`python scripts/install_canagliflozin.py` in the application environment.
+Run `python scripts/screen_extras.py canagliflozin_pbpk RUN_DIRECTORY` or select
+the control in the run-level picker. The simulation runs to 170 hours. The
+report gives parent concentrations in gut lumen, liver tissue, kidney plasma
+and venous plasma at 0, 1, 2, 4, 8, 12 and 24 hours, in micromoles per liter.
+It also gives first-day exposure summaries, 48-hour urinary metabolite amounts
+and 168-hour recovery values.
+
+For a seven-day mass-balance comparison, the six-participant clinical study
+recovered a mean of 32.5% of the administered radiolabel in urine and 60.4%
+in feces. Compare these observations with the corresponding 168-hour modeled
+amounts converted to a fraction of the administered molar dose. The modeled
+totals include the drug-related species represented in the SBML.
+The report's `recovery_168h` field gives these percentages for urine and feces,
+the study mean for each route and the signed difference in percentage points
+(simulation minus study mean). Reading an older saved result computes the
+comparison from its original micromole amounts.
+[Clinical study, Table 15](https://www.accessdata.fda.gov/drugsatfda_docs/nda/2013/204042Orig1s000ClinPharmR.pdf)
+
+The model authors used data from 22 clinical studies for calibration and
+evaluation. They reported overprediction of the change in parent exposure
+under hepatic impairment, for which one study was available. Apply the fixed
+healthy reference when comparing absorption, metabolism and excretion.
+[Model evaluation](https://www.preprints.org/manuscript/202601.2095)
+
+In a local CPU run, model release 0.8.0 predicted 30.37% urinary and 57.58%
+fecal recovery at 168 hours. The clinical means above exceed those predictions
+by 2.13 and 2.82 percentage points. These are checks against a study used in
+model development. The model and isolated Linux solver occupied 223 MB of disk
+(rounded up), and the reference solver used about 95 MiB peak RAM.
 
 ## PK-Sim human organ exposure
 
@@ -3535,6 +3746,9 @@ require manual selection. [AGGRESCAN study](https://pmc.ncbi.nlm.nih.gov/article
 | SCScore synthetic complexity | An explicitly nominated comparison contains distinct eligible small molecules and remains open for chemistry review. |
 | CYPstrate substrate profiling | Systemic exposure and at least one supported human CYP isoform are declared for the selected small molecule. |
 | PK-Sim human organ exposure | A nominated molecule matches a registered individual human small-molecule model, regimen and concentration observers. |
+| Canagliflozin gut, liver and kidney reference control | The run explicitly nominates the published oral canagliflozin reference scenario and the verified model and solver are installed. |
+| ToxScan saved toxicity predictions | The local reader matches the nominated molecule to its export, the source identifies it as in-domain, and at least one toxicity classification is reported. |
+| ToxScan study fingerprint model for Ames | A verified CPU fit is installed, the selected ligand has a supported molecular graph with a fingerprint absent from training, and its saved author export has no Ames call. |
 | CellProfiler regional DAB intensity | Candidate and negative-control fields have matched specimen and acquisition metadata, with a named mask for each field. |
 | PRODIGY | Both configured protein partners are complete and share an interpartner contact in the chosen coordinate model. Several prepared candidates at run scope require manual selection. |
 

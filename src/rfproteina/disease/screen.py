@@ -1466,7 +1466,14 @@ def screen_reports_for_directory(
     return found
 
 
-def walk_for_screens(directory: Path) -> Iterator[tuple[Path, list[str]]]:
+_PreparedRun = Callable[[Path, Sequence[str] | None], bool]
+
+
+def _screenable_directory(directory: Path, filenames: Sequence[str] | None, prepared: _PreparedRun | None) -> bool:
+    return _is_generation_directory(directory) or (prepared is not None and prepared(directory, filenames))
+
+
+def walk_for_screens(directory: Path, *, prepared: _PreparedRun | None = None) -> Iterator[tuple[Path, list[str]]]:
     """Every directory worth looking in beneath ``directory``, and its filenames.
 
     One traversal for the two things that need it: listing the screens already
@@ -1529,7 +1536,7 @@ def walk_for_screens(directory: Path) -> Iterator[tuple[Path, list[str]]]:
         # Nothing is asked about what sits inside a run. The run is already the
         # answer, and a per-run `.hydra` in every run of an archive would spend
         # the whole budget on folders that cannot hold another run to screen.
-        if unread and not _is_generation_directory(current):
+        if unread and not _screenable_directory(current, filenames, prepared):
             for entry in unread:
                 if abandoned or asked >= _SCREEN_PRUNE_CHECKS:
                     break
@@ -1539,7 +1546,7 @@ def walk_for_screens(directory: Path) -> Iterator[tuple[Path, list[str]]]:
                 # folders and no run, and treating "did not finish looking" as
                 # "may hide a run" made every sweep of such a tree partial, with
                 # no way to clear it. That is the false gap described below.
-                abandoned = _find_generation(entry) is True
+                abandoned = _find_generation(entry, prepared) is True
         if depth >= _SCREEN_DEPTH:
             # The depth limit was the one cap that pruned in silence, so a sweep
             # that never looked at a run still reported itself complete: the
@@ -1567,8 +1574,8 @@ def walk_for_screens(directory: Path) -> Iterator[tuple[Path, list[str]]]:
             # while there was nothing under there to screen. Announcing a false
             # gap on every run is worse than the silence this replaced, because
             # it cannot be cleared and it teaches the warning to be ignored.
-            if dirnames and not _is_generation_directory(current):
-                abandoned = abandoned or any(_holds_generation(current / name) for name in dirnames)
+            if dirnames and not _screenable_directory(current, filenames, prepared):
+                abandoned = abandoned or any(_holds_generation(current / name, prepared) for name in dirnames)
             dirnames.clear()
         if depth > _SCREEN_DEPTH or current == directory:
             continue
@@ -1614,7 +1621,7 @@ def _read_under_its_own_name(root: Path, link: Path) -> bool:
     return not any(part in _SKIP_SCREEN_WALK or part.startswith(".") for part in parts)
 
 
-def _find_generation(directory: Path) -> bool | None:
+def _find_generation(directory: Path, prepared: _PreparedRun | None = None) -> bool | None:
     """Look for a finished run at or beneath ``directory``, within a small budget.
 
     True when one was seen, False when the whole subtree was read and held none,
@@ -1625,16 +1632,16 @@ def _find_generation(directory: Path) -> bool | None:
         walker = directory.walk(top_down=True, on_error=_ignore_screen_walk, follow_symlinks=False)
     except OSError:
         return False
-    for seen, (dirpath, dirnames, _filenames) in enumerate(walker, start=1):
+    for seen, (dirpath, dirnames, filenames) in enumerate(walker, start=1):
         if seen > _SCREEN_LOOKAHEAD:
             return None
         dirnames[:] = [name for name in dirnames if name not in _SKIP_SCREEN_WALK and not name.startswith(".")]
-        if _is_generation_directory(Path(dirpath)):
+        if _screenable_directory(Path(dirpath), filenames, prepared):
             return True
     return False
 
 
-def _holds_generation(directory: Path) -> bool:
+def _holds_generation(directory: Path, prepared: _PreparedRun | None = None) -> bool:
     """Whether a finished run sits at or beneath ``directory``.
 
     Asked only where the depth limit is about to prune, to tell a subtree that
@@ -1646,7 +1653,7 @@ def _holds_generation(directory: Path) -> bool:
     That is the safe direction: the claim then made is that the sweep may be
     partial, which is the honest answer when the question ran out of looking.
     """
-    return _find_generation(directory) is not False
+    return _find_generation(directory, prepared) is not False
 
 
 class ScreenWalkTruncatedError(Exception):
@@ -1665,25 +1672,46 @@ class ScreenWalkTruncatedError(Exception):
         self.visited = visited
 
 
-def generation_directories(directory: Path, *, limit: int | None = None) -> list[Path]:
+def generation_directories(
+    directory: Path, *, limit: int | None = None, prepared_ligands: bool = False, binder_kind: str | None = None,
+) -> list[Path]:
     """Finished runs at or beneath ``directory``, shallower paths first.
 
     A directory holding designs or metrics is a run, and when the given one is
     itself a run it is the only answer -- the same own-first rule the stored
     screens follow. The test is for what a run leaves behind rather than for a
     ``screen.json``, because a run being screened for the first time has none.
+
+    With ``prepared_ligands``, include directories with a valid small-molecule
+    nomination. An explicit binder kind takes precedence over the run metadata.
     """
-    if _is_generation_directory(directory):
+    prepared = None
+    if prepared_ligands:
+        from rfproteina.disease.screen_panel import NOMINATION_FILES, nominated_ligand_run
+
+        root = directory.resolve()
+
+        def check_nomination(path: Path, filenames: Sequence[str] | None) -> bool:
+            if filenames is not None and NOMINATION_FILES.isdisjoint(filenames):
+                return False
+            # The bounded lookahead can inspect directory entries across a link. A marker outside the
+            # requested root signals possible skipped work; never read its nomination or candidate data.
+            if not path.resolve().is_relative_to(root):
+                return True
+            return nominated_ligand_run(path, binder_kind=binder_kind)
+
+        prepared = check_nomination
+    if _screenable_directory(directory, None, prepared):
         return [directory]
     # Resolved here rather than as a default, so the cap is the one in force at
     # the time of the call.
     cap = SCREEN_RUN_LIMIT if limit is None else limit
     found: list[Path] = []
     try:
-        for current, _filenames in walk_for_screens(directory):
+        for current, filenames in walk_for_screens(directory, prepared=prepared):
             if len(found) >= cap:
                 raise ScreenWalkTruncatedError(found, cap)
-            if _is_generation_directory(current):
+            if _screenable_directory(current, filenames, prepared):
                 found.append(current)
     except ScreenWalkTruncatedError as stopped:
         # Carry what was found so far, so a caller can screen it and still say

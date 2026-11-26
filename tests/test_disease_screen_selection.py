@@ -42,7 +42,10 @@ def finished(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def test_coverage_has_a_unique_selection_for_every_reviewed_method() -> None:
-    assert len(screen_selection.METHOD_IDS) == len(set(screen_selection.METHOD_IDS)) == 83
+    assert len(screen_selection.METHOD_IDS) == len(set(screen_selection.METHOD_IDS)) == 86
+    assert "toxscan_fingerprint_ames" in screen_selection.METHOD_IDS
+    assert "canagliflozin_pbpk" in screen_selection.NATIVE_IDS
+    assert "toxscan" in screen_selection.NATIVE_IDS
     assert "dimorphite_dl" in screen_selection.NATIVE_IDS
     assert "p2rank" in screen_selection.NATIVE_IDS
     assert "badapple2" in screen_selection.NATIVE_IDS
@@ -54,6 +57,45 @@ def test_coverage_has_a_unique_selection_for_every_reviewed_method() -> None:
     assert "jazzy" in screen_selection.NATIVE_IDS
     assert "espsim" in screen_selection.NATIVE_IDS
     assert set(screen_selection.METHOD_IDS) == set(screen_selection.NATIVE_IDS) | screen_inventory.BY_KEY.keys()
+
+
+def test_canagliflozin_control_requires_run_level_nomination_and_installation(tmp_path):
+    key = "canagliflozin_pbpk"
+
+    def choice(kind="ligand", example=None, installed=True):
+        row, = screen_selection.plan(tmp_path, kind, example=example, available={key: installed})
+        return row
+
+    assert not choice().applicable
+    (tmp_path / "canagliflozin_pbpk.json").write_text(json.dumps({"version": 1, "scenario": "oral_reference"}))
+    assert choice().recommended and "canagliflozin" in choice().reason
+    candidate = choice(example="another_ligand")
+    assert not candidate.applicable and "whole run" in candidate.reason
+    assert not choice(kind="protein").applicable
+    assert not choice(installed=False).recommended
+    (tmp_path / "canagliflozin_pbpk.json").write_text(json.dumps({"version": 1, "scenario": "another_drug"}))
+    assert not choice().applicable
+
+
+def test_toxscan_reader_selection_respects_nomination_domain_and_installation(tmp_path, monkeypatch):
+    from rfproteina.disease import toxscan
+
+    def select(installed=True):
+        row, = screen_selection.plan(tmp_path, "ligand", example="compound", available={"toxscan": installed})
+        return row
+
+    assert not select().applicable
+    (tmp_path / toxscan.MANIFEST).write_text("{}")
+    monkeypatch.setattr(toxscan, "readiness", lambda directory, candidate: (
+        candidate == "compound", True, "Matched in-domain author export.",
+    ))
+    in_domain = select()
+    assert in_domain.recommended and in_domain.method.operation == "native_result_reader"
+    assert "0.879" in in_domain.performance["summary"]
+    assert not select(installed=False).recommended
+    monkeypatch.setattr(toxscan, "readiness", lambda *_: (True, False, "Outside the applicability domain."))
+    out_of_domain = select()
+    assert out_of_domain.applicable and not out_of_domain.recommended
 
 
 def test_stereochemistry_preserves_the_producers_fraction_and_scope(finished):

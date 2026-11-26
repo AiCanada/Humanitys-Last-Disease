@@ -71,6 +71,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+from rfproteina.disease import toxscan_validation
+
 #: Fitted on measured labels for the quantity being scored.
 BENCHMARK_LABEL_CORPUS = "benchmark_label_corpus"
 #: Fitted on another column of the same campaign, measuring the same quantity.
@@ -226,6 +228,12 @@ _GDPA1_LABELS = (
 
 CYPSTRATE_ISOFORMS = ("CYP1A2", "CYP2A6", "CYP2B6", "CYP2C8", "CYP2C9", "CYP2C19", "CYP2D6", "CYP2E1", "CYP3A4")
 _CYPSTRATE_LABELS = ("human_cyp_substrate", *(isoform.lower() + "_substrate" for isoform in CYPSTRATE_ISOFORMS))
+
+TOXSCAN_LABELS = (
+    "toxscan_toxicity_profile", "AMES", "hERG", "CYP", *toxscan_validation.BENCHMARKS,
+    *toxscan_validation.SOURCE_DISPLAY_ENDPOINTS,
+)
+
 
 CORPORA: dict[str, Corpus] = {
     "CYPstrate-Hunt-Tian": Corpus(
@@ -572,6 +580,21 @@ CORPORA: dict[str, Corpus] = {
         ),
         labels=("structure_conditioned_group_pka",),
     ),
+    "ToxScan-study-partitions": Corpus(
+        name="ToxScan 31-endpoint compound toxicity study",
+        publisher="Wu, Wang and colleagues",
+        locator="https://doi.org/10.1021/acs.est.5c04614",
+        read_from="The authors describe TOXRIC, TDC and earlier compiled toxicity data, and release the train, "
+                  "validation and test partitions. Similar endpoints in other screens may share compounds or labels.",
+        labels=TOXSCAN_LABELS,
+    ),
+    "Canagliflozin-clinical-PKPD": Corpus(
+        name="Curated clinical canagliflozin pharmacokinetic and pharmacodynamic studies",
+        publisher="Tereshchuk, Elias and König",
+        locator="https://doi.org/10.20944/preprints202601.2095.v1",
+        read_from="The authors describe 22 clinical studies used for model calibration and evaluation.",
+        labels=("canagliflozin_multiorgan_reference_pk",),
+    ),
     "GFN2-xTB-reference": Corpus(
         name="GFN2-xTB molecular reference properties",
         publisher="Bannwarth, Ehlert and Grimme",
@@ -837,6 +860,27 @@ TRAINED_ON: dict[str, TrainedOn] = {
         role="Regional intensity measurements after separating DAB and hematoxylin in supplied brightfield images.",
         declared_from="CellProfiler UnmixColors, https://cellprofiler-manual.s3.amazonaws.com/CPmanual/UnmixColors.html",
         unaligned_kind=NO_TRAINING_CORPUS,
+    ),
+    "toxscan_fingerprint_ames": TrainedOn(
+        model="toxscan_fingerprint_ames",
+        corpora=("ToxScan-study-partitions",),
+        heads=("AMES", "Ames Mutagenicity"),
+        role="A locally fitted fingerprint model estimates bacterial reverse-mutation assay response.",
+        declared_from="Ames labels from the ToxScan study partitions, https://doi.org/10.1021/acs.est.5c04614.",
+    ),
+    "toxscan_author_export": TrainedOn(
+        model="toxscan_author_export",
+        corpora=("ToxScan-study-partitions",),
+        heads=TOXSCAN_LABELS,
+        role="Reads the authors' exported small-molecule predictions and their applicability-domain assessment.",
+        declared_from="ToxScan paper and author-released partitions, https://doi.org/10.1021/acs.est.5c04614.",
+    ),
+    "canagliflozin_reference_pbpk": TrainedOn(
+        model="canagliflozin_reference_pbpk",
+        corpora=("Canagliflozin-clinical-PKPD",),
+        heads=("canagliflozin_multiorgan_reference_pk",),
+        role="Simulates the published canagliflozin model under a fixed reference scenario.",
+        declared_from="Canagliflozin PBPK/PD model, https://github.com/matthiaskoenig/canagliflozin-model.",
     ),
     "pksim": TrainedOn(
         model="pksim",
