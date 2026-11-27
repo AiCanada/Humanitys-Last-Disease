@@ -6,14 +6,14 @@ Generative protein design with rich conditioning.
 
 Goal: e/acc Simplified... Computation to Wet Lab. Help Guide Norms.
 
-Looking for Ideas or Feedback.
-Current Investigation Work Flow:
-In the programs Alpha Fold(2&3) there is an intermediary step that calculates MSA multiple sequence alignment. Many other programs use this important metric in there own code making it High Signal.
-this program uses approx. 85 different screening methods (global list of over 1500)
-Currently identifying any MSA type metric, anticipating multiple runs to gather data(weeks)
-turning the knobs on the intermediary screening metrics
-GPT-6.2-Astra ultra 5 hours for 1 test run, i-9HX, 4060, 128GB RAM
-Less Screening methods installed increases speed, Generation only takes 5-10 Min. depending on residue size.
+- Looking for Ideas or Feedback.
+- Current Investigation Work Flow:
+- In the programs Alpha Fold(2&3) there is an intermediary step that calculates MSA multiple sequence alignment. Many other programs use this important metric in there own code making it High Signal.
+- this program uses approx. 85 different screening methods (global list of over 1500)
+- Currently identifying any MSA type metric, anticipating multiple runs to gather data(weeks)
+- turning the knobs on the intermediary screening metrics
+- GPT-6.2-Astra ultra 5 hours for 1 test run, i-9HX, 4060, 128GB RAM
+- Less Screening methods installed increases speed, Generation only takes 5-10 Min. depending on residue size.
 
 Prepping program for entry into Drug Discovery and Development Benchmark
 https://dddbench.insilico.com/?tab=core
