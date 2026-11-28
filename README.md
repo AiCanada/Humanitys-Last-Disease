@@ -1,6 +1,4 @@
-DRAFT 
-
-Atomic level Structure AI Powered Binding Affinity 
+![PROJECT H.U.M.A.N   V0.8888. High Utility Molecular Affinity Nexus. Humanity's Last Disease.](docs/_static/program-name.png)
 
 Generative protein design with rich conditioning.
 
