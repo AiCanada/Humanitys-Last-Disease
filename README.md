@@ -1,5 +1,7 @@
 ![PROJECT H.U.M.A.N   V0.8888. High Utility Molecular Affinity Nexus. Humanity's Last Disease.](docs/_static/program-name.png)
 
+DRAFT - Experimental
+
 Generative protein design with rich conditioning.
 
 Goal: e/acc Simplified... Computation to Wet Lab. Help Guide Norms.
@@ -20,7 +22,7 @@ https://huggingface.co/datasets/AICanada/humanitys_last_disease/tree/main (datas
 
 https://github.com/AiCanada/Humanitys-Last-Disease (Code)
 
-Not Medically Verified.
+Not Medically Verified. No warranties, No liability, Use at own Risk 
 
 INPUT=Disease
 
